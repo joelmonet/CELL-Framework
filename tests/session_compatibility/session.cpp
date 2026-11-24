@@ -3,6 +3,7 @@
 #include <cell/graph_project.hpp>
 #include <cell/json.hpp>
 #include <cell/plugin.hpp>
+#include <cell/uuid.hpp>
 #include <clap/clap.h>
 
 #include <algorithm>
@@ -291,6 +292,22 @@ Value presetMetadata(Engine& engine, const File* destination) {
                               {"catalog", Value(std::move(banks))}});
 }
 
+void verifyEmbeddedWave(const File& archive, const File& asset) {
+    const auto directory = fs::temp_directory_path() / ("cell-session-" + Uuid().toString().toStdString());
+    require(fs::create_directory(directory), "Could not create a private extraction directory");
+    struct Cleanup {
+        const fs::path& path;
+        ~Cleanup() {
+            std::error_code error;
+            fs::remove_all(path, error);
+        }
+    } cleanup{directory};
+    const File extracted(directory / "input.wav");
+    graph::extractProjectWave(archive, extracted);
+    require(files::readBounded(extracted.nativePath(), 1024 * 1024) == files::readBounded(asset.nativePath(), 1024 * 1024),
+            "Packed asset is not byte-for-byte identical to the relocated source");
+}
+
 constexpr std::array graphExamples{"example.json", "compensated.json", "intent.json", "modulation.json"};
 
 void graphProjects(const File& root, const File& asset, bool capture, const File& examples) {
@@ -323,11 +340,7 @@ void graphProjects(const File& root, const File& asset, bool capture, const File
         require(project.graph.serialize() == parsed.serialize() &&
                 json::write(json::read(savedDocument.utf8())) == json::write(json::read(parsed.serialize())),
                 "Candidate changed the saved graph document");
-        const TemporaryFile extraction(root.getChildFile(stem + "-extracted.wav"));
-        const auto& extracted = extraction.getTemporaryFile();
-        graph::extractProjectWave(archive, extracted);
-        require(files::readBounded(extracted.nativePath(), 1024 * 1024) == files::readBounded(asset.nativePath(), 1024 * 1024),
-                "Packed asset is not byte-for-byte identical to the relocated source");
+        verifyEmbeddedWave(archive, asset);
         const auto reference = audio::openAudioFile(rendered);
         require(reference && reference->info().sampleRate == rate && reference->info().channels == 2,
                 "Archived graph render format changed");
