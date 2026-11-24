@@ -16,8 +16,13 @@ import wave
 HOST = "127.0.0.1"
 FRAMES = 9601
 IMPAIRED_SAMPLE = 1200
-RELEASE_SAMPLE = IMPAIRED_SAMPLE + 4800
 PACKET_FRAMES = 120
+# Use separate release points so runner scheduling jitter cannot easily move
+# the recoverable and late packets across their respective playout deadlines.
+RELEASE_SAMPLES = {
+    "reorder": IMPAIRED_SAMPLE + 4 * PACKET_FRAMES,
+    "late": IMPAIRED_SAMPLE + 48 * PACKET_FRAMES,
+}
 
 
 def read_float_pcm(path, frames=FRAMES, *, sample_rate=48000):
@@ -147,16 +152,17 @@ def exercise(binary, source, output, impairment, budget, concealed, late, restri
             if impairment or restrict_peer:
                 affected = 0
                 held = None
+                release_sample = RELEASE_SAMPLES.get(impairment)
                 for _ in range((FRAMES + PACKET_FRAMES - 1) // PACKET_FRAMES):
                     packet, _ = relay.recvfrom(1201)
                     first_sample = struct.unpack_from("<Q", packet, 16)[0]
                     if impairment and first_sample == IMPAIRED_SAMPLE:
                         affected += 1
-                        if impairment == "delay":
+                        if release_sample is not None:
                             held = packet
                         continue
                     relay.sendto(packet, destination)
-                    if first_sample == RELEASE_SAMPLE and held is not None:
+                    if first_sample == release_sample and held is not None:
                         relay.sendto(held, destination)
                         held = None
                 assert affected == bool(impairment) and held is None
@@ -352,8 +358,8 @@ def main():
         scenarios = (
             (None, 150, 0, 0),
             ("drop", 150, PACKET_FRAMES, 0),
-            ("delay", 60, PACKET_FRAMES, 1),
-            ("delay", 150, 0, 0),
+            ("late", 60, PACKET_FRAMES, 1),
+            ("reorder", 150, 0, 0),
             (None, 150, 0, 0, True),
         )
         for index, (impairment, budget, concealed, late, *peer) in enumerate(scenarios):

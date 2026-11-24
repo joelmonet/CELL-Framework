@@ -84,7 +84,11 @@ jobs:
               "-DCELL_GAIN_AU_SDK=$GITHUB_WORKSPACE/ci-audio-unit-sdk"
             )
           else
-            cmake_args+=(-DCMAKE_SYSTEM_NAME=iOS)
+            # Each mobile SDK gets its own build tree. Give CTest a concrete
+            # bundle path without Xcode's EFFECTIVE_PLATFORM_NAME placeholder.
+            platform_config="$RUNNER_TEMP/cell-xcode-platform.cmake"
+            printf '%s\n' 'set_property(GLOBAL PROPERTY XCODE_EMIT_EFFECTIVE_PLATFORM_NAME OFF)' > "$platform_config"
+            cmake_args+=(-DCMAKE_SYSTEM_NAME=iOS "-DCMAKE_PROJECT_INCLUDE=$platform_config")
           fi
           cmake -S "$RUNNER_TEMP/cell-source/Cell-Framework/framework" \
             -B "$RUNNER_TEMP/cell-build" "${cmake_args[@]}" "${sdk_args[@]}" \
@@ -102,7 +106,17 @@ jobs:
           cmake -S "$RUNNER_TEMP/cell-project" -B "$RUNNER_TEMP/cell-project-build" "${cmake_args[@]}" \
             "-DCell_DIR=$RUNNER_TEMP/cell-sdk/lib/cmake/Cell"
           cmake --build "$RUNNER_TEMP/cell-project-build" --config Release --target project_auv3_app --parallel 3
-          ctest --test-dir "$RUNNER_TEMP/cell-project-build" -C Release -R '^auv3_bundle$' --output-on-failure --no-tests=error
+          bundle_test="$RUNNER_TEMP/auv3-bundle-test.txt"
+          if ! ctest --test-dir "$RUNNER_TEMP/cell-project-build" -C Release -R '^auv3_bundle$' \
+            --output-on-failure --no-tests=error > "$bundle_test" 2>&1; then
+            cat "$bundle_test"
+            detail=$(tail -n 18 "$bundle_test")
+            detail=${detail//%/%25}
+            detail=${detail//$'\n'/%0A}
+            printf '::error title=Generated AUv3 bundle check failed::%s\n' "$detail"
+            exit 1
+          fi
+          cat "$bundle_test"
           cmake -S "$RUNNER_TEMP/cell-source/Cell-Framework/tests/sdk_audio_files_consumer" \
             -B "$RUNNER_TEMP/cell-consumer" "${cmake_args[@]}" \
             "-DCell_DIR=$RUNNER_TEMP/cell-sdk/lib/cmake/Cell"
@@ -135,10 +149,42 @@ jobs:
           codesign --force --sign - "$component"
           codesign --verify --strict "$component"
           killall -u "$(id -un)" AudioComponentRegistrar 2>/dev/null || true
-          auval -v aufx CGan Cell 2>&1 | tee "$RUNNER_TEMP/cell-results/auval.txt"
-          grep -q 'AU VALIDATION SUCCEEDED' "$RUNNER_TEMP/cell-results/auval.txt"
-          "$RUNNER_TEMP/cell-build/gain-example/Release/cell_au_gain_host" 2>&1 |
-            tee "$RUNNER_TEMP/cell-results/au-render.txt"
+          report_failure() {
+            local detail
+            detail=$(tail -n 45 "$2")
+            detail=${detail//%/%25}
+            detail=${detail//$'\r'/%0D}
+            detail=${detail//$'\n'/%0A}
+            printf '::error title=%s::%s\n' "$1" "$detail"
+          }
+          # The registrar rebuilds its component list asynchronously after installation.
+          registry="$RUNNER_TEMP/cell-results/au-registration.txt"
+          registered=0
+          for ((attempt = 0; attempt < 30; ++attempt)); do
+            if auval -a > "$registry" 2>&1 &&
+              awk '$1 == "aufx" && $2 == "CGan" && $3 == "Cell" { found = 1 } END { exit !found }' "$registry"; then
+              registered=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$registered" == 0 ]]; then
+            plutil -p "$component/Contents/Info.plist"
+            report_failure "AUv2 component registration failed" "$registry"
+          fi
+          result=0
+          validation="$RUNNER_TEMP/cell-results/auval.txt"
+          if ! auval -v aufx CGan Cell 2>&1 | tee "$validation" ||
+            ! grep -q 'AU VALIDATION SUCCEEDED' "$validation"; then
+            report_failure "AUv2 validation failed" "$validation"
+            result=1
+          fi
+          render="$RUNNER_TEMP/cell-results/au-render.txt"
+          if ! "$RUNNER_TEMP/cell-build/gain-example/Release/cell_au_gain_host" 2>&1 | tee "$render"; then
+            report_failure "AUv2 render failed" "$render"
+            result=1
+          fi
+          exit "$result"
       - name: Discover and render the registered AUv3 extensions in Core Audio
         if: "!cancelled() && matrix.sdk == 'macosx' && steps.build_sdk.outcome == 'success'"
         timeout-minutes: 5
