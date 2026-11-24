@@ -1,0 +1,120 @@
+{
+  "schema": "cell.wrapper-source-contract.v1",
+  "qualification": "scoped-native-qualification-2026-11-17",
+  "new_source_compiled": true,
+  "shared_target": "Cell::Wrappers",
+  "runtime_sources": [
+    "include/cell/wrapper.hpp",
+    "include/cell/parameter_timeline.hpp",
+    "src/wrappers/runtime.cpp"
+  ],
+  "formats": {
+    "clap": {
+      "source": "src/formats/clap.cpp",
+      "helper": "cell_add_clap_plugin",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "status": "compiled-linux-entry-factory-nested-lifecycle-and-unload-contracts",
+      "sdk": "separately supplied official CLAP headers",
+      "qualified_platforms": [
+        "linux"
+      ]
+    },
+    "vst3": {
+      "source": "src/formats/vst3.cpp",
+      "helper": "cell_add_vst3_plugin",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "status": "compiled-linux-factory-lifecycle-window-and-unload-contracts",
+      "sdk": "separately supplied official VST3 SDK",
+      "qualified_platforms": [
+        "linux"
+      ]
+    },
+    "au": {
+      "source": "src/formats/au.cpp",
+      "helper": "cell_add_au_plugin",
+      "platforms": ["macos"],
+      "status": "auv2-effect-source-with-native-validation-job",
+      "sdk": "separately supplied Apple AudioUnitSDK 1.4.0"
+    },
+    "auv3": {
+      "source": "src/formats/auv3.mm",
+      "helper": "cell_add_auv3_plugin",
+      "platforms": ["macos", "ios"],
+      "status": "macos-and-ios-device-bundles-cross-linked-with-native-validation-jobs",
+      "sdk": "Apple macOS or iOS SDK"
+    },
+    "lv2": {
+      "source": "src/formats/lv2.cpp",
+      "helper": "cell_add_lv2_plugin",
+      "status": "linux-bundle-discovery-and-fixed-audio-effect-abi-tested",
+      "sdk": "official LV2 headers and matching Turtle metadata"
+    },
+    "ladspa": {
+      "source": "src/formats/ladspa.cpp",
+      "helper": "cell_add_ladspa_plugin",
+      "status": "linux-fixed-audio-effect-abi-tested",
+      "sdk": "LADSPA header"
+    },
+    "dssi": {
+      "source": "src/formats/ladspa.cpp",
+      "helper": "cell_add_ladspa_plugin DSSI",
+      "status": "linux-dssi-effect-abi-tested",
+      "sdk": "LADSPA, DSSI and ALSA headers"
+    },
+    "jsfx": {
+      "source": "examples/sdk_gain/Cell Gain.jsfx",
+      "status": "gain-effect-render-tested-with-ysfx"
+    },
+    "vst2": {
+      "source": "src/formats/vst2.cpp",
+      "helper": "cell_add_vst2_plugin",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "status": "new-unbuilt-prototype",
+      "sdk": "separately supplied VST2.4 SDK; not present in this workspace",
+      "explicit_id_required": true
+    },
+    "aax": {
+      "source": "src/formats/aax.cpp",
+      "helper": "cell_add_aax_plugin",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "status": "linux-acf-exports-and-simulated-descriptor-registration-tested-native-bundle-pending",
+      "sdk": "separately supplied Avid SDK; source-built AAXLibrary or matching prebuilt target",
+      "explicit_id_required": true,
+      "latency_ack_before_graph_adoption": "pending",
+      "sample_rate_and_algorithm_reinitialization": "pending-native-host-qualification",
+      "api_reference_only": {
+        "url": "https://github.com/audiosdk/aax",
+        "revision": "b07534a562d77b1b3b13a245bc414df08a9bc1a5",
+        "sdk_implementation_redistributed": false
+      }
+    }
+  },
+  "unrun_cpp_tests": [
+    "tests/vst2_host.cpp"
+  ],
+  "release_requirements": [
+    "Original format IDs, parameter IDs and VST2 indexes independently captured and preserved",
+    "Legacy project/preset state, assets, routing and automation qualified in real hosts",
+    "All original bus layouts, sidechain and channel-role mappings implemented and verified",
+    "Host-specific latency acknowledgement and graph adoption synchronized",
+    "Required MIDI messages, overflow recovery, transport and offline rendering verified",
+    "Editor lifetime, gestures, resize, DPI, keyboard focus and native platform behavior verified",
+    "macOS/Windows/Linux host matrix completed; Pro Tools and AAX signing qualified separately"
+  ],
+  "qualification_scope": "Generic CLAP/VST3 example on Linux; product-specific native VST3/ARA on Windows/Linux is qualified separately in Band Aide."
+}

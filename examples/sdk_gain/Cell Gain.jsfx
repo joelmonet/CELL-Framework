@@ -1,0 +1,28 @@
+desc:Cell Gain
+tags: gain utility
+in_pin:Left input
+in_pin:Right input
+out_pin:Left output
+out_pin:Right output
+
+slider1:0<-60,12,0.01>Gain (dB)
+
+@init
+gain_current = gain_target = 10 ^ (slider1 * 0.05);
+gain_left = 0;
+
+@slider
+new_target = 10 ^ (slider1 * 0.05);
+new_target != gain_target ? (
+  gain_target = new_target;
+  gain_left = max(1, floor(srate * 0.01));
+  gain_step = (gain_target - gain_current) / gain_left;
+);
+
+@sample
+gain_left > 0 ? (
+  gain_left -= 1;
+  gain_current = gain_left > 0 ? gain_current + gain_step : gain_target;
+);
+spl0 *= gain_current;
+spl1 *= gain_current;

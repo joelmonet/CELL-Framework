@@ -1,0 +1,20 @@
+{
+  "schema": "cell.graph.v2",
+  "sampleRate": 48000,
+  "nodes": [
+    { "id": "dry", "type": "gain", "gainDb": -6 },
+    { "id": "tone", "type": "lowpass", "brightness": 0.35, "minHz": 200, "maxHz": 12000 },
+    { "id": "wet", "type": "gain", "gainDb": -6 }
+  ],
+  "connections": [
+    { "from": "input", "to": "dry" },
+    { "from": "input", "to": "tone" },
+    { "from": "tone", "to": "wet" },
+    { "from": "dry", "to": "output" },
+    { "from": "wet", "to": "output" }
+  ],
+  "automation": [
+    { "sample": 24000, "node": "tone", "parameter": "brightness", "value": 0.8 },
+    { "sample": 48000, "node": "wet", "parameter": "gainDb", "value": -12 }
+  ]
+}

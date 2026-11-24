@@ -1,0 +1,12 @@
+{
+  "schema": "cell.graph.v2",
+  "sampleRate": 48000,
+  "nodes": [
+    { "id": "swap-front-and-mute-lfe", "type": "channelMap", "sources": [1, 0, 2, null, 4, 5] }
+  ],
+  "connections": [
+    { "from": "input", "to": "swap-front-and-mute-lfe" },
+    { "from": "swap-front-and-mute-lfe", "to": "output" }
+  ],
+  "automation": []
+}

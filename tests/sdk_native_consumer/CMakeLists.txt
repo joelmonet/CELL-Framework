@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.24)
+project(CellNativeConsumer LANGUAGES CXX)
+find_package(Cell CONFIG REQUIRED COMPONENTS Core AudioFiles State UI AudioDevice ARASource)
+add_executable(cell_sdk_native_probe main.cpp)
+target_link_libraries(cell_sdk_native_probe PRIVATE Cell::Core Cell::AudioFiles Cell::StateTree Cell::UI Cell::AudioDevice Cell::ARASource)
+enable_testing()
+add_test(NAME installed-native-services COMMAND cell_sdk_native_probe)

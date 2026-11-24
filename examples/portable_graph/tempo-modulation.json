@@ -1,0 +1,11 @@
+{
+  "schema": "cell.graph.v4",
+  "sampleRate": 48000,
+  "nodes": [{"id": "level", "type": "gain", "gainDb": -6}],
+  "connections": [{"from": "input", "to": "level"}, {"from": "level", "to": "output"}],
+  "automation": [],
+  "intents": [],
+  "tempoMap": [{"sample": 0, "bpm": 120}, {"sample": 30000, "bpm": 90}],
+  "lfos": [{"id": "beat", "beatsPerCycle": 0.5, "waveform": "triangle"}],
+  "modulation": [{"source": "beat", "node": "level", "parameter": "gainDb", "depth": 4}]
+}

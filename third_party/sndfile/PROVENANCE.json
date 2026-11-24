@@ -1,0 +1,20 @@
+{
+  "project": "libsndfile",
+  "version": "1.2.2",
+  "license": "LGPL-2.1-or-later",
+  "included": "Official public C header and license; runtime library supplied separately",
+  "files": [
+    {
+      "path": "sndfile.h",
+      "url": "https://raw.githubusercontent.com/libsndfile/libsndfile/1.2.2/include/sndfile.h",
+      "bytes": 29558,
+      "sha256": "911098ea4b66f0c5ad59785b176f2b19f6e657042c15c93791edb53467efd6c0"
+    },
+    {
+      "path": "COPYING",
+      "url": "https://raw.githubusercontent.com/libsndfile/libsndfile/1.2.2/COPYING",
+      "bytes": 26518,
+      "sha256": "ad01ea5cd2755f6048383c8d54c88459cd6fcb17757c5c8892f8c5ea060f6140"
+    }
+  ]
+}

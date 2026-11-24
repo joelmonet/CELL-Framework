@@ -1,0 +1,11 @@
+# Causal pitch evidence
+
+`cell::pitch::Detector` reports mono or up to eight polyphonic pitch candidates, their confidence/amplitude, the observation window and the actual decision sample. Construct and prepare off the audio thread. Repeated `push()` calls use fixed history, fixed candidate/peak tables and a prepared transform; no workers, locks or sample-file reads are involved.
+
+The mono observer uses a normalized difference curve with frequency-dependent observed cycles and interpolation around the selected minimum. Poly analysis assigns independent spectral evidence to harmonic candidates, so explained overtones are not automatically additional notes. Observed peaks are matched with their actual harmonic orders through the 4 kHz analysis limit, including partials above order 12. Harmonic weights are prepared once. Ambiguous low spectra can request a longer observed window; clean higher notes retain the short onset path. Repeated configurations reuse the gate amplitude. A short starting window is allowed only for a sufficiently explained single source; chords require the full window. A recent-energy check avoids interpreting a cut-off tail as a fresh high note. Reduced-CPU mode uses a longer window/hop.
+
+These are pitch candidates, not general source separation, guitar-string identity or a guarantee of recognizing every chord. Low fundamentals, shared harmonics, unisons, distorted input, dense mixtures and transients need source-specific evaluation. The detector does not delay audio; its MIDI decision still requires causal observation time. Never backdate real-time note events or describe unchanged audio as zero-latency note detection.
+
+The product AUDIO/2/MIDI module adds note ownership, gating/release, MIDI/MPE conversion, channel allocation, expression and host/rack routing. MIDI/FX provides subsequent scale/harmony/transpose tools. These product components live in the full suite source, separately from this reusable evidence API.
+
+Generated-tone and chord tests are accuracy/causality regressions. Natural DI/vocal listening and comparative host/hardware latency remain separate measurements. Public GuitarCatcher documentation supplied feature/performance reference points, not code or a measured parity claim.

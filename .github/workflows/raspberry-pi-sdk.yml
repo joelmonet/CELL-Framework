@@ -1,0 +1,65 @@
+name: Cell Linux arm64 audio
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: free-audio/clap
+          ref: a47f6badb49d948fd009998f28309cdab78979c9
+          path: ci-clap
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: steinbergmedia/vst3sdk
+          ref: 3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96
+          path: ci-vst3
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: mackron/miniaudio
+          ref: f40cf03f80cdb7e741d43e53b7e706e8c1394bcf
+          path: ci-miniaudio
+          persist-credentials: false
+      - name: Install Linux audio headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lv2-dev ladspa-sdk dssi-dev libasound2-dev lilv-utils
+      - name: Package and build the ARM64 SDK and examples
+        run: |
+          python3 tools/package_framework.py . "$RUNNER_TEMP/cell-sdk.zip"
+          unzip -q "$RUNNER_TEMP/cell-sdk.zip" -d "$RUNNER_TEMP/cell-source"
+          cmake -S "$RUNNER_TEMP/cell-source/Cell-Framework/framework" -B "$RUNNER_TEMP/cell-build" \
+            -DCMAKE_BUILD_TYPE=Release -DCELL_SDK_EXAMPLES=ON -DCELL_SDK_TESTS=ON \
+            -DCELL_SDK_AUDIO_DEVICE=ON "-DCELL_MINIAUDIO_INCLUDE_DIR=$GITHUB_WORKSPACE/ci-miniaudio" \
+            -DCELL_GAIN_LV2_SDK=/usr -DCELL_GAIN_LADSPA_INCLUDE_DIR=/usr/include -DCELL_GAIN_DSSI=ON \
+            "-DCELL_GAIN_CLAP_SDK=$GITHUB_WORKSPACE/ci-clap" "-DCELL_GAIN_VST3_SDK=$GITHUB_WORKSPACE/ci-vst3" \
+            -DSMTG_CREATE_PLUGIN_LINK=OFF
+          cmake --build "$RUNNER_TEMP/cell-build" --parallel 3
+          cmake --install "$RUNNER_TEMP/cell-build" --prefix "$RUNNER_TEMP/cell-sdk"
+      - name: Exercise native plug-in and standalone audio paths
+        run: |
+          ctest --test-dir "$RUNNER_TEMP/cell-build" --output-on-failure --no-tests=error
+          mkdir "$RUNNER_TEMP/cell-lv2"
+          ln -s "$RUNNER_TEMP/cell-build/gain-example/CellGain_LV2.lv2" "$RUNNER_TEMP/cell-lv2/"
+          LV2_PATH="$RUNNER_TEMP/cell-lv2" lv2info https://example.com/cell/gain
+          printf 'pcm.!default { type null }\n' > "$RUNNER_TEMP/alsa-null.conf"
+          ALSA_CONFIG_PATH="$RUNNER_TEMP/alsa-null.conf" \
+            "$RUNNER_TEMP/cell-build/gain-example/cell_gain_standalone" tone alsa -6 1
+          ALSA_CONFIG_PATH="$RUNNER_TEMP/alsa-null.conf" \
+            "$RUNNER_TEMP/cell-build/gain-example/cell_gain_standalone" duplex alsa -18 1
+      - name: Load CLAP and VST3 from independent installed SDK hosts
+        run: |
+          cmake -S "$RUNNER_TEMP/cell-source/Cell-Framework/tests/sdk_transport_consumer" -B "$RUNNER_TEMP/cell-host" \
+            -DCMAKE_BUILD_TYPE=Release "-DCell_DIR=$RUNNER_TEMP/cell-sdk/lib/cmake/Cell" \
+            "-DCELL_TRANSPORT_CLAP_SDK=$GITHUB_WORKSPACE/ci-clap" "-DCELL_TRANSPORT_VST3_SDK=$GITHUB_WORKSPACE/ci-vst3"
+          cmake --build "$RUNNER_TEMP/cell-host" --parallel 3
+          ctest --test-dir "$RUNNER_TEMP/cell-host" --output-on-failure --no-tests=error

@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.24)
+project(CellTRGConsumer LANGUAGES CXX)
+find_package(Cell CONFIG REQUIRED COMPONENTS Core)
+add_executable(cell_sdk_trg_probe ../trg_tests.cpp)
+target_link_libraries(cell_sdk_trg_probe PRIVATE Cell::Core)
+enable_testing()
+add_test(NAME installed-trg COMMAND cell_sdk_trg_probe)

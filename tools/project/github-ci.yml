@@ -1,0 +1,28 @@
+name: Cell build and test
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build and install Cell
+        run: |
+          cmake -S vendor/Cell-Framework/framework -B build/cell -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{ runner.temp }}/cell-sdk"
+          cmake --build build/cell --config Release --parallel 2
+          cmake --install build/cell --config Release
+      - name: Build and test the processor and standalone renderer
+        run: |
+          cmake -S . -B build/project -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ runner.temp }}/cell-sdk" -DBUILD_TESTING=ON -DCELL_PROJECT_CLAP=OFF -DCELL_PROJECT_VST3=OFF -DCELL_PROJECT_LV2=OFF -DCELL_PROJECT_AU=OFF -DCELL_PROJECT_AUV3=OFF -DCELL_PROJECT_UI=OFF
+          cmake --build build/project --config Release --parallel 2
+          ctest --test-dir build/project -C Release --output-on-failure --no-tests=error

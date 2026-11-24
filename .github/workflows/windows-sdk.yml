@@ -1,0 +1,51 @@
+name: Cell Windows SDK
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-sdk:
+    runs-on: windows-2022
+    env:
+      CMAKE_GENERATOR: Visual Studio 17 2022
+      CMAKE_GENERATOR_PLATFORM: x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: free-audio/clap
+          ref: a47f6badb49d948fd009998f28309cdab78979c9
+          path: ci-clap
+          persist-credentials: false
+      # miniaudio 0.11.23 supplies the WASAPI backend.
+      - uses: actions/checkout@v4
+        with:
+          repository: mackron/miniaudio
+          ref: f40cf03f80cdb7e741d43e53b7e706e8c1394bcf
+          path: ci-miniaudio
+          persist-credentials: false
+      - name: Package and extract the standalone SDK source
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python tools/package_framework.py . "$env:RUNNER_TEMP/cell-sdk.zip"
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP/cell-sdk.zip" -DestinationPath "$env:RUNNER_TEMP/cell-source"
+      - name: Build and install the SDK with CLAP and live network audio
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cmake -S "$env:RUNNER_TEMP/cell-source/Cell-Framework/framework" -B "$env:RUNNER_TEMP/cell-build" -DCELL_SDK_EXAMPLES=ON -DCELL_SDK_TESTS=ON -DCELL_SDK_AUDIO_DEVICE=ON "-DCELL_MINIAUDIO_INCLUDE_DIR=$env:GITHUB_WORKSPACE/ci-miniaudio" "-DCELL_GAIN_CLAP_SDK=$env:GITHUB_WORKSPACE/ci-clap"
+          cmake --build "$env:RUNNER_TEMP/cell-build" --config Release --parallel 3
+          cmake --install "$env:RUNNER_TEMP/cell-build" --config Release --prefix "$env:RUNNER_TEMP/cell-sdk"
+      - name: Run native Windows file and pooled-reader contracts
+        run: |
+          ctest --test-dir "$env:RUNNER_TEMP/cell-build" -C Release --output-on-failure --no-tests=error -R "^cell_(file|pooled_file)$"
+      - name: Run Windows UDP network audio contracts
+        run: |
+          ctest --test-dir "$env:RUNNER_TEMP/cell-build" -C Release --output-on-failure --no-tests=error -R "^cell_network_audio(_loopback|_wave)?$"
+      - name: Build and run the installed SDK CLAP host probe
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          cmake -S "$env:RUNNER_TEMP/cell-source/Cell-Framework/tests/sdk_transport_consumer" -B "$env:RUNNER_TEMP/cell-host" "-DCell_DIR=$env:RUNNER_TEMP/cell-sdk/lib/cmake/Cell" "-DCELL_TRANSPORT_CLAP_SDK=$env:GITHUB_WORKSPACE/ci-clap"
+          cmake --build "$env:RUNNER_TEMP/cell-host" --config Release --parallel 3
+          ctest --test-dir "$env:RUNNER_TEMP/cell-host" -C Release --output-on-failure --no-tests=error -R "^transport_clap$"

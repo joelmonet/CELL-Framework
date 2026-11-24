@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+  <key>CFBundleIdentifier</key><string>@P_ID@</string>
+  <key>CFBundleName</key><string>@CELL_AU_NAME@</string>
+  <key>CFBundlePackageType</key><string>XPC!</string>
+  <key>CFBundleShortVersionString</key><string>@P_VERSION@</string>
+  <key>CFBundleVersion</key><string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+  @CELL_AUV3_EDITOR_PLIST@
+  <key>NSExtension</key>
+  <dict>
+    <key>NSExtensionPointIdentifier</key><string>@CELL_AUV3_EXTENSION_POINT@</string>
+    <key>NSExtensionPrincipalClass</key><string>@CELL_AUV3_PRINCIPAL_CLASS@</string>
+    <key>NSExtensionAttributes</key>
+    <dict>
+      <key>NSExtensionActivationRule</key><string>TRUEPREDICATE</string>
+      <key>NSExtensionServiceRoleType</key><string>NSExtensionServiceRoleTypeEditor</string>
+      <key>AudioComponents</key>
+      <array>
+        <dict>
+          <key>name</key><string>@CELL_AU_COMPANY@: @CELL_AU_NAME@</string>
+          <key>description</key><string>@CELL_AU_NAME@</string>
+          <key>manufacturer</key><string>@P_AU_MANUFACTURER@</string>
+          <key>subtype</key><string>@P_AU_SUBTYPE@</string>
+          <key>type</key><string>@P_AU_TYPE@</string>
+          <key>version</key><integer>@P_VERSION_CODE@</integer>
+          <key>sandboxSafe</key><true/>
+          <key>tags</key><array><string>@CELL_AUV3_CATEGORY@</string></array>
+        </dict>
+      </array>
+    </dict>
+  </dict>
+</dict>
+</plist>

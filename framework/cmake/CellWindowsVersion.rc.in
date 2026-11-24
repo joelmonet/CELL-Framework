@@ -1,0 +1,28 @@
+#include <windows.h>
+1 VERSIONINFO
+ FILEVERSION @CELL_PE_NUMERIC@
+ PRODUCTVERSION @CELL_PE_NUMERIC@
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE 0
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "040904B0"
+  BEGIN
+   VALUE "CompanyName", "@CELL_PE_COMPANY@\0"
+   VALUE "FileDescription", "@CELL_PE_NAME@\0"
+   VALUE "FileVersion", "@CELL_PE_VERSION@\0"
+   VALUE "InternalName", "@CELL_PE_NAME@\0"
+   VALUE "OriginalFilename", "@CELL_PE_BASENAME@\0"
+   VALUE "ProductName", "@CELL_PE_NAME@\0"
+   VALUE "ProductVersion", "@CELL_PE_VERSION@\0"
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x0409, 1200
+ END
+END

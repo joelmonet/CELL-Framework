@@ -1,0 +1,46 @@
+plugins {
+    id 'com.android.application' version '8.9.2'
+}
+
+def sdkRoot = providers.gradleProperty('cellSdkRoot')
+def editorDir = providers.gradleProperty('cellEditorDir')
+def appSettings = new Properties()
+appSettings.load(new StringReader(providers.fileContents(layout.projectDirectory.file('cell-app.properties')).asText.get()))
+def idFile = appSettings.getProperty('identityFile')
+def appId = idFile ? providers.fileContents(layout.projectDirectory.file(idFile)).asText.get().trim()
+                   : appSettings.getProperty('applicationId')
+
+android {
+    namespace 'org.cell.examples.designer'
+    compileSdk 35
+    ndkVersion '28.2.13676358'
+
+    defaultConfig {
+        applicationId appId
+        manifestPlaceholders = [appLabel: appSettings.getProperty('name')]
+        minSdk 28
+        targetSdk 35
+        versionCode Integer.parseInt(appSettings.getProperty('versionCode'))
+        versionName appSettings.getProperty('versionName')
+
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_shared'
+                if (sdkRoot.isPresent()) arguments "-DCELL_ANDROID_SDK_ROOT=${file(sdkRoot.get())}"
+                if (editorDir.isPresent()) arguments "-DCELL_ANDROID_EDITOR_DIR=${file(editorDir.get())}"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path appSettings.getProperty('nativeProject', 'CMakeLists.txt')
+            version '3.31.6'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}

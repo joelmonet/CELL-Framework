@@ -1,0 +1,17 @@
+{
+  "schema": "cell.graph.v1",
+  "sampleRate": 48000,
+  "nodes": [
+    { "id": "level", "type": "gain", "gainDb": -3 },
+    { "id": "tone", "type": "lowpass", "brightness": 0.45, "minHz": 200, "maxHz": 12000 }
+  ],
+  "connections": [
+    { "from": "input", "to": "level" },
+    { "from": "level", "to": "tone" },
+    { "from": "tone", "to": "output" }
+  ],
+  "automation": [
+    { "sample": 24000, "node": "tone", "parameter": "brightness", "value": 0.8 },
+    { "sample": 48000, "node": "level", "parameter": "gainDb", "value": -9 }
+  ]
+}

@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.24)
+project(CellAudioConsumer LANGUAGES CXX)
+find_package(Cell CONFIG REQUIRED COMPONENTS Core AudioDevice)
+add_executable(cell_sdk_audio_probe main.cpp)
+target_link_libraries(cell_sdk_audio_probe PRIVATE Cell::AudioDevice)

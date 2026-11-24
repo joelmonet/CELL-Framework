@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.24)
+project(CellPooledFileConsumer LANGUAGES CXX)
+find_package(Cell CONFIG REQUIRED COMPONENTS Core)
+add_executable(cell_sdk_pooled_file_probe ../pooled_file_tests.cpp)
+target_link_libraries(cell_sdk_pooled_file_probe PRIVATE Cell::Core)
+enable_testing()
+add_test(NAME installed-pooled-file COMMAND cell_sdk_pooled_file_probe)

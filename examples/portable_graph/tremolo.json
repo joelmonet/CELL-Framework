@@ -1,0 +1,23 @@
+{
+  "schema": "cell.graph.v3",
+  "sampleRate": 48000,
+  "nodes": [
+    { "id": "pulse", "type": "tremolo", "rateHz": 5, "depth": 0 }
+  ],
+  "connections": [
+    { "from": "input", "to": "pulse" },
+    { "from": "pulse", "to": "output" }
+  ],
+  "intents": [
+    {
+      "id": "motion",
+      "name": "Motion",
+      "bindings": [
+        { "node": "pulse", "parameter": "depth", "atZero": 0, "atOne": 1 }
+      ]
+    }
+  ],
+  "automation": [
+    { "sample": 12000, "intent": "motion", "value": 0.6 }
+  ]
+}

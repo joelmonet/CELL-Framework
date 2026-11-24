@@ -1,0 +1,14 @@
+{
+  "schema": "cell.graph.v4",
+  "sampleRate": 48000,
+  "listenerYaw": 15,
+  "speakerLayout": [0, 90, 180, -90],
+  "nodes": [
+    {"id": "source", "type": "azimuth", "source": 0, "azimuth": -45, "azimuthCurve": "shortestArc"}
+  ],
+  "connections": [{"from": "input", "to": "source"}, {"from": "source", "to": "output"}],
+  "automation": [{"sample": 48000, "node": "source", "parameter": "azimuth", "value": 45}],
+  "intents": [],
+  "lfos": [{"id": "orbit", "rateHz": 2, "waveform": "triangle"}],
+  "modulation": [{"source": "orbit", "node": "source", "parameter": "azimuth", "depth": 75}]
+}

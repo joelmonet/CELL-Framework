@@ -1,0 +1,24 @@
+{
+  "schema": "cell.graph.v3",
+  "sampleRate": 48000,
+  "nodes": [
+    { "id": "foreground", "type": "pan", "source": 0, "pan": -0.8 }
+  ],
+  "connections": [
+    { "from": "input", "to": "foreground" },
+    { "from": "foreground", "to": "output" }
+  ],
+  "intents": [
+    {
+      "id": "position",
+      "name": "Stereo position",
+      "bindings": [
+        { "node": "foreground", "parameter": "pan", "atZero": -0.8, "atOne": 0.8 }
+      ]
+    }
+  ],
+  "automation": [
+    { "sample": 24000, "intent": "position", "value": 1 },
+    { "sample": 48000, "intent": "position", "value": 0.5 }
+  ]
+}

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cell Graph Editor</title>
+<style>
+:root{color-scheme:dark;--bg:#101715;--panel:#192320;--well:#111916;--line:#34463e;--text:#f0f5ed;--muted:#a8bcb0;--accent:#cef487;--error:#ffb7a8}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,sans-serif}
+main{max-width:1120px;margin:auto;padding:clamp(18px,4vw,54px)}header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:22px}
+h1,h2,p{margin:0}h1{font-size:clamp(27px,4vw,38px);letter-spacing:-.04em}h2{font-size:19px}small,.muted{color:var(--muted)}
+.actions{display:flex;gap:8px;flex-wrap:wrap}button,select,input[type=number]{font:inherit;color:inherit;background:var(--well);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+button{cursor:pointer}button.primary{background:var(--accent);color:#17210e;border-color:var(--accent);font-weight:650}button:disabled{opacity:.55;cursor:default}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px}input[type=range]{width:100%;accent-color:var(--accent)}[hidden]{display:none!important}
+#status{min-height:52px;padding:14px 0;color:var(--muted)}#status[data-error]{color:var(--error)}
+section{padding:20px;border:1px solid var(--line);background:var(--panel);border-radius:14px}
+#workspace{display:grid;grid-template-columns:minmax(235px,1fr) minmax(0,1.75fr);gap:16px}
+#sources{display:grid;gap:8px;margin:14px 0}#sources button{text-align:left;display:flex;justify-content:space-between;gap:8px;overflow-wrap:anywhere}
+#sources button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}#preview{width:100%;height:110px;background:var(--well);border-radius:8px;display:block}
+#source-detail{display:grid;gap:8px;margin-top:12px}#source-detail label{display:grid;gap:3px}#tempo{margin-top:16px}#tempo summary{cursor:pointer}#tempo-points{max-height:220px;overflow:auto;font-variant-numeric:tabular-nums;margin:8px 0}
+.tempo-row{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) auto;gap:6px;align-items:end;margin:6px 0}
+.tempo-row label{display:grid;gap:2px;color:var(--muted);font-size:13px}
+.tempo-row input{width:100%;min-width:0;padding:6px;color:var(--text)}
+.tempo-row button{font-size:13px;padding:6px}
+.automation-point-actions{display:flex;gap:6px;flex-wrap:wrap}
+@media(max-width:480px){#automation-points .tempo-row{grid-template-columns:repeat(2,minmax(0,1fr))}.automation-point-actions{grid-column:1/-1}}
+.route{border-bottom:1px solid var(--line);padding:14px 0;display:grid;gap:8px}.route:last-child{border:0}.route h3{margin:0;font-size:15px;overflow-wrap:anywhere}.route-controls{display:grid;grid-template-columns:minmax(58px,1fr) 95px 48px;align-items:center;gap:9px}
+.route-controls input[type=number]{width:100%;padding:5px 7px;font-variant-numeric:tabular-nums}.route-unit{color:var(--muted);font-size:13px}.empty{color:var(--muted);padding:14px 0}
+#audition,#automation{margin-top:16px}#automation-points{max-height:280px;overflow:auto}
+.timeline-point-controls.timeline-toolbar{margin:0;justify-content:flex-start}
+.timeline-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:12px 0 6px;flex-wrap:wrap}
+#timeline-nav{display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin:0 0 8px}
+#timeline-nav label{display:grid;gap:2px;font-size:13px}#timeline-start{max-width:16ch}
+#automation-timeline{display:block;width:100%;height:150px;background:var(--well);border-radius:8px;cursor:crosshair;touch-action:none}.audition-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
+#audio-name{overflow-wrap:anywhere}#player{width:100%;margin-top:8px}a{color:var(--accent)}
+#audition-status[data-error]{color:var(--error)}
+#audition button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+.route-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:8px;align-items:end;margin-top:12px}
+.route-form label,.source-form label{display:grid;gap:3px;color:var(--muted);font-size:13px}
+.route-form input,.route-form select,.source-form input{width:100%;min-width:0;color:var(--text);font:inherit;background:var(--well);border:1px solid var(--line);border-radius:8px;padding:8px}
+.source-form,.route-title{display:flex;gap:8px;align-items:end;justify-content:space-between}.source-form label{min-width:0;flex:1}
+.route-title{align-items:center}.route-title button,#remove-lfo{font-size:13px}
+@media(max-width:660px){#workspace{grid-template-columns:1fr}.route-form{grid-template-columns:repeat(2,minmax(0,1fr))}section{padding:16px}}
+</style>
+<script src="editor.js" defer></script>
+</head>
+<body>
+<main>
+<header>
+<div><small>Cell SDK</small><h1>Graph Editor</h1></div>
+<div class="actions">
+<button id="example" type="button">Load example</button>
+<button id="open" class="primary" type="button">Open graph</button>
+<input id="file" type="file" accept=".json,application/json" hidden>
+<button id="undo" type="button" disabled>Undo</button>
+<button id="redo" type="button" disabled>Redo</button>
+<button id="revert" type="button" disabled>Revert edits</button>
+<button id="save" type="button" disabled>Save copy</button>
+<button id="save-project" type="button" hidden disabled>Save project</button>
+</div>
+</header>
+<p id="status" role="status" aria-live="polite">Open a v4 graph JSON file or load the example.</p>
+<div id="workspace" hidden>
+<section aria-labelledby="source-heading">
+<h2 id="source-heading">LFO sources</h2>
+<div id="sources"></div>
+<form id="add-lfo" class="source-form">
+<label>New LFO ID<input id="lfo-id" type="text" maxlength="64" required></label>
+<button type="submit">Add LFO</button>
+</form>
+<canvas id="preview" role="img" aria-label="One cycle of the selected LFO"></canvas>
+<div id="source-detail">
+<label for="lfo-clock">Clock<select id="lfo-clock"><option value="hz">Free-running</option><option value="map">Saved tempo map</option><option value="host">Host transport</option></select></label>
+<label for="lfo-rate"><span id="lfo-rate-label">Rate in Hz</span><input id="lfo-rate" type="number" step="any"></label>
+<label for="waveform">Waveform<select id="waveform"><option>sine</option><option>triangle</option><option>square</option></select></label>
+<label for="phase">Phase in cycles<input type="number" id="phase" min="0" max="1" step="any"></label>
+<button id="remove-lfo" type="button">Remove LFO</button>
+</div>
+<details id="tempo"><summary>Saved tempo map</summary>
+<div id="tempo-points"></div>
+<button id="create-map" type="button">Create tempo map</button>
+<form id="add-tempo" class="tempo-row" hidden>
+<label>New sample<input id="tempo-sample" type="number" min="1" max="9007199254740991" step="1" required></label>
+<label>New BPM<input id="tempo-bpm" type="number" min="1" max="1000" step="any" value="120" required></label>
+<button type="submit">Add</button>
+</form>
+</details>
+</section>
+<section aria-labelledby="route-heading">
+<h2 id="route-heading">Modulation routes</h2>
+<p class="muted">Depth is added to each target’s base value.</p>
+<div id="routes"></div>
+<form id="add-route" class="route-form">
+<label>Route source<select id="route-source" required></select></label>
+<label>Route target<select id="route-target" required></select></label>
+<label>New route depth<input id="route-depth" type="number" value="0" step="any" required></label>
+<button type="submit">Add route</button>
+</form>
+</section>
+</div>
+<section id="automation" aria-labelledby="automation-heading" hidden>
+<h2 id="automation-heading">Parameter automation</h2>
+<form id="add-automation" class="route-form">
+<label>Automation target<select id="automation-target"></select></label>
+<label>Automation sample<input id="automation-sample" type="number" min="0" max="9007199254740991" step="1" required></label>
+<label>Automation value<input id="automation-value" type="number" step="any" required></label>
+<button type="submit">Add point</button>
+</form>
+<div class="timeline-toolbar">
+<p class="muted">Drag a point to edit it, or click the timeline to set the next point’s sample.</p>
+<div class="timeline-toolbar timeline-point-controls">
+<button id="timeline-prev-point" type="button" disabled>Previous point</button>
+<button id="timeline-next-point" type="button" disabled>Next point</button>
+</div>
+<label>Timeline range <select id="timeline-range">
+<option value="fit">Fit points</option>
+<option value="0.25">250 ms</option>
+<option value="1">1 second</option>
+<option value="4">4 seconds</option>
+<option value="16">16 seconds</option>
+</select></label>
+</div>
+<div id="timeline-nav" hidden>
+<button id="timeline-back" type="button">Previous window</button>
+<label>Start sample<input id="timeline-start" type="number" value="0" min="0" step="1"></label>
+<button id="timeline-forward" type="button">Next window</button>
+</div>
+<canvas id="automation-timeline" tabindex="-1" role="img" aria-label="Saved automation points by sample and value" aria-describedby="timeline-guide"></canvas>
+<p id="timeline-guide" class="muted">Dashed lines connect points in sample order. Use Audio audition to hear Cell’s rendered automation.</p>
+<div class="timeline-toolbar">
+<label><input id="automation-window-only" type="checkbox"> Show points in timeline window</label>
+<span id="automation-count" class="muted" role="status"></span>
+</div>
+<div id="automation-points"></div>
+</section>
+<section id="audition" aria-labelledby="audition-heading" hidden>
+<h2 id="audition-heading">Audio audition</h2>
+<div class="audition-row">
+<button id="choose-wave" type="button">Choose WAV</button>
+<input id="wave-file" type="file" accept=".wav,.wave,audio/wav" hidden>
+<span id="audio-name" class="muted">No WAV selected</span>
+<button id="render-wave" class="primary" type="button" disabled>Render preview</button>
+</div>
+<p id="audition-status" class="muted" role="status">Choose a WAV at the graph’s sample rate.</p>
+<div class="audition-row">
+<button id="pin-a" type="button" disabled>Pin current as A</button>
+<div id="compare" class="actions" role="group" aria-label="Compare renders" hidden>
+<button id="listen-a" type="button" aria-pressed="false">Listen A</button>
+<button id="listen-b" type="button" aria-pressed="false">Listen B</button>
+</div>
+</div>
+<audio id="player" controls preload="metadata" aria-label="Rendered graph audio" hidden></audio>
+<a id="download-wave" hidden>Save rendered WAV</a>
+</section>
+</main>
+</body>
+</html>

@@ -1,0 +1,29 @@
+{
+  "schema": "cell.graph.v3",
+  "sampleRate": 48000,
+  "nodes": [
+    { "id": "dry", "type": "gain", "gainDb": -6 },
+    { "id": "color", "type": "saturator", "driveDb": 6, "oversampling": 4 },
+    { "id": "wet", "type": "gain", "gainDb": -12 }
+  ],
+  "connections": [
+    { "from": "input", "to": "dry" },
+    { "from": "input", "to": "color" },
+    { "from": "color", "to": "wet" },
+    { "from": "dry", "to": "output" },
+    { "from": "wet", "to": "output" }
+  ],
+  "intents": [
+    {
+      "id": "heat",
+      "name": "Heat",
+      "bindings": [
+        { "node": "color", "parameter": "driveDb", "atZero": 6, "atOne": 24 },
+        { "node": "wet", "parameter": "gainDb", "atZero": -12, "atOne": -18 }
+      ]
+    }
+  ],
+  "automation": [
+    { "sample": 24000, "intent": "heat", "value": 0.65 }
+  ]
+}

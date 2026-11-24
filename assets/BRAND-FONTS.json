@@ -1,0 +1,23 @@
+[
+  {
+    "family": "Rajdhani",
+    "asset": "Rajdhani-SemiBold.ttf",
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/rajdhani/Rajdhani-SemiBold.ttf",
+    "license_source": "https://raw.githubusercontent.com/google/fonts/main/ofl/rajdhani/OFL.txt",
+    "sha256": "94bbd25a18ca665999feb05a537de9fd2b860dcfb78bbe9ca00270825bf235da",
+    "license": "SIL Open Font License 1.1",
+    "modified": false
+  },
+  {
+    "family": "Cell Brand Grotesk",
+    "asset": "CellBrandGrotesk-SemiBold.ttf",
+    "source_family": "Space Grotesk",
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/spacegrotesk/SpaceGrotesk%5Bwght%5D.ttf",
+    "license_source": "https://raw.githubusercontent.com/google/fonts/main/ofl/spacegrotesk/OFL.txt",
+    "source_sha256": "acad6de1fc93436f5c0f1f4137751ef04f1aea3063e7036535970ffcfbd79f72",
+    "sha256": "abea6a2a22e9f714146ff728cf957c6d9b8d5847f7844669b22890be89fccab0",
+    "license": "SIL Open Font License 1.1",
+    "modified": true,
+    "modification": "Static weight600 instance generated with fontTools; renamed Cell Brand Grotesk, retaining original copyright and OFL."
+  }
+]

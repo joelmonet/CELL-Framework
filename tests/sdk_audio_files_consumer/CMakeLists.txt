@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.24)
+project(CellAudioFilesConsumer LANGUAGES CXX)
+find_package(Cell CONFIG REQUIRED COMPONENTS Core AudioFiles)
+add_executable(cell_sdk_audio_files_probe main.cpp)
+target_link_libraries(cell_sdk_audio_files_probe PRIVATE Cell::AudioFiles)
+enable_testing()
+add_test(NAME installed-audio-files COMMAND cell_sdk_audio_files_probe)

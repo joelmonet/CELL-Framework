@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.24)
+project(CellControlGallery LANGUAGES CXX)
+if(NOT TARGET Cell::UI)
+    find_package(Cell CONFIG REQUIRED COMPONENTS Core DSP UI)
+endif()
+add_executable(cell_control_gallery gallery.cpp)
+target_link_libraries(cell_control_gallery PRIVATE Cell::UI Cell::DSP)

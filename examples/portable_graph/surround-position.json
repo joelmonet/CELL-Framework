@@ -1,0 +1,24 @@
+{
+  "schema": "cell.graph.v3",
+  "sampleRate": 48000,
+  "nodes": [
+    { "id": "foreground", "type": "azimuth", "source": 0, "azimuth": 170, "speakers": [-30, 30, 0, null, -110, 110] }
+  ],
+  "connections": [
+    { "from": "input", "to": "foreground" },
+    { "from": "foreground", "to": "output" }
+  ],
+  "intents": [
+    {
+      "id": "position",
+      "name": "Surround position",
+      "bindings": [
+        { "node": "foreground", "parameter": "azimuth", "atZero": 170, "atOne": -170, "interpolation": "shortestArc" }
+      ]
+    }
+  ],
+  "automation": [
+    { "sample": 12000, "intent": "position", "value": 0.5 },
+    { "sample": 24000, "intent": "position", "value": 1 }
+  ]
+}
