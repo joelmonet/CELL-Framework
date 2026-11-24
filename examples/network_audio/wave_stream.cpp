@@ -423,6 +423,7 @@ bool receiveSession(UdpSocket& socket, StereoReceiver& receiver, std::uint64_t f
 #ifdef CELL_NETWORK_AUDIO_DEVICE
         if (live && stopRequested.load(std::memory_order_relaxed)) break;
 #endif
+        const auto receiveStarted = Clock::now();
         // Let packets already waiting in the socket fill gaps before concealment.
         // Bound the batch so a busy peer cannot starve playout or stop handling.
         for (int index = 0; index < maxReceiveBatch; ++index) {
@@ -479,7 +480,10 @@ bool receiveSession(UdpSocket& socket, StereoReceiver& receiver, std::uint64_t f
             std::cout << "}\n" << std::flush;
         }
 #endif
-        const auto now = Clock::now();
+        // Playout may only advance through the receive turn we just serviced.
+        // If the process was descheduled after polling, drain the newly queued
+        // packets on the next turn before advancing to the current wall clock.
+        const auto now = std::max(receiveStarted, lastAccepted);
         if (!anchor) {
             if (!continuous && now >= startupTimeout)
                 throw std::runtime_error("No admissible packets within 10 seconds");
