@@ -1,5 +1,7 @@
 # Cell Framework
 
+[SDK session compatibility and release guarantees](framework/SESSION-COMPATIBILITY.md)
+
 Cell is a C++20 SDK for audio plug-ins and standalone music software. It
 provides audio processing, sample-timed parameters and MIDI, state recall,
 portable audio graphs, and optional native and WebView editors.

@@ -688,4 +688,5 @@ install(DIRECTORY "${android_template_source}/src/main/" DESTINATION "${CELL_CLI
 set(android_default_editor "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/auv3_gain")
 install(FILES "${android_default_editor}/Cell Gain Editor.html" "${android_default_editor}/cell-ui-bindings.hpp"
     DESTINATION "${CELL_CLI_TEMPLATE_DIR}/android/default-editor")
-install(FILES "${CMAKE_CURRENT_LIST_DIR}/PROJECT-GENERATOR.md" DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/docs")
+install(FILES "${CMAKE_CURRENT_LIST_DIR}/PROJECT-GENERATOR.md" "${CMAKE_CURRENT_LIST_DIR}/SESSION-COMPATIBILITY.md"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/docs")

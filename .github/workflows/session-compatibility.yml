@@ -1,0 +1,153 @@
+name: Cell session compatibility
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.pin.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the previous release pin
+        id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          pin = json.loads(Path("tests/session_compatibility/baseline.json").read_text())
+          commit, release = pin["commit"], pin["release"]
+          if not re.fullmatch(r"[0-9a-f]{40}", commit):
+              raise SystemExit("The compatibility baseline must be an immutable Git commit.")
+          subprocess.run(["git", "merge-base", "--is-ancestor", commit, "HEAD"], check=True)
+          if subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() == commit:
+              raise SystemExit("The candidate must be newer than its compatibility baseline.")
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          releases = json.loads(subprocess.check_output(
+              ["gh", "api", "--paginate", "--slurp", f"repos/{repo}/releases?per_page=100"], text=True))
+          published = [item for page in releases for item in page if not item["draft"] and not item["prerelease"]]
+          candidate_tag = os.environ["GITHUB_REF_NAME"] if os.environ["GITHUB_REF_TYPE"] == "tag" else None
+          previous = max((item for item in published if item["tag_name"] != candidate_tag),
+                         key=lambda item: item["published_at"], default=None)
+          if release != (previous["tag_name"] if previous else None):
+              raise SystemExit("Update baseline.json to the previous published stable release.")
+          if release and subprocess.check_output(
+                  ["git", "rev-parse", f"refs/tags/{release}^{{commit}}"], text=True).strip() != commit:
+              raise SystemExit("The published release tag does not match the pinned commit.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"commit={commit}", file=output)
+          PY
+
+  qualify:
+    name: Session compatibility (${{ matrix.platform }})
+    needs: baseline
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, platform: linux-x64 }
+          - { runner: ubuntu-24.04-arm, platform: linux-arm64 }
+          - { runner: windows-2022, platform: windows-x64 }
+          - { runner: macos-15, platform: macos-arm64 }
+          - { runner: macos-15-intel, platform: macos-x64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.baseline.outputs.commit }}
+          path: previous
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: free-audio/clap
+          ref: a47f6badb49d948fd009998f28309cdab78979c9
+          path: clap
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: fastfloat/fast_float
+          ref: 01ce95dfe46abccf3264fbccf9f5139ea9016cd2
+          path: fast-float
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Save in the previous build and reopen in the candidate
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          python candidate/tests/session_compatibility/qualify.py \
+            --previous previous --candidate candidate --clap clap --fast-float fast-float \
+            --platform "$PLATFORM" --output "$RUNNER_TEMP/session-compatibility"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: session-reference-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/session-compatibility/cell-session-reference-*.zip
+            ${{ runner.temp }}/session-compatibility/report.json
+          if-no-files-found: error
+
+  session-compatibility:
+    name: session-compatibility
+    if: always()
+    needs: [baseline, qualify]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every native compatibility job
+        env:
+          BASELINE: ${{ needs.baseline.result }}
+          MATRIX: ${{ needs.qualify.result }}
+        run: test "$BASELINE" = success && test "$MATRIX" = success
+
+  signed-reference-builds:
+    name: Signed reference builds
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: session-compatibility
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: session-reference-*
+          path: references
+      - name: Verify package inventory
+        shell: bash
+        run: |
+          for platform in linux-x64 linux-arm64 windows-x64 macos-arm64 macos-x64; do
+            test -s "references/session-reference-$platform/cell-session-reference-$platform.zip"
+          done
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: references/session-reference-*/cell-session-reference-*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-session-reference-builds
+          path: references/session-reference-*/cell-session-reference-*.zip
+          if-no-files-found: error
