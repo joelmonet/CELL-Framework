@@ -143,12 +143,23 @@ jobs:
         if: matrix.sdk == 'macosx'
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/cell-results" "$HOME/Library/Audio/Plug-Ins/Components"
-          component="$HOME/Library/Audio/Plug-Ins/Components/Cell Gain Example.component"
-          ditto "$RUNNER_TEMP/cell-build/gain-example/Release/Cell Gain Example.component" "$component"
-          codesign --force --sign - "$component"
+          mkdir -p "$RUNNER_TEMP/cell-results"
+          staging="$RUNNER_TEMP/Cell Gain Example.component"
+          ditto "$RUNNER_TEMP/cell-build/gain-example/Release/Cell Gain Example.component" "$staging"
+          codesign --force --sign - "$staging"
+          codesign --verify --strict "$staging"
+
+          # Install a signed bundle in the shared component directory on this
+          # runner and query Core Audio from the logged-in user's session.
+          install_dir="/Library/Audio/Plug-Ins/Components"
+          component="$install_dir/Cell Gain Example.component"
+          sudo mkdir -p "$install_dir"
+          sudo ditto "$staging" "$component"
           codesign --verify --strict "$component"
-          killall -u "$(id -un)" AudioComponentRegistrar 2>/dev/null || true
+          registrar="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+          "$registrar" -f "$component" || true
+          sudo killall -9 AudioComponentRegistrar 2>/dev/null || true
+          gui=(sudo launchctl asuser "$(id -u)" sudo -u "$(id -un)")
           report_failure() {
             local detail
             detail=$(tail -n 45 "$2")
@@ -161,7 +172,7 @@ jobs:
           registry="$RUNNER_TEMP/cell-results/au-registration.txt"
           registered=0
           for ((attempt = 0; attempt < 30; ++attempt)); do
-            if auval -a > "$registry" 2>&1 &&
+            if "${gui[@]}" /usr/bin/auval -a > "$registry" 2>&1 &&
               awk '$1 == "aufx" && $2 == "CGan" && $3 == "Cell" { found = 1 } END { exit !found }' "$registry"; then
               registered=1
               break
@@ -170,17 +181,19 @@ jobs:
           done
           if [[ "$registered" == 0 ]]; then
             plutil -p "$component/Contents/Info.plist"
+            log show --last 2m --style compact --info \
+              --predicate 'process == "AudioComponentRegistrar" AND eventMessage CONTAINS[c] "Cell Gain"' || true
             report_failure "AUv2 component registration failed" "$registry"
           fi
           result=0
           validation="$RUNNER_TEMP/cell-results/auval.txt"
-          if ! auval -v aufx CGan Cell 2>&1 | tee "$validation" ||
+          if ! "${gui[@]}" /usr/bin/auval -v aufx CGan Cell 2>&1 | tee "$validation" ||
             ! grep -q 'AU VALIDATION SUCCEEDED' "$validation"; then
             report_failure "AUv2 validation failed" "$validation"
             result=1
           fi
           render="$RUNNER_TEMP/cell-results/au-render.txt"
-          if ! "$RUNNER_TEMP/cell-build/gain-example/Release/cell_au_gain_host" 2>&1 | tee "$render"; then
+          if ! "${gui[@]}" "$RUNNER_TEMP/cell-build/gain-example/Release/cell_au_gain_host" 2>&1 | tee "$render"; then
             report_failure "AUv2 render failed" "$render"
             result=1
           fi

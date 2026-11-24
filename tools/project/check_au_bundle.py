@@ -47,6 +47,9 @@ def check_auv3(app, extension_name, identity, bundle_id, version, version_code, 
     extension = contents / "PlugIns" / extension_name
     contents = extension / "Contents" if macos else extension
     plist = read_bundle(contents, contents / "MacOS" if macos else contents, extension_id, "XPC!", version)
+    display_name = plist.get("CFBundleDisplayName")
+    if not isinstance(display_name, str) or not display_name.strip():
+        raise ValueError("Missing AUv3 extension display name")
     registration = plist.get("NSExtension")
     if not isinstance(registration, dict) or not isinstance(registration.get("NSExtensionAttributes"), dict):
         raise ValueError("Missing AUv3 extension attributes")

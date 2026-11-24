@@ -5,6 +5,7 @@
   <key>CFBundleExecutable</key><string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
   <key>CFBundleIdentifier</key><string>@P_ID@</string>
   <key>CFBundleName</key><string>@CELL_AU_NAME@</string>
+  <key>CFBundleDisplayName</key><string>@CELL_AU_NAME@</string>
   <key>CFBundlePackageType</key><string>XPC!</string>
   <key>CFBundleShortVersionString</key><string>@P_VERSION@</string>
   <key>CFBundleVersion</key><string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>

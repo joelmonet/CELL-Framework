@@ -3,6 +3,7 @@
 #include <cell/file.hpp>
 #include <cell/files.hpp>
 #include <cell/uuid.hpp>
+#include <algorithm>
 #include <iostream>
 namespace {void need(bool value,const char*message){if(!value)throw std::runtime_error(message);}}
 int main(){cell::File root;try{
@@ -35,7 +36,19 @@ int main(){cell::File root;try{
     const auto sparse=root.getChildFile("beyond-4GiB.bin");constexpr std::int64_t position=(INT64_C(5)<<30)+123;
     {cell::FileOutputStream output(sparse,cellTest::prepareSparseFixture(sparse));need(output.openedOk()&&output.setPosition(position)&&output.writeInt(0x78563412),"64-bit buffered output seek/write failed");output.flush();need(output.getStatus().wasOk()&&output.getPosition()==position+4,"64-bit output position or flush failed");}
     {cell::FileInputStream input(sparse);std::array<std::byte,4>bytes{};need(input.openedOk()&&input.getTotalLength()==position+4&&input.setPosition(position)&&input.readFully(bytes)&&bytes[0]==std::byte{0x12}&&bytes[3]==std::byte{0x78},"64-bit native read used a narrowed offset");need(input.isExhausted()&&input.setPosition(0)&&input.readFully(bytes)&&bytes[0]==std::byte{}&&!input.isExhausted(),"Sparse holes or EOF/seek state changed");}
-    const auto utf16=root.getChildFile("utf16.txt");const std::u16string text=u"声 🎙";std::vector<std::byte>encoded{std::byte{0xff},std::byte{0xfe}};for(auto unit:text){encoded.push_back(std::byte(unit&255));encoded.push_back(std::byte(unit>>8));}need(utf16.replaceWithData(encoded.data(),encoded.size())&&utf16.loadFileAsString()==cell::Text::fromUTF8(u8"声 🎙"),"UTF-16 import lost supplementary characters");
+    const auto utf16 = root.getChildFile("utf16.txt");
+    const std::u16string text = u"\u58f0 \U0001f399";
+    std::vector<std::byte> encoded{std::byte{0xff}, std::byte{0xfe}};
+    for (auto unit : text) {
+        encoded.push_back(std::byte(unit & 255));
+        encoded.push_back(std::byte(unit >> 8));
+    }
+    need(utf16.replaceWithData(encoded.data(), encoded.size()), "Could not publish UTF-16 fixture");
+    cell::ByteBlock storedUtf16;
+    need(utf16.loadFileAsData(storedUtf16) && std::ranges::equal(storedUtf16.bytes(), encoded),
+         "The UTF-16 fixture did not persist its original bytes");
+    need(utf16.loadFileAsString() == cell::Text::fromUTF8(u8"\u58f0 \U0001f399"),
+         "UTF-16 import lost supplementary characters");
     const auto directory=root.getChildFile("folder/inner");need(directory.createDirectory().wasOk(),"Could not create symlink test layout");need(root.getChildFile("folder/marker").replaceWithText("right")&&root.getChildFile("marker").replaceWithText("wrong"),"Could not create path markers");std::error_code error;std::filesystem::create_directory_symlink(directory.nativePath(),root.getChildFile("link").nativePath(),error);if(!error)need(root.getChildFile("link/../marker").loadFileAsString()=="right","Lexical normalization selected a different symlink target");
     need(cell::File::createLegalFileName(cell::Text::fromUTF8(u8"声/é?.wav"))==cell::Text::fromUTF8(u8"声é.wav")&&cell::File::createLegalFileName("CON.txt")=="_CON.txt","Portable filename sanitization corrupted Unicode or reserved names");
     need(cell::File::getSpecialLocation(cell::File::currentExecutableFile).existsAsFile()&&cell::File::getSpecialLocation(cell::File::currentModuleFile).existsAsFile(),"Native executable/module discovery failed");
