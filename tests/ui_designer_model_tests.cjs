@@ -77,6 +77,23 @@ assert.deepEqual(model.findGroupPlacement(pattern, [obstacle], model.phoneGrid),
     [{x:1, y:0, width:1, height:1}, {x:3, y:0, width:1, height:1}]);
 assert.equal(model.findGroupPlacement(pattern, [{x:0, y:0, width:12, height:8}], model.wideGrid), null);
 
+const fractionalPattern = [{x:0.5, y:0.25, width:1, height:1}, {x:2.25, y:0.75, width:1, height:1}];
+assert.deepEqual(model.findGroupPlacement(fractionalPattern, [fractionalPattern[0]], model.phoneGrid),
+    [{x:0, y:2, width:1, height:1}, {x:1.75, y:2.5, width:1, height:1}]);
+assert.equal(model.findGroupPlacement(fractionalPattern, [{x:0, y:0, width:12, height:8}], model.wideGrid), null);
+assert.deepEqual(model.distributeBoxes([obstacle, {...obstacle, x:2}, {...obstacle, x:4.5}], "x").map(box => box.x), [0, 2.25, 4.5]);
+const tilted = {...project.controls[1], x:2.5, y:0.25, rotation:337.5, detentLabels:["A", "", "C"],
+    phone:{x:0.5, y:1.25, width:3, height:2}};
+const tiltedLayout = model.readProject(model.serialize([tilted], project.theme, null));
+assert.deepEqual(tiltedLayout.controls, [{...tilted, rotation: -22.5}]);
+assert.deepEqual(model.readClipboard(model.writeClipboard(tiltedLayout.controls)), tiltedLayout.controls);
+assert.deepEqual(model.phonePlacements(tiltedLayout.controls), [tilted.phone]);
+assert.throws(() => model.readClipboard(model.writeClipboard([{...tilted, rotation:"22"}])), /finite rotation/);
+assert.throws(() => model.readClipboard(model.writeClipboard([{...tilted, x:"2.5"}])), /Invalid settings/);
+assert.throws(() => model.readClipboard(model.writeClipboard([{...tilted, width:1.5}])), /Invalid settings/);
+assert.throws(() => model.readClipboard(model.writeClipboard([{...tilted, detentLabels:["", " "]}])), /detent labels/);
+assert.throws(() => model.readClipboard(model.writeClipboard([{...tilted, kind:"slider"}])), /Invalid settings/);
+
 const clipboard = model.writeClipboard([project.controls[2], project.controls[1]]);
 assert.equal(JSON.parse(clipboard).schema, "cell.ui-controls.v1");
 assert.deepEqual(model.readClipboard(clipboard), [project.controls[2], project.controls[1]]);
@@ -100,6 +117,12 @@ const stepped = {key:"program", minimum:0, maximum:11, step:1, choices:[]};
 assert.equal(model.stepCount(stepped), 11);
 assert.equal(model.stepCount({...stepped, maximum:2.8, step:1}), 3);
 assert.equal(model.stepCount({...stepped, step:0}), 0);
+const legends = {...tilted, label:"Mode", key:"program"};
+assert.deepEqual(model.bindingIssues([legends], [{...stepped, maximum:2}]), []);
+assert.deepEqual(model.bindingIssues([legends], [stepped]), ["Mode: supply one detent label for each of the 12 values"]);
+assert.deepEqual(model.bindingIssues([legends], [{...stepped, step:0}]), ["Mode: detent labels require 2 to 32 discrete values"]);
+assert.deepEqual(model.bindingIssues([{...legends, detentLabels:"choices"}],
+    [{...stepped, maximum:2, choices:["Clean", "Warm", "Bright"]}]), []);
 assert.deepEqual(model.bindingIssues([stepper], [stepped]), []);
 assert.deepEqual(model.bindingIssues([stepper], [{...stepped, step:0}]),
     ["Program: program needs a stepped parameter"]);
@@ -157,6 +180,34 @@ assert.deepEqual(model.readClipboard(model.writeClipboard(ledLayout.controls)), 
 assert.equal(ledLayout.controls[1].segmented, true);
 assert.deepEqual(model.parameterKeys(ledLayout.controls), ["program"]);
 assert.match(model.cppBindings(ledLayout.controls), /ControlKind::led/);
+const staticLed = {kind: "led", label: "Patch legend", ledText: " C", hideHeading: true, x: 0, y: 0, width: 3, height: 1};
+const previewLed = {...led, ledText: "CP", hideHeading: true};
+const mixedLed = model.readProject(model.serialize([staticLed, previewLed], project.theme, null)).controls;
+assert.equal(mixedLed[0].key, "");
+assert.equal(mixedLed[0].ledText, " C");
+assert.equal(mixedLed[0].hideHeading, true);
+assert.deepEqual(model.readClipboard(model.writeClipboard(mixedLed)), mixedLed);
+assert.deepEqual(model.parameterKeys(mixedLed), ["program"]);
+assert.deepEqual(model.bindingIssues([mixedLed[0]], [], null), []);
+assert.match(model.cppBindings([mixedLed[0]]), /array<Binding, 0>/);
+assert.match(model.cppBindings(mixedLed), /array<Binding, 1>/);
+for (const control of [staticLed, led, {...stepper, segmented: true}]) {
+    for (const cells of [2, 4, null]) {
+        const invalid = {...control, cells};
+        assert.throws(() => model.readProject(model.serialize([invalid], project.theme, null)),
+            /Control 1 has an unsupported "cells" field/);
+        assert.throws(() => model.readClipboard(model.writeClipboard([staticLed, invalid])),
+            /Control 2 has an unsupported "cells" field/);
+    }
+}
+assert.throws(() => model.readProject(model.serialize([{...staticLed, ledText: undefined}], project.theme, null)),
+    /supported LED characters/);
+assert.throws(() => model.readProject(model.serialize([{...staticLed, ledText: "@1"}], project.theme, null)),
+    /supported LED characters/);
+assert.throws(() => model.readProject(model.serialize([{...stepper, ledText: "CP"}], project.theme, null)),
+    /segmented stepper/);
+assert.equal(model.readProject(model.serialize([{...stepper, segmented: true, ledText: "CP"}], project.theme, null))
+    .controls[0].ledText, "CP");
 assert.equal(model.displayCode(codes, 11, 1), "oF");
 assert.equal(model.displayCode(codes, .1 + .2, .1), "C");
 assert.equal(model.displayCode(codes, 9, 1), undefined);
@@ -167,7 +218,13 @@ assert.equal(model.numericLedCode(.7), "--");
 assert.notEqual(model.ledGlyphs.o, model.ledGlyphs.O);
 assert.ok(model.ledGlyphs["?"].includes("p"));
 assert.throws(() => model.parseDisplayCodes("1 = OFF"), /one or two supported/);
-assert.throws(() => model.parseDisplayCodes("1 = X1"), /one or two supported/);
+assert.throws(() => model.parseDisplayCodes("1 = @1"), /one or two supported/);
+const newCodes = ["MR", "NK", "VW", "XY", "Z+", "#1"];
+for (const [value, code] of newCodes.entries()) {
+    assert.equal(model.parseDisplayCodes(value + " = " + code)[0].code, code);
+    assert.equal(model.ledSettings({...staticLed, ledText: code}).ledText, code);
+}
+assert.throws(() => model.parseDisplayCodes("1 = MNR"), /one or two supported/);
 assert.throws(() => model.parseDisplayCodes("0 = oF\\n0 = A1"), /more than one/);
 assert.throws(() => model.readClipboard(model.writeClipboard([{...led, displayCodes: [{value: "11", code: "oF"}]}])),
     /finite value/);
@@ -199,6 +256,14 @@ assert.deepEqual(model.readClipboard(model.writeClipboard(panel.controls)), pane
 assert.deepEqual(model.parameterKeys(panel.controls), []);
 assert.deepEqual(model.bindingIssues(panel.controls, []), []);
 assert.match(model.cppBindings(panel.controls), /array<Binding, 0>/);
+const mixedStack = [project.controls[1], ...panel.controls.slice().reverse()];
+assert.deepEqual(model.layerOrder(mixedStack).map(control => control.kind), ["rectangle", "line", "image", "knob"]);
+const layerLayout = model.readProject(model.serialize(mixedStack.map(control =>
+    control.kind === "rectangle" ? {...control, layer: 8} : control), panelTheme, null));
+assert.deepEqual(model.layerOrder(layerLayout.controls).map(control => control.kind), ["line", "image", "knob", "rectangle"]);
+assert.deepEqual(model.readClipboard(model.writeClipboard(layerLayout.controls)), layerLayout.controls);
+for (const layer of [0, 1.5, 257, null, "2"])
+    assert.throws(() => model.readClipboard(model.writeClipboard([{...panel.controls[0], layer}])), /Invalid layer/);
 assert.throws(() => model.readProject(model.serialize([{...panelArt[1], thickness: 17}], panelTheme, null)), /Invalid settings/);
 assert.throws(() => model.readProject(model.serialize([], {...panelTheme, backgroundArtwork: "https://example.com/panel"}, null)),
     /invalid background artwork/);

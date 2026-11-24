@@ -37,6 +37,16 @@ public:
       for (unsigned n = 0; n < audio.frames; ++n)
         audio.channel(5)[n] += sidechain.channel(0)[n] + sidechain.channel(1)[n];
   }
+  void processMidi(AudioBlock<float> audio, const ParameterBank &bank,
+                   const Transport &transport, std::span<const MidiEvent> input,
+                   AudioBlock<float> sidechain, midi::Output &output) noexcept override {
+    processSidechain(audio, bank, transport, input, sidechain);
+    // Make receipt observable independently of the adapter's output routing.
+    for (const auto &event : input)
+      if (event.isSysEx() && event.frame < audio.frames)
+        audio.channel(1)[event.frame] = static_cast<float>(event.sysEx.size());
+    midi::forward(input, output, audio.frames);
+  }
 private:
   void updateTiming(const ParameterBank &bank) noexcept {
     const bool extended = bank.get(17) == .75;

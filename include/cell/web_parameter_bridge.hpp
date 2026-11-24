@@ -75,6 +75,28 @@ inline bool validActionKey(std::string_view key) {
             return identifier(c) || c == '-' || c == '_' || c == '.';
         });
 }
+
+inline std::optional<ProgramCatalog> processorPrograms(const Engine& engine, const ParameterBank& parameters) {
+    if (const auto* memory = dynamic_cast<const ProgramMemory*>(&engine.processor()))
+        return memory->programs(parameters);
+    return {};
+}
+
+inline bool recallProcessorProgram(Engine& engine, ProgramAddress address) {
+    if (engine.activeGestures()) return false;
+    auto* memory = dynamic_cast<ProgramMemory*>(&engine.processor());
+    return memory && memory->recallProgram(engine, address);
+}
+
+inline bool processorSupportsAction(const Engine& engine, std::string_view key, ActionMode mode) {
+    const auto* target = dynamic_cast<const ActionTarget*>(&engine.processor());
+    return target && target->supportsWebAction(key, mode);
+}
+
+inline bool processorAction(Engine& engine, std::string_view key, ActionPhase phase) {
+    auto* target = dynamic_cast<ActionTarget*>(&engine.processor());
+    return target && target->webAction(engine, key, phase);
+}
 }
 
 // GUI-thread adapter for an explicit allow-list. Owns, and balances, gestures.
@@ -107,27 +129,19 @@ public:
             },
             [&engine](ParamId id) { return engine.endEdits(std::span(&id, 1)); },
             [&engine, exposePrograms]() -> std::optional<ProgramCatalog> {
-                if (exposePrograms)
-                    if (const auto* memory = dynamic_cast<const ProgramMemory*>(&engine.processor()))
-                        return memory->programs(engine.parameters());
-                return {};
+                return exposePrograms ? detail::processorPrograms(engine, engine.parameters()) : std::nullopt;
             },
             [&engine, exposePrograms](ProgramAddress address) {
-                if (exposePrograms && !engine.activeGestures())
-                    if (auto* memory = dynamic_cast<ProgramMemory*>(&engine.processor()))
-                        return memory->recallProgram(engine, address);
-                return false;
+                return exposePrograms && detail::recallProcessorProgram(engine, address);
             },
             [&engine](ParamId id, double press, double release) {
                 return engine.beginMomentary(id, press, release);
             },
             [&engine](std::string_view key, ActionMode mode) {
-                const auto* target = dynamic_cast<const ActionTarget*>(&engine.processor());
-                return target && target->supportsWebAction(key, mode);
+                return detail::processorSupportsAction(engine, key, mode);
             },
             [&engine](std::string_view key, ActionPhase phase) {
-                auto* target = dynamic_cast<ActionTarget*>(&engine.processor());
-                return target && target->webAction(engine, key, phase);
+                return detail::processorAction(engine, key, phase);
             }
         }, allowed, actions, readOnly) {}
 

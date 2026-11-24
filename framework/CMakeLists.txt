@@ -618,6 +618,7 @@ install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/clap.cpp" "${CELL_FRAME
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/auv3_layouts.hpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/lv2.cpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/lv2_ui.cpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/lv2_programs.hpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/audio_effect.hpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/ladspa.cpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/reaper_project.hpp"

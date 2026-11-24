@@ -63,6 +63,20 @@ const FUID controllerId(CELL_VST3_CONTROLLER_ID);
 #if defined(CELL_VST3_WEB_EDITOR)
 constexpr auto designerMeterRequest = "Cell.Designer.Meter.Request.v1";
 constexpr auto designerMeterReadings = "Cell.Designer.Meter.Readings.v1";
+constexpr auto designerCommandRequest = "Cell.Designer.Command.Request.v1";
+constexpr auto designerCommandReply = "Cell.Designer.Command.Reply.v1";
+enum class DesignerOperation : int64 { poll, apply, cancel, close };
+struct DesignerEdit {
+    std::uint32_t id, type;
+    double value;
+};
+static_assert(sizeof(DesignerEdit) == 16);
+constexpr std::size_t designerCommandBytes = 1024, designerSnapshotBytes = 65536, designerMaxEdits = 2048;
+struct DesignerReply {
+    std::string snapshot;
+    std::vector<DesignerEdit> edits;
+    bool changed{};
+};
 constexpr bool designerHasOutputMeter = std::ranges::any_of(cell::designer::meters, [](std::string_view key) {
     return key == "output-peak" || key == "output-rms";
 });
@@ -181,12 +195,19 @@ public:
         editorMeter_.setEnabled(false);
         meterSession_ = 0;
         meterClosed_ = false;
+        designerCommands_.cancel();
+        commandSession_ = 0;
+        commandClosed_ = false;
 #endif
         connected_=false;return AudioEffect::disconnect(other);
     }
     tresult PLUGIN_API terminate() override {if(!active_)closeAnalysisQueue();if(auto* extension=dynamic_cast<cell::NativeHostContext*>(&engine_.processor()))extension->nativeHostContext("VST3",nullptr,true);return AudioEffect::terminate();}
     tresult PLUGIN_API notify(IMessage* message) override {
 #if defined(CELL_VST3_WEB_EDITOR)
+        if (message && message->getMessageID() && !std::strcmp(message->getMessageID(), designerCommandRequest)) {
+            try { return handleDesignerCommand(message); }
+            catch (...) { return kResultFalse; }
+        }
         if (message && message->getMessageID() && !std::strcmp(message->getMessageID(), designerMeterRequest)) {
             auto* attributes = message->getAttributes();
             int64 session{}, visible{};
@@ -341,9 +362,52 @@ public:
     }
 private:
 #if defined(CELL_VST3_WEB_EDITOR)
+    tresult handleDesignerCommand(IMessage* message) {
+        auto* attributes = message->getAttributes();
+        int64 session{}, operation{};
+        if (!attributes || attributes->getInt("session", session) != kResultOk || session <= 0 ||
+            attributes->getInt("operation", operation) != kResultOk || operation < int64(DesignerOperation::poll) ||
+            operation > int64(DesignerOperation::close)) return kInvalidArgument;
+        if (session < commandSession_ || (session == commandSession_ && commandClosed_)) return kResultOk;
+        if (session != commandSession_) {
+            designerCommands_.cancel();
+            commandSession_ = session;
+            commandClosed_ = false;
+        }
+        bool changed{};
+        if (operation == int64(DesignerOperation::apply)) {
+            const void* bytes{};
+            uint32 size{};
+            if (attributes->getBinary("command", bytes, size) != kResultOk || !bytes || !size ||
+                size > designerCommandBytes) return kInvalidArgument;
+            changed = designerCommands_.apply({static_cast<const char*>(bytes), size});
+        } else if (operation != int64(DesignerOperation::poll)) {
+            designerCommands_.cancel();
+            commandClosed_ = operation == int64(DesignerOperation::close);
+        }
+        std::vector<DesignerEdit> edits;
+        for (cell::ParameterEdit edit; engine_.pollUiEdit(edit);)
+            edits.push_back({edit.id, static_cast<uint32>(edit.type), edit.value});
+
+        const auto snapshot = designerCommands_.snapshot();
+        auto reply = owned(allocateMessage());
+        if (!reply) return kOutOfMemory;
+        reply->setMessageID(designerCommandReply);
+        auto* data = reply->getAttributes();
+        if (!data || data->setInt("session", session) != kResultOk ||
+            data->setInt("changed", changed ? 1 : 0) != kResultOk ||
+            data->setInt("edits", int64(edits.size())) != kResultOk ||
+            data->setBinary("snapshot", snapshot.data(), uint32(snapshot.size())) != kResultOk ||
+            (!edits.empty() && data->setBinary("values", edits.data(), uint32(edits.size() * sizeof(DesignerEdit))) != kResultOk))
+            return kResultFalse;
+        return sendMessage(reply);
+    }
+
     cell::web::OutputMeter editorMeter_;
     int64 meterSession_{};
     bool meterClosed_{};
+    int64 commandSession_{};
+    bool commandClosed_{};
 #endif
     cell::midi::Delivery midiDelivery_;
     cell::midi::SysExStorage sysExOutput_;
@@ -388,6 +452,13 @@ private:
         else exchange_->freeBlock(queue_,block.blockID,false);
     }
     cell::Engine engine_{cell::plugin::descriptor(),cell::plugin::createProcessor()};
+#if defined(CELL_VST3_WEB_EDITOR)
+    cell::web::ParameterBridge designerCommands_{engine_, {}, true
+#if defined(CELL_DESIGNER_HAS_ACTIONS)
+        , cell::designer::actions
+#endif
+    };
+#endif
     std::array<cell::ParameterEvent,4096> events_{},eventScratch_{};std::array<cell::MidiEvent,2048> midi_{},midiScratch_{};
     std::uint32_t channels_=cell::plugin::descriptor().channels;
     std::uint32_t inputChannels_=cell::plugin::descriptor().channels;
@@ -444,13 +515,77 @@ public:
         FUnknownPtr<IComponentHandler3> handler(componentHandler.get());auto menu=owned(handler->createContextMenu(view,&id));
         return menu&&menu->popup(UCoord(x),UCoord(y))==kResultOk;
     }
-    void flushEdits(){cell::ParameterEdit edit;
-        while(engine.pollEdit(edit)){const auto* p=engine.parameters().find(edit.id);if(!p)continue;
+    void reportEdit(cell::ParameterEdit edit){const auto* p=engine.parameters().find(edit.id);if(!p)return;
             if(edit.type==cell::EditType::begin)beginEdit(edit.id);
             else if(edit.type==cell::EditType::end)endEdit(edit.id);
-            else{const auto value=p->toNormalized(edit.value);setParamNormalized(edit.id,value);performEdit(edit.id,value);}}
+            else{const auto value=p->toNormalized(edit.value);setParamNormalized(edit.id,value);performEdit(edit.id,value);}
+    }
+    void flushEdits(){cell::ParameterEdit edit;
+        while(engine.pollEdit(edit))reportEdit(edit);
     }
 #if defined(CELL_VST3_WEB_EDITOR)
+    int64 beginDesignerCommands() {
+        const std::lock_guard lock(designerReplyMutex_);
+        designerReplies_.clear();
+        designerProgramState_ = {};
+        nextDesignerPoll_ = {};
+        return ++designerSession_;
+    }
+
+    bool sendDesignerCommand(int64 session, DesignerOperation operation, std::string_view command = {}) {
+        if (session != designerSession_ || command.size() > designerCommandBytes) return false;
+        auto request = owned(allocateMessage());
+        if (!request) return false;
+        request->setMessageID(designerCommandRequest);
+        auto* data = request->getAttributes();
+        return data && data->setInt("session", session) == kResultOk &&
+            data->setInt("operation", int64(operation)) == kResultOk &&
+            (command.empty() || data->setBinary("command", command.data(), uint32(command.size())) == kResultOk) &&
+            sendMessage(request) == kResultOk;
+    }
+
+    void flushDesignerCommands(int64 session) {
+        std::vector<DesignerReply> pending;
+        {
+            const std::lock_guard lock(designerReplyMutex_);
+            if (session != designerSession_) return;
+            pending.swap(designerReplies_);
+        }
+        for (const auto& reply : pending) {
+            const auto snapshot = cell::json::read(reply.snapshot, {designerSnapshotBytes, 4096, designerSnapshotBytes, 16});
+            if (snapshot["type"].text() != "parameters") continue;
+            designerProgramState_ = snapshot;
+            for (const auto& edit : reply.edits) {
+                const auto* parameter = engine.parameters().find(edit.id);
+                if (!parameter || edit.type > static_cast<uint32>(cell::EditType::end) || !std::isfinite(edit.value))
+                    continue;
+                reportEdit({static_cast<cell::EditType>(edit.type), edit.id, edit.value});
+            }
+            if (reply.changed)
+                if (FUnknownPtr<IComponentHandler2> handler{componentHandler.get()}) handler->setDirty(true);
+        }
+    }
+
+    void refreshDesignerCommands(int64 session) {
+        if (session != designerSession_) return;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= nextDesignerPoll_) {
+            nextDesignerPoll_ = now + std::chrono::milliseconds(100);
+            sendDesignerCommand(session, DesignerOperation::poll);
+        }
+        flushDesignerCommands(session);
+    }
+
+    std::string designerSnapshot(int64 session, std::string parameters) {
+        if (session != designerSession_) return parameters;
+        if (designerProgramState_["programs"].isNull() && designerProgramState_["actions"].isNull()) return parameters;
+        auto local = cell::json::read(parameters, {designerSnapshotBytes, 4096, designerSnapshotBytes, 16});
+        auto fields = *local.object();
+        for (const auto* name : {"programs", "actions"})
+            if (!designerProgramState_[name].isNull()) fields.emplace(name, designerProgramState_[name]);
+        return cell::json::write(cell::json::Value(std::move(fields)), {designerSnapshotBytes, 8192, designerSnapshotBytes, 16});
+    }
+
     void designerMeterVisible(bool visible) {
         if (visible) {
             if (++meterViews_ != 1) return;
@@ -526,6 +661,10 @@ public:
     }
     tresult PLUGIN_API notify(IMessage* message)override{
 #if defined(CELL_VST3_WEB_EDITOR)
+        if (message && message->getMessageID() && !std::strcmp(message->getMessageID(), designerCommandReply)) {
+            try { return receiveDesignerReply(message); }
+            catch (...) { return kResultFalse; }
+        }
         if (message && message->getMessageID() && !std::strcmp(message->getMessageID(), designerMeterReadings)) {
             auto* attributes = message->getAttributes();
             int64 session{};
@@ -591,6 +730,35 @@ public:
     cell::ProductQueries productQueries_;unsigned views{};std::uint32_t knownLatency_{};bool analysisVisible_{},pollingAnalysis_{};std::chrono::steady_clock::time_point lastPoll_{};
 #if defined(CELL_VST3_WEB_EDITOR)
 private:
+    tresult receiveDesignerReply(IMessage* message) {
+        auto* data = message->getAttributes();
+        int64 session{}, changed{}, edits{};
+        const void* snapshot{}, *values{};
+        uint32 length{}, valuesLength{};
+        if (!data || data->getInt("session", session) != kResultOk || session <= 0 ||
+            data->getInt("changed", changed) != kResultOk || (changed != 0 && changed != 1) ||
+            data->getBinary("snapshot", snapshot, length) != kResultOk || !snapshot ||
+            !length || length > designerSnapshotBytes ||
+            data->getInt("edits", edits) != kResultOk || edits < 0 || edits > int64(designerMaxEdits) ||
+            (edits && (data->getBinary("values", values, valuesLength) != kResultOk || !values ||
+                       valuesLength != std::size_t(edits) * sizeof(DesignerEdit))))
+            return kInvalidArgument;
+        const std::lock_guard lock(designerReplyMutex_);
+        if (session != designerSession_) return kResultOk;
+        if (designerReplies_.size() == 64) return kResultFalse;
+        DesignerReply reply{std::string(static_cast<const char*>(snapshot), length),
+                            std::vector<DesignerEdit>(static_cast<std::size_t>(edits)), changed != 0};
+        if (edits) std::memcpy(reply.edits.data(), values, valuesLength);
+        designerReplies_.push_back(std::move(reply));
+        return kResultOk;
+    }
+
+    std::mutex designerReplyMutex_;
+    int64 designerSession_{};
+    std::vector<DesignerReply> designerReplies_;
+    cell::json::Value designerProgramState_;
+    std::chrono::steady_clock::time_point nextDesignerPoll_{};
+
     void requestDesignerMeter(bool visible) {
         auto request = owned(allocateMessage());
         if (!request) return;
@@ -803,6 +971,7 @@ public:
                                         sizeof(cell::assets::vst3EditorPage));
             if (browser_.open(options) && browser_.loadHtml(page) && startTimer()) {
                 active_ = true;
+                designerSession_ = controller_->beginDesignerCommands();
                 if constexpr (designerHasOutputMeter) controller_->designerMeterVisible(true);
                 return CPluginView::attached(parent, type);
             }
@@ -820,6 +989,7 @@ public:
     tresult PLUGIN_API onFocus(TBool focused) override {
         if (!focused && active_) {
             parameters_.cancel();
+            controller_->sendDesignerCommand(designerSession_, DesignerOperation::cancel);
             controller_->flushEdits();
         }
         return kResultTrue;
@@ -871,11 +1041,18 @@ private:
         try {
             for (const auto& event : browser_.poll()) {
                 if (event.kind == cell::web::Event::Kind::loaded) {
+                    if (loaded_) controller_->sendDesignerCommand(designerSession_, DesignerOperation::cancel);
                     loaded_ = true;
                     lastParameters_.clear();
                     lastMeters_.clear();
                 } else if (loaded_ && event.kind == cell::web::Event::Kind::message) {
-                    parameters_.apply(event.text);
+                    try {
+                        const auto message = cell::json::read(event.text, {designerSnapshotBytes, 4096, designerSnapshotBytes, 16});
+                        const auto type = message["type"].text();
+                        if (type == "action" || (type == "recall-program" && !parameters_.activeGestures()))
+                            controller_->sendDesignerCommand(designerSession_, DesignerOperation::apply, event.text);
+                        else if (type != "recall-program") parameters_.apply(event.text);
+                    } catch (const cell::json::Error&) {}
                     lastParameters_.clear();
                 } else if (event.kind == cell::web::Event::Kind::error) {
                     if (!loaded_) {
@@ -883,13 +1060,16 @@ private:
                         return;
                     }
                     parameters_.cancel();
+                    controller_->sendDesignerCommand(designerSession_, DesignerOperation::cancel);
                 }
             }
             if (loaded_) {
+                controller_->refreshDesignerCommands(designerSession_);
+                if (!active_) return;
                 auto send = [&](std::string snapshot, std::string& previous) {
                     if (snapshot != previous && browser_.send(snapshot)) previous = std::move(snapshot);
                 };
-                send(parameters_.snapshot(), lastParameters_);
+                send(controller_->designerSnapshot(designerSession_, parameters_.snapshot()), lastParameters_);
                 if constexpr (designerHasOutputMeter) send(controller_->designerMeterSnapshot(), lastMeters_);
             }
         } catch (...) { parameters_.cancel(); }
@@ -920,6 +1100,8 @@ private:
         lastParameters_.clear();
         lastMeters_.clear();
         parameters_.cancel();
+        controller_->sendDesignerCommand(designerSession_, DesignerOperation::close);
+        try { controller_->flushDesignerCommands(designerSession_); } catch (...) {}
         if constexpr (designerHasOutputMeter) controller_->designerMeterVisible(false);
         controller_->flushEdits();
     }
@@ -977,6 +1159,7 @@ private:
     IPtr<Linux::IRunLoop> runLoop_;
 #endif
     bool active_{};
+    int64 designerSession_{};
     bool loaded_{};
     std::string lastParameters_, lastMeters_;
 };

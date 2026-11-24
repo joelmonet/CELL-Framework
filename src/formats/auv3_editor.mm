@@ -13,6 +13,10 @@
 #include <mach/mach_time.h>
 
 AUAudioUnit* cellCreateAUv3Unit(AudioComponentDescription description, NSError** error);
+std::optional<cell::ProgramCatalog> cellAUv3EditorPrograms(AUAudioUnit* unit);
+bool cellAUv3EditorSupportsAction(AUAudioUnit* unit, std::string_view key, cell::web::ActionMode mode);
+bool cellAUv3EditorCommand(AUAudioUnit* unit, const std::function<bool(cell::Engine&)>& command,
+                           std::vector<cell::ParameterEdit>& edits);
 #if defined(CELL_AUV3_EDITOR_METERS)
 cell::web::OutputMeter* cellAUv3EditorMeter(AUAudioUnit* unit);
 #endif
@@ -58,10 +62,22 @@ std::vector<cell::ParamId> parameterIds([[maybe_unused]] NSArray<NSString*>* key
 std::unique_ptr<ParameterBridge> makeBridge(AUAudioUnit* unit, NSArray<NSString*>* keys) {
     const auto fields = cell::plugin::descriptor().parameters;
     const auto ids = parameterIds(keys, fields);
-    if (ids.empty()) return nullptr;
     auto* tree = unit.parameterTree;
-    if (!tree || std::any_of(ids.begin(), ids.end(), [&](cell::ParamId id) { return ![tree parameterWithAddress:id]; }))
+    if (!ids.empty() && (!tree || std::any_of(ids.begin(), ids.end(), [&](cell::ParamId id) { return ![tree parameterWithAddress:id]; })))
         throw std::invalid_argument("AUv3 parameter tree does not expose an editor binding");
+    const auto command = [unit, tree](const std::function<bool(cell::Engine&)>& operation) {
+        std::vector<cell::ParameterEdit> edits;
+        if (!cellAUv3EditorCommand(unit, operation, edits)) return false;
+        const auto time = mach_absolute_time();
+        for (const auto& edit : edits) {
+            auto* parameter = [tree parameterWithAddress:edit.id];
+            if (!parameter) continue;
+            const auto type = edit.type == cell::EditType::begin ? AUParameterAutomationEventTypeTouch :
+                edit.type == cell::EditType::end ? AUParameterAutomationEventTypeRelease : AUParameterAutomationEventTypeValue;
+            automate(parameter, edit.type == cell::EditType::value ? static_cast<AUValue>(edit.value) : parameter.value, type, time);
+        }
+        return true;
+    };
     return std::make_unique<ParameterBridge>(ParameterBridge::Endpoint{
         fields,
         [tree](cell::ParamId id) {
@@ -84,10 +100,26 @@ std::unique_ptr<ParameterBridge> makeBridge(AUAudioUnit* unit, NSArray<NSString*
             auto* parameter = [tree parameterWithAddress:id];
             automate(parameter, parameter.value, AUParameterAutomationEventTypeRelease, mach_absolute_time());
             return true;
+        },
+        [unit] { return cellAUv3EditorPrograms(unit); },
+        [command](cell::ProgramAddress address) {
+            return command([address](cell::Engine& engine) { return cell::web::detail::recallProcessorProgram(engine, address); });
+        },
+        {},
+        [unit](std::string_view key, cell::web::ActionMode mode) { return cellAUv3EditorSupportsAction(unit, key, mode); },
+        [command](std::string_view key, cell::web::ActionPhase phase) {
+            return command([=](cell::Engine& engine) { return cell::web::detail::processorAction(engine, key, phase); });
         }
-    }, ids
+    }, ids,
+#if defined(CELL_AUV3_DESIGNER_BINDINGS) && defined(CELL_DESIGNER_HAS_ACTIONS)
+        cell::designer::actions,
+#else
+        std::span<const cell::web::ActionBinding>{},
+#endif
 #if defined(CELL_AUV3_DESIGNER_BINDINGS) && defined(CELL_DESIGNER_HAS_RULE_SOURCES)
-        , std::span<const cell::web::ActionBinding>{}, cell::designer::readOnlyParameters
+        cell::designer::readOnlyParameters
+#else
+        std::span<const cell::ParamId>{}
 #endif
     );
 }

@@ -4,6 +4,8 @@
 #include <AudioToolbox/AudioToolbox.h>
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <cell/web_parameter_bridge.hpp>
 #if defined(CELL_AU_EDITOR_METERS)
 #include <cell/web_meter.hpp>
 #endif
@@ -17,6 +19,10 @@ struct EditorConnection {
     }
 
     std::atomic<AudioUnit> unit;
+    std::mutex commandMutex;
+    std::function<std::optional<ProgramCatalog>()> programs;
+    std::function<bool(std::string_view, web::ActionMode)> supportsAction;
+    std::function<bool(const std::function<bool(Engine&)>&, std::vector<ParameterEdit>&)> command;
 #if defined(CELL_AU_EDITOR_METERS)
     std::atomic<unsigned> meterReaders{};
     web::OutputMeter meter;

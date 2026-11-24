@@ -2,6 +2,9 @@
 #include <cell/web_meter.hpp>
 #include <cell/webview.hpp>
 #include <lv2/ui/ui.h>
+#include <lv2/data-access/data-access.h>
+#include <lv2/instance-access/instance-access.h>
+#include "lv2_programs.hpp"
 #include "cell_lv2_web_bindings.hpp"
 #include "cell_lv2_web_page.hpp"
 #include <cstring>
@@ -12,16 +15,40 @@ using cell::web::Event;
 
 class Editor {
 public:
-    Editor(LV2UI_Controller controller, LV2UI_Write_Function write, const LV2UI_Touch* touch)
+    Editor(LV2UI_Controller controller, LV2UI_Write_Function write, const LV2UI_Touch* touch,
+           LV2_Handle processor, const cell::lv2::ProgramAccess* programs)
         : controller_(controller), write_(write), touch_(touch), values_(fields_.size()),
+          processor_(processor), programs_(programs),
           bridge_({fields_,
               [this](cell::ParamId id) { return values_[indexOf(id)]; },
               [this](cell::ParamId id) { grab(id, true); return true; },
               [this](cell::ParamId id, double value, bool active) { return edit(id, value, active); },
-              [this](cell::ParamId id) { grab(id, false); return true; }},
-              cell::designer::parameters
+              [this](cell::ParamId id) { grab(id, false); return true; },
+              [this] { return programs_ ? programs_->programs(processor_) : std::nullopt; },
+              [this](cell::ProgramAddress address) {
+                  std::vector<cell::ParameterEdit> edits;
+                  if (!programs_ || !programs_->recall(processor_, address, edits)) return false;
+                  report(edits);
+                  return true;
+              },
+              {},
+              [this](std::string_view key, cell::web::ActionMode mode) {
+                  return programs_ && programs_->supports(processor_, key, mode);
+              },
+              [this](std::string_view key, cell::web::ActionPhase phase) {
+                  std::vector<cell::ParameterEdit> edits;
+                  if (!programs_ || !programs_->action(processor_, key, phase, edits)) return false;
+                  report(edits);
+                  return true;
+              }},
+              cell::designer::parameters,
+#if defined(CELL_DESIGNER_HAS_ACTIONS)
+              cell::designer::actions
+#else
+              std::span<const cell::web::ActionBinding>{}
+#endif
 #if defined(CELL_DESIGNER_HAS_RULE_SOURCES)
-              , {}, cell::designer::readOnlyParameters
+              , cell::designer::readOnlyParameters
 #endif
           ) {
         for (std::size_t i = 0; i < fields_.size(); ++i) values_[i] = fields_[i].defaultValue;
@@ -90,12 +117,30 @@ public:
         if (closed_) return;
         closed_ = true;
         if (singleEdit_) grab(*singleEdit_, false);
+        for (const auto id : reportedGestures_) grab(id, false);
+        reportedGestures_.clear();
         bridge_.cancel();
         touch_ = nullptr;
         browser_.close();
     }
 
 private:
+    void report(std::span<const cell::ParameterEdit> edits) {
+        for (const auto& edit : edits) {
+            if (closed_) return;
+            if (indexOf(edit.id) == fields_.size()) continue;
+            if (edit.type == cell::EditType::value) {
+                this->edit(edit.id, edit.value, true);
+            } else if (edit.type == cell::EditType::begin) {
+                reportedGestures_.push_back(edit.id);
+                grab(edit.id, true);
+            } else {
+                std::erase(reportedGestures_, edit.id);
+                grab(edit.id, false);
+            }
+        }
+    }
+
     std::size_t indexOf(cell::ParamId id) const {
         // ParameterBridge only calls the endpoint for a declared binding.
         return std::find_if(fields_.begin(), fields_.end(),
@@ -135,10 +180,13 @@ private:
     std::span<const cell::Parameter> fields_{cell::plugin::descriptor().parameters};
     std::uint32_t firstPort_{2u * cell::plugin::descriptor().channels};
     std::vector<double> values_;
+    LV2_Handle processor_;
+    const cell::lv2::ProgramAccess* programs_;
     cell::web::View browser_;
     bool closed_{};
     std::optional<cell::ParamId> singleEdit_;
     std::optional<cell::ParamId> endingGesture_;
+    std::vector<cell::ParamId> reportedGestures_;
     cell::web::ParameterBridge bridge_;
     bool loaded_{};
     std::string lastParameters_;
@@ -158,6 +206,8 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*, const char* plugin, const char
     bool idle{};
     const LV2UI_Touch* touch{};
     const LV2UI_Resize* resize{};
+    LV2_Handle processor{};
+    const LV2_Extension_Data_Feature* extension{};
     for (auto feature = features; *feature; ++feature) {
         if (!(*feature)->URI) continue;
         const std::string_view uri((*feature)->URI);
@@ -165,10 +215,14 @@ LV2UI_Handle instantiate(const LV2UI_Descriptor*, const char* plugin, const char
         else if (uri == LV2_UI__idleInterface) idle = true;
         else if (uri == LV2_UI__touch) touch = static_cast<const LV2UI_Touch*>((*feature)->data);
         else if (uri == LV2_UI__resize) resize = static_cast<const LV2UI_Resize*>((*feature)->data);
+        else if (uri == LV2_INSTANCE_ACCESS_URI) processor = (*feature)->data;
+        else if (uri == LV2_DATA_ACCESS_URI) extension = static_cast<const LV2_Extension_Data_Feature*>((*feature)->data);
     }
     if (!parent || !idle) return nullptr;
     try {
-        auto instance = std::make_unique<Instance>(std::make_shared<Editor>(controller, write, touch));
+        const auto* programs = processor && extension && extension->data_access
+            ? static_cast<const cell::lv2::ProgramAccess*>(extension->data_access(cell::lv2::programAccessUri)) : nullptr;
+        auto instance = std::make_unique<Instance>(std::make_shared<Editor>(controller, write, touch, processor, programs));
         const auto child = (*instance)->open(parent, resize);
         if (!child) return nullptr;
         *widget = reinterpret_cast<LV2UI_Widget>(child);

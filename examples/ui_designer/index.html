@@ -35,7 +35,7 @@ background-color:var(--background,#14272d)}
 #canvas-frame[data-size=phone]{max-width:410px;max-height:min(62vh,620px);overflow:auto;margin:12px auto 8px}
 #canvas-frame[data-size=phone] #canvas{height:calc(var(--rows,8) * 54px);margin:0}
 .panel-background{position:absolute;inset:0;width:100%;height:100%;border-radius:inherit;pointer-events:none}
-.tile{position:absolute;z-index:4;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:0;padding:3px;overflow:hidden;
+.tile{position:absolute;z-index:var(--element-layer);display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:0;padding:3px;overflow:hidden;
 color:var(--text);background:var(--surface);border-color:var(--tile-accent);touch-action:none;cursor:grab}
 .tile-label,.tile-kind{position:relative;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tile .tile-label{white-space:pre-wrap;overflow-wrap:anywhere}
@@ -45,9 +45,7 @@ color:var(--text);background:var(--surface);border-color:var(--tile-accent);touc
 .tile[data-skin=field]{color:#f4edbe;background:#30392c;border-style:dashed}
 .tile[data-skin=studio]{color:#e9eff0;background:#26343e;border-bottom:3px solid #93c9e3}
 .tile[data-skin=broadcast]{color:#382512;background:#e7d3a6;border-style:double}
-.tile[data-panel-art]{z-index:1;background:transparent;border-color:transparent;border-radius:0}
-.tile[data-kind=line]{z-index:2}
-.tile[data-kind=image]{z-index:3}
+.tile[data-panel-art]{background:transparent;border-color:transparent;border-radius:0}
 .tile[data-kind=image] img{inset:0;opacity:1}
 .tile[data-kind=image]:has(img:not([hidden])):not([aria-pressed=true]):not(:hover) span,
 .tile[data-panel-art]:not([data-kind=image]):not([aria-pressed=true]):not(:hover) span{visibility:hidden}
@@ -57,17 +55,22 @@ color:var(--text);background:var(--surface);border-color:var(--tile-accent);touc
 .tile[data-kind=line][data-direction=vertical]::before{inset:0 auto 0 50%;height:auto;width:var(--line-thickness);transform:translateX(-50%)}
 #canvas.edit-art .tile[data-panel-art]{outline:1px dashed var(--text);outline-offset:-2px}
 #canvas.edit-art .tile:not([data-panel-art]){z-index:0;opacity:.34;pointer-events:none}
-.tile[aria-pressed=true],#canvas.edit-art .tile[aria-pressed=true]{z-index:5;outline:2px solid #bcef90;outline-offset:-3px}
+.tile[aria-pressed=true],#canvas.edit-art .tile[aria-pressed=true]{outline:2px solid #bcef90;outline-offset:-3px}
 #canvas:not(.multi-selection) .tile[aria-pressed=true]::after{content:"";position:absolute;right:4px;bottom:4px;width:9px;height:9px;border-right:2px solid currentColor;border-bottom:2px solid currentColor}
 #multi-select[aria-pressed=true]{border-color:#bcef90;background:#34412b}
 #selection-tools{display:grid;gap:10px;margin-top:10px}
 #selection-tools .alignment-buttons{display:grid;gap:6px;grid-template-columns:repeat(2,minmax(0,1fr))}
+#layer-panel label{display:grid;gap:4px;margin:8px 0}
+#layer-element{width:100%;min-width:0}
+#layer-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
 .properties{display:grid;gap:10px;margin-top:10px}
 .properties label,.theme-grid label{display:grid;gap:4px}
 .properties input:not([type=checkbox]),.properties select{width:100%;min-width:0}
 .properties textarea{box-sizing:border-box;width:100%;min-height:72px;resize:vertical;background:#111b20;
 color:inherit;border:1px solid #577076;border-radius:5px;padding:6px;font:13px ui-monospace,monospace}
 .properties textarea[name=label]{min-height:52px;font:inherit}
+#detent-settings{display:grid;gap:8px}
+#detent-help{margin:0}
 #typography-settings[open]{display:grid;gap:8px}
 #typography-settings label,#typography-settings .action-row{margin-top:6px}
 #display-choices dl{margin:4px 0;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 8px;max-height:130px;overflow:auto}
@@ -115,19 +118,30 @@ summary{cursor:pointer;font-weight:600}
 </div>
 <div class="layout-options">
 <label>Edit layout <select id="layout-size"><option value="wide">Wide</option><option value="phone">Phone</option></select></label>
+<label><input type="checkbox" id="snap-placement" checked> Snap to grid</label>
 <button id="multi-select" type="button" aria-pressed="false">Select multiple</button>
 <button id="edit-art" type="button" aria-pressed="false" aria-controls="canvas">Edit panel artwork</button>
 <label id="artwork-picker" hidden>Artwork element <select id="artwork-element"></select></label>
 <label id="rule-picker" hidden>Conditional control <select id="rule-element"></select></label>
 <button id="reset-phone-layout" type="button" hidden>Reset phone layout</button>
 </div>
-<p class="help">Drag controls onto the grid. Shift-click to select several. Drag or use the arrow keys to move the selection. Drag the selected corner or use Shift+arrows to resize a single control.</p>
+<p class="help">Drag controls or use the arrow keys to move them. Turn off Snap to grid for fine positioning. Shift-click to select several controls. Drag the selected corner or use Shift+arrows to resize one control.</p>
 <p id="phone-help" class="help" hidden>Moving or resizing a control fixes its phone position. Automatic controls flow around it.</p>
 <div id="canvas-frame"><div id="canvas" role="region" aria-label="Plugin layout"></div></div>
 <p id="overlap-status" class="help" hidden>Controls overlap on the grid.</p>
 </section>
 <aside class="panel" aria-label="Inspector">
 <h2>Selection</h2>
+<details id="layer-panel">
+<summary>Layers</summary>
+<label>Front to back<select id="layer-element" size="5"></select></label>
+<div id="layer-actions">
+<button type="button" data-layer-move="front">Bring to front</button>
+<button type="button" data-layer-move="forward">Bring forward</button>
+<button type="button" data-layer-move="backward">Send backward</button>
+<button type="button" data-layer-move="back">Send to back</button>
+</div>
+</details>
 <p id="empty-inspector" class="help">Select a control to edit it.</p>
 <section id="selection-tools" aria-label="Multi-selection tools" hidden>
 <p id="selection-count" role="status"></p>
@@ -155,12 +169,20 @@ summary{cursor:pointer;font-weight:600}
 <option value="output-peak">Output peak</option><option value="output-rms">Output RMS</option>
 </datalist>
 <div class="coordinates">
-<label>Column<input name="column" type="number" min="1" max="12" required></label>
-<label>Row<input name="row" type="number" min="1" max="8" required></label>
+<label>Column<input name="column" type="number" min="1" max="12" step="any" required></label>
+<label>Row<input name="row" type="number" min="1" max="8" step="any" required></label>
 <label>Width<input name="width" type="number" min="1" max="12" required></label>
 <label>Height<input name="height" type="number" min="1" max="8" required></label>
 </div>
+<label>Rotation (degrees)<input name="rotation" type="number" step="any" placeholder="0"></label>
 <button id="auto-phone-position" type="button" hidden>Auto-place on phone</button>
+<div id="detent-settings" hidden>
+<label>Detent labels<select name="detent-label-mode">
+<option value="none">None</option><option value="choices">Parameter choices</option><option value="custom">Custom labels</option>
+</select></label>
+<label id="custom-detent-setting" hidden>Custom detent labels<textarea name="detent-labels" rows="4" aria-describedby="detent-help"></textarea></label>
+<p id="detent-help" class="help">Use one line per stop, from minimum to maximum. Leave a line blank to omit that label.</p>
+</div>
 <label id="skin-field">Style<select name="skin"></select></label>
 <label class="check"><input type="checkbox" name="use-accent">Custom accent</label>
 <label>Control accent<input type="color" name="accent"></label>
@@ -215,11 +237,20 @@ placeholder="0 = COMP&#10;1 = COMP/LIMIT"></textarea></label>
 <label>Two-button hold time (ms)<input name="chord-ms" type="number" min="100" max="10000"></label>
 </div>
 <div id="display-settings" hidden>
+<label id="led-source-setting" hidden>LED source<select name="led-source">
+<option value="value">Parameter value</option>
+<option value="static">Static characters</option>
+<option value="idle">Code at rest, value on change</option>
+</select></label>
 <label id="segmented-setting" class="check"><input name="segmented" type="checkbox">Segmented digits</label>
+<label id="led-text-setting" hidden>LED characters<input name="led-text" maxlength="2" spellcheck="false" placeholder="CP"></label>
+<label id="led-heading-setting" class="check" hidden><input name="hide-led-heading" type="checkbox">Hide heading</label>
+<div id="bound-display-settings">
 <label>Display codes<textarea name="display-codes" maxlength="8192" spellcheck="false" rows="3"
 aria-describedby="display-code-help"></textarea></label>
 <small id="display-code-help" class="help">One value = code per line, such as 0 = oF. Codes use one or two characters.</small>
 <details id="display-choices" hidden><summary>Bound choices</summary><dl></dl></details>
+</div>
 <details><summary>Supported characters</summary><code id="display-glyphs"></code></details>
 </div>
 <label id="image-fit" hidden>Image fit<select name="fit">

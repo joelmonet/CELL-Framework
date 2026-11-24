@@ -6,6 +6,7 @@ const {wideGrid, phoneGrid, kinds, skins} = model;
 const query = selector => document.querySelector(selector);
 const canvas = query("#canvas");
 const canvasFrame = query("#canvas-frame");
+const snapPlacement = query("#snap-placement");
 const backgroundImage = document.createElement("img");
 backgroundImage.className = "panel-background";
 backgroundImage.alt = "";
@@ -24,6 +25,8 @@ const artworkElement = query("#artwork-element");
 const backgroundFit = query("#background-fit");
 const clearBackground = query("#clear-background");
 const selectionTools = query("#selection-tools");
+const layerElement = query("#layer-element");
+const layerButtons = [...document.querySelectorAll("[data-layer-move]")];
 const previewPanel = query("#preview-panel");
 const previewFrame = previewPanel.querySelector("iframe");
 const previewButton = query("#preview");
@@ -144,6 +147,7 @@ function select(items) {
     query("#selection-count").textContent = `${items.length} controls selected`;
     for (const button of selectionTools.querySelectorAll("[data-distribute]")) button.disabled = items.length < 3;
     for (const item of controls) item.tile.setAttribute("aria-pressed", String(items.includes(item)));
+    refreshLayers();
     const control = selected;
     if (canvas.classList.contains("edit-art")) {
         artworkElement.replaceChildren(new Option("Choose artwork", ""),
@@ -156,8 +160,11 @@ function select(items) {
     for (const key of ["label", "key", "skin"])
         field(key).value = control[key];
     inspectPlacement(control);
-    field("key").required = model.hasBinding(control.kind);
-    query("#binding-field").hidden = !field("key").required;
+    field("rotation").value = control.rotation ?? "";
+    query("#detent-settings").hidden = control.kind !== "knob";
+    field("detent-label-mode").value = Array.isArray(control.detentLabels) ? "custom" : control.detentLabels ?? "none";
+    field("detent-labels").value = Array.isArray(control.detentLabels) ? control.detentLabels.join("\n") : "";
+    refreshDetentFields();
     query("#binding-label").textContent = control.kind === "meter" ? "Meter source" : "Parameter key";
     field("key").setAttribute("list", control.kind === "meter" ? "meter-keys" : "parameter-keys");
     field("use-accent").checked = Boolean(control.accent);
@@ -183,8 +190,11 @@ function select(items) {
     query("#display-settings").hidden = !model.hasDisplayCodes(control.kind);
     query("#segmented-setting").hidden = control.kind !== "stepper";
     field("segmented").checked = control.segmented ?? false;
+    field("led-source").value = control.kind === "led" && !control.key ? "static" : control.ledText ? "idle" : "value";
+    field("led-text").value = control.ledText ?? "";
+    field("hide-led-heading").checked = control.hideHeading ?? false;
     field("display-codes").value = (control.displayCodes ?? []).map(({value, code}) => `${value} = ${code}`).join("\n");
-    refreshDisplayChoices();
+    refreshDisplayFields();
     query("#skin-field").hidden = model.isPanelArt(control.kind);
     query("#image-fit").hidden = control.kind !== "image";
     field("fit").value = control.fit ?? "contain";
@@ -205,6 +215,43 @@ function refreshRulePicker() {
     picker.replaceChildren(new Option("Choose control", ""), ...choices);
     const index = String(controls.indexOf(selected));
     picker.value = choices.some(option => option.value === index) ? index : "";
+}
+
+function refreshLayers() {
+    const order = model.layerOrder(controls);
+    order.forEach((control, index) => control.tile.style.setProperty("--element-layer", index + 1));
+    const positions = new Map(controls.map((control, index) => [control, index]));
+    layerElement.replaceChildren(...order.slice().reverse().map(control =>
+        new Option(`${control.label} · ${kinds[control.kind].title}`, positions.get(control))));
+    layerElement.disabled = order.length === 0;
+    layerElement.value = positions.get(selected) ?? "";
+    const index = order.indexOf(selected);
+    for (const button of layerButtons) {
+        const towardFront = ["front", "forward"].includes(button.dataset.layerMove);
+        button.disabled = index < 0 || (towardFront ? index === order.length - 1 : index === 0);
+    }
+}
+
+function numberLayers(order) {
+    order.forEach((control, index) => { control.layer = index + 1; });
+}
+
+function moveLayer(command) {
+    const layout = controlsOnly();
+    const control = layout[controls.indexOf(selected)];
+    const order = model.layerOrder(layout);
+    const index = order.indexOf(control);
+    const destination = {front: order.length - 1, forward: index + 1, backward: index - 1, back: 0}[command];
+    if (index < 0 || destination === index || destination < 0 || destination >= order.length) return;
+    order.splice(index, 1);
+    order.splice(destination, 0, control);
+    numberLayers(order);
+    if (!fitsLayout(layout)) return;
+    const before = snapshot();
+    controls.forEach((item, i) => { item.layer = layout[i].layer; });
+    refreshLayers();
+    record(before);
+    status.textContent = "Layer order updated.";
 }
 
 function refreshLabelFields() {
@@ -229,9 +276,34 @@ function refreshActionFields() {
     field("chord-ms").disabled = !hasChord;
 }
 
+function refreshDisplayFields() {
+    const kind = selected?.kind;
+    const led = kind === "led";
+    const segmented = kind === "stepper" && field("segmented").checked;
+    const source = field("led-source").value;
+    const staticLed = led && source === "static";
+    const needsCharacters = led && source !== "value";
+    const hasBinding = Boolean(kind && model.hasBinding(kind) && !staticLed);
+    field("key").required = hasBinding;
+    field("key").disabled = staticLed;
+    query("#binding-field").hidden = !hasBinding;
+    query("#led-source-setting").hidden = !led;
+    query("#led-text-setting").hidden = !needsCharacters && !segmented;
+    query("#led-heading-setting").hidden = !led && !segmented;
+    field("led-text").required = needsCharacters;
+    query("#bound-display-settings").hidden = staticLed;
+    refreshDisplayChoices();
+}
+
+function refreshDetentFields() {
+    const custom = selected?.kind === "knob" && field("detent-label-mode").value === "custom";
+    query("#custom-detent-setting").hidden = query("#detent-help").hidden = !custom;
+    field("detent-labels").disabled = !custom;
+}
+
 function refreshDisplayChoices() {
     const details = query("#display-choices");
-    const parameter = selected && model.hasDisplayCodes(selected.kind)
+    const parameter = selected && !field("key").disabled && model.hasDisplayCodes(selected.kind)
         ? catalog?.find(parameter => parameter.key === field("key").value.trim()) : undefined;
     const choices = parameter?.choices ?? [];
     details.hidden = !choices.length;
@@ -263,8 +335,8 @@ function placement(control) {
 function inspectPlacement(control) {
     const box = placement(control);
     if (!box) return;
-    field("column").value = box.x + 1;
-    field("row").value = box.y + 1;
+    field("column").value = Number((box.x + 1).toPrecision(15));
+    field("row").value = Number((box.y + 1).toPrecision(15));
     field("width").value = box.width;
     field("height").value = box.height;
     field("column").max = field("width").max = grid.columns;
@@ -299,7 +371,7 @@ function refreshCanvas() {
     phoneBoxes.clear();
     if (phone) boxes.forEach((box, index) => phoneBoxes.set(controls[index], box));
     const extent = boxes.reduce((maximum, box) => Math.max(maximum, box.y + box.height), 0);
-    visibleRows = phone ? Math.min(grid.rows, Math.max(8, extent + 3)) : grid.rows;
+    visibleRows = phone ? Math.min(grid.rows, Math.max(8, Math.ceil(extent) + 3)) : grid.rows;
     canvas.style.setProperty("--columns", grid.columns);
     canvas.style.setProperty("--rows", visibleRows);
     canvasFrame.dataset.size = phone ? "phone" : "wide";
@@ -318,6 +390,7 @@ function refreshCanvas() {
 function paint(control) {
     const {tile, label, kind, skin, accent, artwork} = control;
     tile.dataset.skin = skin;
+    tile.style.transform = control.rotation ? `rotate(${control.rotation}deg)` : "";
     if (kind === "line") {
         tile.dataset.direction = control.direction ?? "horizontal";
         tile.style.setProperty("--line-thickness", `${control.thickness ?? 2}px`);
@@ -332,10 +405,12 @@ function paint(control) {
 function cellAt(event) {
     const rect = canvas.getBoundingClientRect();
     return {
-        x: Math.floor(grid.columns * (event.clientX - rect.left) / rect.width),
-        y: Math.floor(visibleRows * (event.clientY - rect.top) / rect.height)
+        x: grid.columns * (event.clientX - rect.left - canvas.clientLeft) / canvas.clientWidth,
+        y: visibleRows * (event.clientY - rect.top - canvas.clientTop) / canvas.clientHeight
     };
 }
+
+const finePosition = value => Math.round(value * 10) / 10;
 
 function dragControl(control, startEvent) {
     if (startEvent.button !== 0 || !startEvent.isPrimary) return;
@@ -343,21 +418,36 @@ function dragControl(control, startEvent) {
     const {tile} = control;
     const pointer = startEvent.pointerId;
     const dragGrid = grid;
+    const snap = snapPlacement.checked;
     const start = cellAt(startEvent);
     const extend = additive(startEvent);
     const items = selection.includes(control) ? selection : extend ? [...selection, control] : [control];
     const originals = items.map(placement);
     const original = originals[0];
     const rect = tile.getBoundingClientRect();
-    const resizing = !extend && selected === control && rect.right - startEvent.clientX <= 17 &&
-        rect.bottom - startEvent.clientY <= 17;
+    const radians = (control.rotation ?? 0) * Math.PI / 180;
+    const sine = Math.sin(radians);
+    const cosine = Math.cos(radians);
+    const localPoint = (x, y) => ({x: x * cosine + y * sine, y: y * cosine - x * sine});
+    const corner = localPoint(startEvent.clientX - rect.left - rect.width / 2,
+        startEvent.clientY - rect.top - rect.height / 2);
+    const resizing = selected === control && !extend && items.length === 1 &&
+        tile.offsetWidth / 2 - corner.x <= 17 && tile.offsetHeight / 2 - corner.y <= 17;
     let draft = null;
     tile.focus({preventScroll: true});
     tile.setPointerCapture(pointer);
     tile.onpointermove = event => {
         if (event.pointerId !== pointer || grid !== dragGrid) return;
         const next = cellAt(event);
-        const dx = next.x - start.x, dy = next.y - start.y;
+        let dx = next.x - start.x, dy = next.y - start.y;
+        if (resizing && control.rotation) {
+            const delta = localPoint(event.clientX - startEvent.clientX, event.clientY - startEvent.clientY);
+            dx = grid.columns * delta.x / canvas.clientWidth;
+            dy = visibleRows * delta.y / canvas.clientHeight;
+        }
+        const quantize = resizing || snap ? Math.round : finePosition;
+        dx = quantize(dx);
+        dy = quantize(dy);
         if (!draft && !dx && !dy) return;
         draft = resizing ? [resizedBox(original, dx, dy)] : model.moveBoxes(originals, grid, dx, dy);
         items.forEach((item, i) => position(item.tile, draft[i]));
@@ -383,16 +473,12 @@ function dragControl(control, startEvent) {
 
 function resizedBox(box, dx, dy) {
     return model.constrain({...box,
-        width: Math.min(grid.columns - box.x, box.width + dx),
-        height: Math.min(grid.rows - box.y, box.height + dy)
+        width: Math.min(Math.floor(grid.columns - box.x), box.width + dx),
+        height: Math.min(Math.floor(grid.rows - box.y), box.height + dy)
     }, grid);
 }
 
-function add(data, activate) {
-    if (controls.length >= model.maxControls) {
-        status.textContent = `A layout can contain up to ${model.maxControls} controls.`;
-        return;
-    }
+function add(data) {
     const tile = document.createElement("button");
     tile.type = "button";
     tile.className = "tile";
@@ -411,10 +497,6 @@ function add(data, activate) {
     };
     tile.onpointerdown = event => dragControl(control, event);
     tile.onkeydown = event => controlKey(control, event);
-    if (activate) {
-        select([control]);
-        tile.focus();
-    }
     return control;
 }
 
@@ -444,7 +526,8 @@ function controlKey(control, event) {
         select(items);
         const before = snapshot();
         const boxes = items.map(placement);
-        setPlacements(items, event.shiftKey ? [resizedBox(boxes[0], ...direction)] : model.moveBoxes(boxes, grid, ...direction));
+        const delta = snapPlacement.checked ? direction : direction.map(value => value / 10);
+        setPlacements(items, event.shiftKey ? [resizedBox(boxes[0], ...direction)] : model.moveBoxes(boxes, grid, ...delta));
         record(before);
         if (grid === phoneGrid) control.tile.scrollIntoView({block: "nearest"});
     }
@@ -480,13 +563,11 @@ function placeNew(data, point, phoneSize) {
         const origin = point ?? model.firstOpenPlace(phoneSize, occupied.map(placement), phoneGrid);
         result.phone = model.constrain({...origin, ...phoneSize}, phoneGrid);
     }
-    add(result, true);
+    insertControls([result]);
 }
 
 function addControl(kind, point) {
-    const before = snapshot();
     placeNew(starter(kind), point, model.phoneSize(kind));
-    record(before);
 }
 
 function duplicate(items) {
@@ -517,17 +598,25 @@ function duplicate(items) {
         items.length === 1 ? "Control duplicated." : `${items.length} controls duplicated.`;
 }
 
+function fitsLayout(layout) {
+    if (encoder.encode(model.serialize(layout, theme, catalog, programs)).length <= model.maxProjectBytes) return true;
+    status.textContent = "This edit would take the layout over 2 MiB.";
+    return false;
+}
+
 function insertControls(copies) {
     if (controls.length + copies.length > model.maxControls) {
         status.textContent = `A layout can contain up to ${model.maxControls} controls.`;
         return false;
     }
-    if (encoder.encode(model.serialize([...controlsOnly(), ...copies], theme, catalog, programs)).length > model.maxProjectBytes) {
-        status.textContent = "This edit would take the layout over 2 MiB.";
-        return false;
-    }
+    const layout = controlsOnly();
+    const combined = [...layout, ...copies];
+    const layered = combined.some(control => control.layer !== undefined);
+    if (layered) numberLayers([...model.layerOrder(layout), ...model.layerOrder(copies)]);
+    if (!fitsLayout(combined)) return false;
     const before = snapshot();
-    const added = copies.map(copy => add(copy, false));
+    if (layered) controls.forEach((control, index) => { control.layer = layout[index].layer; });
+    const added = copies.map(add);
     select(added);
     record(before);
     added[0].tile.focus();
@@ -646,7 +735,9 @@ canvas.ondragover = event => event.preventDefault();
 canvas.ondrop = event => {
     event.preventDefault();
     const kind = event.dataTransfer.getData("text/plain");
-    if (Object.hasOwn(kinds, kind)) addControl(kind, cellAt(event));
+    const point = cellAt(event);
+    const quantize = snapPlacement.checked ? Math.floor : finePosition;
+    if (Object.hasOwn(kinds, kind)) addControl(kind, {x: quantize(point.x), y: quantize(point.y)});
 };
 canvas.onclick = event => { if (event.target === canvas) select([]); };
 editArt.onclick = () => {
@@ -657,6 +748,13 @@ editArt.onclick = () => {
 };
 artworkElement.onchange = () => {
     select(artworkElement.value === "" ? [] : [controls[Number(artworkElement.value)]]);
+};
+layerElement.onchange = () => {
+    if (layerElement.value !== "") select([controls[Number(layerElement.value)]]);
+};
+for (const button of layerButtons) button.onclick = () => {
+    moveLayer(button.dataset.layerMove);
+    if (button.disabled) layerElement.focus();
 };
 for (const button of document.querySelectorAll("[data-duplicate]")) button.onclick = () => duplicate(selection);
 for (const button of document.querySelectorAll("[data-remove]")) button.onclick = () => remove(selection);
@@ -678,6 +776,8 @@ for (const button of selectionTools.querySelectorAll("[data-distribute]")) butto
 };
 field("use-accent").onchange = () => { field("accent").disabled = !field("use-accent").checked; };
 field("key").oninput = refreshDisplayChoices;
+field("detent-label-mode").onchange = refreshDetentFields;
+field("led-source").onchange = field("segmented").onchange = refreshDisplayFields;
 field("trigger").onchange = refreshActionFields;
 field("label-key").oninput = field("label-source").onchange = refreshLabelFields;
 query("#rule-element").onchange = event => {
@@ -690,8 +790,9 @@ form.onsubmit = event => {
     event.preventDefault();
     if (!selected) return;
     const label = model.readLabel(field("label").value.trim());
-    const key = model.hasBinding(selected.kind) ? field("key").value.trim() : "";
-    if (!label || (model.hasBinding(selected.kind) && !model.validText(key))) {
+    const {kind} = selected;
+    const key = field("key").required ? field("key").value.trim() : "";
+    if (!label || (field("key").required && !model.validText(key))) {
         status.textContent = !label ? "Enter a label of up to 240 characters and eight lines." : "Enter a valid binding key.";
         return;
     }
@@ -699,8 +800,24 @@ form.onsubmit = event => {
     let button;
     let rules;
     let typography;
+    let led;
+    let detentLabels;
+    let rotation;
+    const segmented = kind === "stepper" && field("segmented").checked;
+    const hasLed = kind === "led" || segmented;
+    const hasLedText = segmented || (kind === "led" && field("led-source").value !== "value");
     try {
-        if (model.hasDisplayCodes(selected.kind)) displayCodes = model.parseDisplayCodes(field("display-codes").value);
+        rotation = model.readRotation(field("rotation").value === "" ? 0 : field("rotation").valueAsNumber);
+        if (kind === "knob") {
+            const mode = field("detent-label-mode").value;
+            if (mode !== "none") detentLabels = model.readDetentLabels(mode === "choices"
+                ? mode : field("detent-labels").value.split(/\r?\n/));
+        }
+        if (model.hasDisplayCodes(kind) && key) displayCodes = model.parseDisplayCodes(field("display-codes").value);
+        const ledText = field("led-text").value;
+        led = model.ledSettings({kind, key, segmented,
+            ledText: hasLedText && (ledText || kind === "led") ? ledText : undefined,
+            hideHeading: hasLed && field("hide-led-heading").checked ? true : undefined});
         button = model.buttonSettings(selected.kind, {
             action: field("action-key").value.trim(), trigger: field("trigger").value,
             holdMs: field("hold-ms").valueAsNumber, repeatDelay: field("repeat-delay").valueAsNumber,
@@ -708,14 +825,15 @@ form.onsubmit = event => {
             minusAction: field("minus-action").value.trim(), plusAction: field("plus-action").value.trim(),
             chordAction: field("chord-action").value.trim(), chordMs: field("chord-ms").valueAsNumber
         });
-        const key = field("label-key").value.trim();
+        const labelKey = field("label-key").value.trim();
         const source = field("label-source").value;
-        const labelFrom = key ? {key, source, labels: source === "map" ? model.parseLabelMap(field("label-map").value) : undefined} : undefined;
+        const labelFrom = labelKey ? {key: labelKey, source,
+            labels: source === "map" ? model.parseLabelMap(field("label-map").value) : undefined} : undefined;
         rules = model.ruleSettings({visibleWhen: field("visible-when").value, enabledWhen: field("enabled-when").value, labelFrom});
         typography = inspectTypography();
     } catch (error) {
         status.textContent = error.message;
-        if (!displayCodes && model.hasDisplayCodes(selected.kind)) field("display-codes").focus();
+        if (!displayCodes && model.hasDisplayCodes(kind) && key) field("display-codes").focus();
         return;
     }
     const before = snapshot();
@@ -729,8 +847,8 @@ form.onsubmit = event => {
     });
     for (const name of ["action", "trigger", "holdMs", "repeatDelay", "repeatMs", "minusAction", "plusAction", "chordAction", "chordMs"])
         delete selected[name];
-    for (const name of ["visibleWhen", "enabledWhen", "labelFrom"]) delete selected[name];
-    Object.assign(selected, button, rules);
+    for (const name of ["visibleWhen", "enabledWhen", "labelFrom", "ledText", "hideHeading"]) delete selected[name];
+    Object.assign(selected, button, rules, led);
     if (typography) selected.typography = typography;
     else delete selected.typography;
     if (selected.kind === "image") selected.fit = field("fit").value;
@@ -740,7 +858,11 @@ form.onsubmit = event => {
     }
     if (displayCodes?.length) selected.displayCodes = displayCodes;
     else delete selected.displayCodes;
-    if (selected.kind === "stepper" && field("segmented").checked) selected.segmented = true;
+    if (detentLabels) selected.detentLabels = detentLabels;
+    else delete selected.detentLabels;
+    if (rotation) selected.rotation = rotation;
+    else delete selected.rotation;
+    if (segmented) selected.segmented = true;
     else delete selected.segmented;
     paint(selected);
     select([selected]);
@@ -766,7 +888,7 @@ function restore(state) {
     catalog = state.catalog;
     programs = state.programs;
     previewProgram = undefined;
-    for (const data of state.layout) add(data, false);
+    for (const data of state.layout) add(data);
     select(state.selection.map(index => controls[index]).filter(Boolean));
     refreshProject();
 }
@@ -983,7 +1105,7 @@ window.addEventListener("message", event => {
     const message = event.data;
     if (previewPanel.hidden || event.source !== previewFrame.contentWindow || message?.generation !== generation) return;
     if (message.type === "cell-preview-value" && Number.isFinite(message.value) &&
-        controls.some(control => model.hasParameter(control.kind) && control.key === message.key))
+        controls.some(control => model.hasParameterBinding(control) && control.key === message.key))
         previewValues.set(message.key, message.value);
     if (message.type === "cell-preview-program" &&
         programs?.banks.find(bank => bank.number === message.bank)?.programs.some(program => program.number === message.program))

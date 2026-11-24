@@ -52,6 +52,23 @@ message returns false without triggering channel panic. Hosts must expose
 SysEx routing on the plug-in's MIDI ports. MIDI 2.0 SysEx8 and reassembly of
 separately delivered fragments are outside this path.
 
+### Verify a bank dump through the plug-in ABI
+
+Pass the raw binary output of a bank-dump CLI to either
+`tests/sdk_transport_consumer` host probe. Use the matching transport fixture
+plug-in built by that consumer project.
+
+```sh
+cell_transport_clap_host "Cell Transport Test.clap" --dump bank.syx
+cell_transport_vst3_host "Cell Transport Test.vst3" --dump bank.syx
+```
+
+The file can contain one complete `F0 … F7` message or multiple concatenated
+messages. The probe sends one message per block and checks that the processor
+observed it at frame 23 and that the host received the exact bytes back. This
+exercises ABI delivery. Bank decoding and import are product behavior.
+Omit `--dump` to run the built-in transport checks alone.
+
 
 ## Clock availability and MPE event lifetimes (r38 source guidance)
 

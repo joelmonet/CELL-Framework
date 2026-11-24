@@ -2,7 +2,7 @@
 
 const CellDesignerRuntime = (() => {
     // Serialized into the standalone document along with the selected controls.
-    function mount(controls, background, phoneBreakpoint, stepCount, isPanelArt, isProgramControl, readPrograms, led, compareValue, paintType, families) {
+    function mount(controls, background, phoneBreakpoint, stepCount, maxDetentLabels, isPanelArt, isProgramControl, readPrograms, led, compareValue, paintType, families) {
         const stage = document.querySelector("main");
         const items = [];
         const states = new Map();
@@ -11,6 +11,7 @@ const CellDesignerRuntime = (() => {
         const parameters = new Map();
         const owners = new Map();
         const stopDrags = [];
+        const maxDetents = 64;
         const bridge = window.cell;
         const actionControls = [];
         let actions = new Set();
@@ -92,8 +93,9 @@ const CellDesignerRuntime = (() => {
         }
 
         function moveFocus(from) {
-            const replacement = items.find(({item, interactive}) => interactive &&
-                item.style.gridRow === from.style.gridRow && item.style.gridColumn === from.style.gridColumn &&
+            const origin = items.find(({item}) => item === from).box;
+            const replacement = items.find(({item, interactive, box}) => interactive &&
+                box.x === origin.x && box.y === origin.y && box.width === origin.width && box.height === origin.height &&
                 item.querySelector("button:enabled, select:enabled, input:enabled"));
             const candidate = replacement?.item.querySelector("button:enabled, select:enabled, input:enabled") ?? stage;
             candidate.focus({preventScroll: true});
@@ -126,32 +128,81 @@ const CellDesignerRuntime = (() => {
                 const digit = document.createElement("span");
                 digit.className = "led-digit";
                 digit.setAttribute("aria-hidden", "true");
+                const segments = [];
                 for (const name of "abcdefgp") {
                     const segment = document.createElement("span");
                     segment.className = "led-segment";
                     segment.dataset.segment = name;
-                    digit.append(segment);
+                    segments.push(segment);
                 }
-                return digit;
+                const strokes = document.createElement("span");
+                digit.append(...segments, strokes);
+                return {digit, segments, strokes};
             });
-            output.replaceChildren(text, ...digits);
+            output.replaceChildren(text, ...digits.map(({digit}) => digit));
             return {text, digits};
         }
 
-        function showLed(binding, code, detail) {
+        function drawLedStroke([x1, y1, x2, y2]) {
+            // Correct the perpendicular for the cell's 3:4 aspect ratio.
+            const widthToHeight = 3 / 4;
+            const x = x2 - x1;
+            const y = (y2 - y1) / widthToHeight;
+            const halfWidth = 4.5 / Math.hypot(x, y);
+            const offsetX = -y * halfWidth;
+            const offsetY = x * halfWidth * widthToHeight;
+            const points = [
+                [x1 + offsetX, y1 + offsetY], [x2 + offsetX, y2 + offsetY],
+                [x2 - offsetX, y2 - offsetY], [x1 - offsetX, y1 - offsetY]
+            ];
+            const stroke = document.createElement("span");
+            stroke.className = "led-stroke";
+            stroke.style.clipPath = "polygon(" + points.map(([x, y]) => x.toFixed(2) + "% " + y.toFixed(2) + "%").join(",") + ")";
+            return stroke;
+        }
+
+        function showLed(binding, code, detail, codeOnly = false) {
             const {output, control, ledDisplay} = binding;
+            ledDisplay.presentation = [code, detail, codeOnly];
             const pair = code.padStart(2, " ");
             if (output.dataset.code !== pair) {
                 output.dataset.code = pair;
                 ledDisplay.text.textContent = code;
-                ledDisplay.digits.forEach((digit, index) => {
-                    const lit = led.glyphs[pair[index]];
-                    for (const segment of digit.children)
+                ledDisplay.digits.forEach(({digit, segments, strokes}, index) => {
+                    const character = pair[index];
+                    if (digit.dataset.glyph === character) return;
+                    digit.dataset.glyph = character;
+                    const glyph = led.glyphs[character];
+                    const lit = typeof glyph === "string" ? glyph : "";
+                    for (const segment of segments)
                         segment.toggleAttribute("data-lit", lit.includes(segment.dataset.segment));
+                    strokes.replaceChildren(...(Array.isArray(glyph) ? glyph.map(drawLedStroke) : []));
                 });
             }
             output.title = detail;
-            output.setAttribute("aria-label", `${labelOf(control)} value ${code ? code + (detail && detail !== code ? ", " + detail : "") : detail}`);
+            output.setAttribute("aria-label", `${labelOf(control)} ${codeOnly ? "code" : "value"} ${code ? code + (detail && detail !== code ? ", " + detail : "") : detail}`);
+        }
+
+        function resetLed(binding) {
+            const {control, ledDisplay} = binding;
+            clearTimeout(ledDisplay.timer);
+            ledDisplay.timer = ledDisplay.lastValue = undefined;
+            showLed(binding, control.ledText ?? "", control.ledText ? "" : "Unavailable", Boolean(control.ledText));
+        }
+
+        function showLedValue(binding, value, code, detail) {
+            const {control, ledDisplay} = binding;
+            const text = control.ledText;
+            if (text && ledDisplay.lastValue !== undefined && ledDisplay.lastValue !== value) {
+                clearTimeout(ledDisplay.timer);
+                ledDisplay.timer = setTimeout(() => {
+                    ledDisplay.timer = undefined;
+                    showLed(binding, text, "", true);
+                }, 1200);
+            }
+            ledDisplay.lastValue = value;
+            if (text && ledDisplay.timer === undefined) showLed(binding, text, "", true);
+            else showLed(binding, code, detail);
         }
 
         function end(binding) {
@@ -188,14 +239,14 @@ const CellDesignerRuntime = (() => {
             binding.value = value;
             const mapped = led.codeForValue(control.displayCodes, value, parameter.step);
             if (control.kind === "led") {
-                showLed(binding, mapped ?? led.numericCode(value), format(parameter, value));
+                showLedValue(binding, value, mapped ?? led.numericCode(value), format(parameter, value));
                 return;
             }
             if (control.kind === "stepper" && binding.buttons) {
                 const count = stepCount(parameter);
                 const index = count ? stepIndex(parameter, value, count) : 0;
                 const choice = parameter.choices?.[index];
-                if (ledDisplay) showLed(binding, mapped ?? led.numericCode(value), choice ?? format(parameter, value));
+                if (ledDisplay) showLedValue(binding, value, mapped ?? led.numericCode(value), choice ?? format(parameter, value));
                 else {
                     const code = mapped ?? (Number.isInteger(value)
                         ? (value < 0 ? "−" : "") + String(Math.abs(value)).padStart(2, "0")
@@ -229,8 +280,10 @@ const CellDesignerRuntime = (() => {
                 const proportion = steps ? index / steps : span > 0 ? (value - parameter.minimum) / span : 0;
                 dial.style.setProperty("--angle", `${-135 + Math.min(Math.max(proportion, 0), 1) * 270}deg`);
                 if (steps) {
-                    binding.detentMarks.children[binding.activeDetent]?.removeAttribute("data-active");
-                    binding.detentMarks.children[index]?.setAttribute("data-active", "");
+                    for (const group of [binding.detentMarks, binding.detentCaptions]) {
+                        group.children[binding.activeDetent]?.removeAttribute("data-active");
+                        group.children[index]?.setAttribute("data-active", "");
+                    }
                     binding.activeDetent = index;
                 }
             }
@@ -239,15 +292,36 @@ const CellDesignerRuntime = (() => {
         function updateDetents(binding, parameter) {
             if (!binding.detentMarks) return 0;
             const count = stepCount(parameter);
-            const steps = count < 32 ? count : 0;
-            if (steps === binding.detentSteps) return steps;
+            const steps = count < maxDetents ? count : 0;
+            const labels = binding.control.detentLabels === "choices" ? parameter?.choices : binding.control.detentLabels;
+            const captions = steps > 0 && steps < maxDetentLabels && Array.isArray(labels) && labels.length === steps + 1 &&
+                labels.every(label => typeof label === "string") ? labels : [];
+            const stagger = captions.length > 8 && captions.some(label => label.length > 4);
+            const signature = JSON.stringify([steps, captions]);
+            if (signature === binding.detentSignature) return steps;
+            binding.detentSignature = signature;
             binding.detentSteps = steps;
             binding.detentMarks.replaceChildren();
+            binding.detentMarks.toggleAttribute("data-dense", steps >= maxDetentLabels);
+            binding.detentCaptions.replaceChildren();
             binding.dial.toggleAttribute("data-detented", steps > 0);
+            binding.dial.parentElement.toggleAttribute("data-detent-labels", captions.some(Boolean));
+            binding.dial.parentElement.toggleAttribute("data-staggered-labels", stagger);
             for (let i = 0; steps && i <= steps; i++) {
+                const angle = -135 + i * 270 / steps;
                 const mark = document.createElement("span");
-                mark.style.setProperty("--detent-angle", `${-135 + i * 270 / steps}deg`);
+                mark.style.setProperty("--detent-angle", `${angle}deg`);
                 binding.detentMarks.append(mark);
+                if (!captions.length) continue;
+                const radians = angle * Math.PI / 180;
+                const x = Math.sin(radians), y = -Math.cos(radians);
+                const distance = stagger && i % 2 ? 35 : 18;
+                const caption = document.createElement("span");
+                caption.style.left = `calc(${50 + x * 50}% + ${x * distance}px)`;
+                caption.style.top = `calc(${50 + y * 50}% + ${y * distance}px)`;
+                caption.style.setProperty("--caption-shift", x < -0.35 ? "-100%" : x > 0.35 ? "0%" : "-50%");
+                caption.textContent = captions[i];
+                binding.detentCaptions.append(caption);
             }
             return steps;
         }
@@ -665,6 +739,7 @@ const CellDesignerRuntime = (() => {
         for (const control of controls) {
             const item = document.createElement("div");
             item.className = "control " + control.kind;
+            item.style.zIndex = control.layer;
             item.dataset.skin = control.skin;
             if (control.typography) paintType(item, control.typography, families);
             if (control.accent) item.style.setProperty("--accent", control.accent);
@@ -691,7 +766,7 @@ const CellDesignerRuntime = (() => {
             const title = document.createElement("span");
             title.className = "control-title";
             nameElement(control, title, "textContent");
-            if (!["action", "toggle", "momentary"].includes(control.kind)) item.append(title);
+            if (!control.hideHeading && !["action", "toggle", "momentary"].includes(control.kind)) item.append(title);
             if (control.kind === "text") continue;
             if (control.kind === "action") {
                 actionButton(control, item);
@@ -738,8 +813,10 @@ const CellDesignerRuntime = (() => {
             };
             if (control.kind === "led" || (control.kind === "stepper" && control.segmented)) {
                 binding.ledDisplay = createLed(output);
-                showLed(binding, "", "Unavailable");
+                resetLed(binding);
+                if (control.labelFrom) state.rename.push(() => showLed(binding, ...binding.ledDisplay.presentation));
             }
+            if (control.kind === "led" && !key) continue;
             if (!bindings.has(key)) bindings.set(key, []);
             bindings.get(key).push(binding);
             if (!bridge || control.kind === "readout" || control.kind === "led") continue;
@@ -764,7 +841,9 @@ const CellDesignerRuntime = (() => {
                 binding.dial.setAttribute("aria-hidden", "true");
                 binding.detentMarks = document.createElement("div");
                 binding.detentMarks.className = "detents";
-                binding.dial.append(binding.detentMarks);
+                binding.detentCaptions = document.createElement("div");
+                binding.detentCaptions.className = "detent-captions";
+                binding.dial.append(binding.detentMarks, binding.detentCaptions);
                 face.append(binding.dial);
             }
             const buttonKind = control.kind === "toggle" || control.kind === "momentary";
@@ -811,21 +890,48 @@ const CellDesignerRuntime = (() => {
             for (const binding of owners.values()) end(binding);
         };
         const compact = window.matchMedia(`(max-width: ${phoneBreakpoint}px)`);
+        let fractionalItems = [];
+        const rotate = control => control.rotation ? `rotate(${control.rotation}deg)` : "";
+        function positionFractions() {
+            if (!fractionalItems.length) return;
+            const style = getComputedStyle(stage);
+            const columns = style.gridTemplateColumns.split(" ").map(parseFloat);
+            const rows = style.gridTemplateRows.split(" ").map(parseFloat);
+            const offset = (value, tracks, gap) => {
+                const base = Math.floor(value);
+                return (value - base) * ((tracks[base] ?? 0) + parseFloat(gap));
+            };
+            for (const {box, item, control} of fractionalItems) {
+                const x = offset(box.x, columns, style.columnGap);
+                const y = offset(box.y, rows, style.rowGap);
+                item.style.transform = `translate(${x}px, ${y}px) ${rotate(control)}`;
+            }
+        }
+        const placementObserver = new ResizeObserver(positionFractions);
         function arrange() {
             const focused = stage.contains(document.activeElement) ? document.activeElement : null;
             cancel();
             stage.dataset.layout = compact.matches ? "phone" : "wide";
-            const placed = items.map(({control, item}) => ({
-                box: compact.matches ? control.phone : control,
-                item
-            }));
+            for (const state of items) state.box = compact.matches ? state.control.phone : state.control;
+            const placed = [...items];
             placed.sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x);
-            for (const {box, item} of placed) {
-                item.style.gridColumn = `${box.x + 1} / span ${box.width}`;
-                item.style.gridRow = `${box.y + 1} / span ${box.height}`;
+            placementObserver.disconnect();
+            fractionalItems = [];
+            for (const state of placed) {
+                const {box, item, control} = state;
+                item.style.gridColumn = `${Math.floor(box.x) + 1} / span ${box.width}`;
+                item.style.gridRow = `${Math.floor(box.y) + 1} / span ${box.height}`;
+                item.style.transform = rotate(control);
+                if (!Number.isInteger(box.x) || !Number.isInteger(box.y)) fractionalItems.push(state);
             }
             // Keep keyboard and screen-reader order in sync with the visible grid.
             stage.append(...placed.map(({item}) => item));
+            if (fractionalItems.length) {
+                // A fractional origin follows the live track and gap, including taller plugin controls.
+                positionFractions();
+                placementObserver.observe(stage);
+                placed.forEach(({item}) => placementObserver.observe(item));
+            }
             if (focused) focused.focus({preventScroll: true});
         }
         stage.tabIndex = -1;
@@ -892,7 +998,7 @@ const CellDesignerRuntime = (() => {
                         end(binding);
                         if (binding.input) binding.input.disabled = true;
                         for (const button of binding.buttons ?? []) button.disabled = true;
-                        if (binding.ledDisplay) showLed(binding, "", "Unavailable");
+                        if (binding.ledDisplay) resetLed(binding);
                         else {
                             binding.output.textContent = "—";
                             if (binding.buttons || binding.control.displayCodes?.length) {
@@ -932,7 +1038,8 @@ const CellDesignerRuntime = (() => {
         for (const control of controls) {
             const {kind, key} = control;
             if (kind === "meter") { meterKeys.add(key); continue; }
-            if (["text", "action", "action-pair"].includes(kind) || isProgramControl(kind) || isPanelArt(kind) || parameters.has(key)) continue;
+            if (["text", "action", "action-pair"].includes(kind) || (kind === "led" && !key) ||
+                isProgramControl(kind) || isPanelArt(kind) || parameters.has(key)) continue;
             const fallback = stepperKeys.has(key) ? {minimum: 0, maximum: 99, step: 1, unit: ""} :
                 key === "gain" ? {minimum: -60, maximum: 12, step: 0.01, unit: "dB"} :
                 {minimum: 0, maximum: 1, step: ["toggle", "momentary"].includes(kind) ? 1 : 0.01, unit: ""};
@@ -994,12 +1101,10 @@ const CellDesignerRuntime = (() => {
 :root{color-scheme:dark}
 body{margin:0;background:var(--background);color:var(--text);font:15px system-ui,sans-serif}
 main{position:relative;isolation:isolate;display:grid;padding:12px;gap:8px;min-height:100dvh;grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(64px,auto))}
-.control{z-index:4;min-width:0;padding:8px;border-radius:10px;background:var(--surface);display:flex;flex-direction:column;gap:3px}
+.control{min-width:0;padding:8px;border-radius:10px;background:var(--surface);display:flex;flex-direction:column;gap:3px}
 .control[data-rule-disabled]{opacity:.55}
 .panel-background,.panel-art img{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-.control.panel-art{position:relative;z-index:1;padding:0;border:0;border-radius:0;background:transparent;overflow:hidden;pointer-events:none}
-.control.panel-art.line{z-index:2}
-.control.panel-art.image{z-index:3}
+.control.panel-art{position:relative;padding:0;border:0;border-radius:0;background:transparent;overflow:hidden;pointer-events:none}
 .panel-art.rectangle::before,.panel-art.line::before{content:"";position:absolute;inset:0;background:var(--accent)}
 .panel-art.line::before{top:50%;bottom:auto;height:var(--line-thickness);transform:translateY(-50%)}
 .panel-art.line[data-direction=vertical]::before{inset:0 auto 0 50%;height:auto;width:var(--line-thickness);transform:translateX(-50%)}
@@ -1027,6 +1132,16 @@ button[data-held]{border-color:var(--accent);box-shadow:inset 0 0 0 2px var(--ac
 .detents span{position:absolute;inset:0;transform:rotate(var(--detent-angle))}
 .detents span::before{content:"";position:absolute;top:0;left:calc(50% - 1px);width:2px;height:5px;border-radius:2px;background:currentColor;opacity:.58}
 .detents [data-active]::before{background:var(--accent);width:4px;left:calc(50% - 2px);height:7px;opacity:1}
+.detents[data-dense] span::before{width:1px;left:calc(50% - .5px);height:4px}
+.detents[data-dense] [data-active]::before{width:3px;left:calc(50% - 1.5px);height:7px}
+.knob .face[data-detent-labels]{min-height:132px}
+.knob .face[data-detent-labels] .dial{width:clamp(28px,calc(100% - 116px),88px)}
+.knob .face[data-staggered-labels]{min-height:168px}
+.knob .face[data-staggered-labels] .dial{width:clamp(28px,calc(100% - 186px),88px)}
+.detent-captions{position:absolute;inset:0}
+.detent-captions span{position:absolute;transform:translate(var(--caption-shift),-50%);width:max-content;max-width:58px;
+font-size:.7em;line-height:1.08;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none}
+.detent-captions [data-active]{color:var(--accent);font-weight:700}
 .artwork{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}
 .stepper .face{display:grid;grid-template-columns:minmax(18px,1fr) minmax(2ch,auto) minmax(18px,1fr);gap:clamp(2px,1vw,6px)}
 .stepper button{padding-inline:0;touch-action:none;font-size:1.2em;font-weight:650;cursor:pointer}
@@ -1040,6 +1155,7 @@ min-height:32px;padding:4px 5px;color:var(--accent);background:#171b1a;border-ra
 .led-digit{position:relative;width:43%;max-width:31px;aspect-ratio:3/4}
 .led-segment{position:absolute;background:currentColor;opacity:.17}
 .led-segment[data-lit]{opacity:1}
+.led-stroke{position:absolute;inset:0;background:currentColor}
 .led-segment:is([data-segment=a],[data-segment=d],[data-segment=g]){left:13%;width:59%;height:9%;
 clip-path:polygon(0 50%,12% 0,88% 0,100% 50%,88% 100%,12% 100%)}
 .led-segment[data-segment=a]{top:1%}
@@ -1124,17 +1240,22 @@ main[data-layout=phone] .meter-face{min-height:62px}
     const json = value => JSON.stringify(value).replace(/</g, "\\u003c");
 
     function html(controls, theme, preview) {
-        const {phoneGrid, phonePlacements, readingOrder, stepCount, isPanelArt, isProgramControl,
+        const {phoneGrid, phonePlacements, readingOrder, layerOrder, layerPriority, stepCount, maxDetentLabels, isPanelArt, isProgramControl,
             readPrograms, defaultTheme, ledGlyphs, displayCode, numericLedCode, actionBindings,
             conditionRules, compareValue, parameterKeys, typographyFamilies} = CellDesignerModel;
         const phone = phonePlacements(controls);
+        // Authored stacks stay in the same order as the canvas across both responsive layouts.
+        // For older layouts, equal default priorities continue to follow the grid's reading order.
+        const ranks = controls.some(control => control.layer !== undefined)
+            ? new Map(layerOrder(controls).map((control, index) => [control, index + 1])) : null;
         const sorted = controls.map((control, index) => ({...control, phone: phone[index],
+            layer: ranks?.get(control) ?? layerPriority(control),
             visibleRules: conditionRules(control.visibleWhen), enabledRules: conditionRules(control.enabledWhen)})).sort(readingOrder);
         const simulation = preview
             ? `(${simulate.toString()})(controls,${json(preview.catalog)},${json(preview.programs ?? null)},${json(preview.values)},${preview.generation},isProgramControl,isPanelArt,${json(actionBindings(controls))},${json(parameterKeys(controls))});` : "";
         const colors = Object.keys(defaultTheme).map(name => `--${name}:${theme[name]}`).join(";");
         const background = {artwork: theme.backgroundArtwork, fit: theme.backgroundFit ?? "cover"};
-        const rows = sorted.reduce((maximum, control) => Math.max(maximum, control.y + control.height), 1);
+        const rows = Math.ceil(sorted.reduce((maximum, control) => Math.max(maximum, control.y + control.height), 1));
         const fonts = fontCss(sorted.flatMap(control => control.typography ? [control.typography] : []));
         return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -1143,7 +1264,7 @@ main[data-layout=phone] .meter-face{min-height:62px}
 :root{${colors};--rows:${rows};--phone-columns:${phoneGrid.columns}}${css}${typographyCss}</style></head>
 <body><main></main><script>const controls = ${json(sorted)};
 const isProgramControl = ${isProgramControl.toString()}, isPanelArt = ${isPanelArt.toString()};
-${simulation}(${mount.toString()})(controls,${json(background)},${phoneGrid.breakpoint},${stepCount.toString()},isPanelArt,isProgramControl,${readPrograms.toString()},
+${simulation}(${mount.toString()})(controls,${json(background)},${phoneGrid.breakpoint},${stepCount.toString()},${maxDetentLabels},isPanelArt,isProgramControl,${readPrograms.toString()},
 {glyphs:${json(ledGlyphs)},codeForValue:${displayCode.toString()},numericCode:${numericLedCode.toString()}},${compareValue.toString()},
 ${paintTypography.toString()},${json(typographyFamilies)});</script></body></html>`;
     }

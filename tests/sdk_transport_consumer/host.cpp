@@ -4,10 +4,14 @@
 #include <bit>
 #include <cstdint>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <vector>
+#include <cell/midi.hpp>
 #if CELL_TRANSPORT_CLAP
 #include <clap/clap.h>
 #include <cell/realtime.hpp>
@@ -41,6 +45,7 @@ void output(const Channels &values, bool valid) {
 }
 const std::array bpms{137.5, 0., -10., std::numeric_limits<double>::quiet_NaN(),
                       std::numeric_limits<double>::infinity()};
+constexpr std::uint32_t sysExFrame = 23;
 constexpr auto sysExPayload = [] {
   std::array<std::uint8_t, 4099> bytes{};
   bytes.front() = 0xf0;
@@ -49,8 +54,42 @@ constexpr auto sysExPayload = [] {
   bytes.back() = 0xf7;
   return bytes;
 }();
+
+template<class Verify>
+void verifyDump(const char *path, Verify verify) {
+  if (!path) return;
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) throw std::runtime_error(std::string("Cannot open SysEx dump: ") + path);
+  std::vector<std::uint8_t> message;
+  std::size_t count{}, total{};
+  char byte{};
+  while (stream.get(byte)) {
+    const auto offset = total;
+    const auto invalid = [offset](std::string_view reason) {
+      throw std::runtime_error("SysEx dump at byte " + std::to_string(offset) + ": " + std::string(reason));
+    };
+    if (static_cast<std::uint8_t>(byte) != 0xf0) invalid("expected a raw F0-framed message");
+    message.assign(1, 0xf0);
+    for (;;) {
+      if (!stream.get(byte)) invalid(stream.eof() ? "missing F7 terminator" : "read failed");
+      if (message.size() == cell::midi::sysExByteCapacity) invalid("message exceeds the 256 KiB ABI limit");
+      const auto data = static_cast<std::uint8_t>(byte);
+      message.push_back(data);
+      if (data == 0xf7) break;
+      if (data >= 0x80) invalid("unexpected MIDI status inside message");
+    }
+    verify(std::span<const std::uint8_t>(message));
+    total += message.size();
+    ++count;
+  }
+  if (!stream.eof()) throw std::runtime_error("Could not finish reading SysEx dump");
+  check(count != 0, "SysEx dump is empty");
+  std::cout << "PASS: --dump delivered " << count << " SysEx message(s), " << total
+            << " bytes, to the processor at frame " << sysExFrame << " with byte-exact output\n";
+}
+
 #if CELL_TRANSPORT_CLAP
-void run(const char *path) {
+void run(const char *path, const char *dumpPath) {
 #if defined(_WIN32)
   auto library = LoadLibraryA(path);
   auto *entry = library ? reinterpret_cast<const clap_plugin_entry_t *>(
@@ -182,7 +221,7 @@ void run(const char *path) {
   note.data[2] = 100;
   constexpr std::array<std::uint8_t, 3> malformed{0xf0, 0x80, 0xf7};
   clap_event_midi_sysex_t sysEx{};
-  sysEx.header = {sizeof(sysEx), 23, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI_SYSEX, 0};
+  sysEx.header = {sizeof(sysEx), sysExFrame, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI_SYSEX, 0};
   sysEx.buffer = sysExPayload.data();
   sysEx.size = sysExPayload.size();
   auto badSysEx = sysEx;
@@ -190,10 +229,13 @@ void run(const char *path) {
   badSysEx.buffer = malformed.data();
   badSysEx.size = malformed.size();
   using Incoming = std::array<const clap_event_header_t *, 4>;
-  Incoming incoming{&event.header, &sysEx.header, &note.header, &badSysEx.header};
+  Incoming incoming{};
   const clap_input_events_t midiInput{
       &incoming,
-      [](const clap_input_events_t *) -> std::uint32_t { return 4; },
+      [](const clap_input_events_t *list) -> std::uint32_t {
+        const auto &items = *static_cast<const Incoming *>(list->ctx);
+        return static_cast<std::uint32_t>(std::find(items.begin(), items.end(), nullptr) - items.begin());
+      },
       [](const clap_input_events_t *list, std::uint32_t index) {
         const auto &items = *static_cast<const Incoming *>(list->ctx);
         return items[index];
@@ -202,7 +244,7 @@ void run(const char *path) {
     std::array<clap_event_midi_t, 49> events{};
     unsigned count{};
     unsigned limit{49};
-    std::array<std::uint8_t, sysExPayload.size()> sysEx{};
+    std::span<std::uint8_t> sysEx;
     unsigned sysExCount{}, sysExFrame{};
   } captured;
   const clap_output_events_t midiOutput{&captured,
@@ -225,11 +267,34 @@ void run(const char *path) {
   process.transport = nullptr;
   process.in_events = &midiInput;
   process.out_events = &midiOutput;
+  const auto fixtureEvent = sysEx;
+  std::vector<std::uint8_t> dumpEcho;
+  verifyDump(dumpPath, [&](std::span<const std::uint8_t> message) {
+    sysEx.buffer = message.data();
+    sysEx.size = static_cast<std::uint32_t>(message.size());
+    incoming = {&sysEx.header, nullptr, nullptr, nullptr};
+    dumpEcho.resize(message.size());
+    captured.sysEx = dumpEcho;
+    captured.sysExCount = 0;
+    check(plugin->process(plugin, &process) != CLAP_PROCESS_ERROR &&
+              values[1][sysExFrame] == static_cast<float>(message.size()),
+          "CLAP dump did not reach the processor at the expected offset");
+    check(captured.sysExCount == 1 && captured.sysExFrame == sysExFrame &&
+              std::ranges::equal(dumpEcho, message),
+          "CLAP did not return the exact dump bytes at the expected offset");
+  });
+  sysEx = fixtureEvent;
+  incoming = {&event.header, &sysEx.header, &note.header, &badSysEx.header};
+  std::array<std::uint8_t, sysExPayload.size()> fixtureEcho{};
+  captured = {};
+  captured.sysEx = fixtureEcho;
   check(plugin->process(plugin, &process) != CLAP_PROCESS_ERROR && captured.count == 1 &&
             captured.events[0].header.time == 31 && captured.events[0].port_index == 0 &&
             std::equal(note.data, note.data + 3, captured.events[0].data),
         "CLAP lost the routed MIDI event or its block-relative sample offset");
-  check(captured.sysExCount == 1 && captured.sysExFrame == 23 && captured.sysEx == sysExPayload,
+  check(values[1][sysExFrame] == static_cast<float>(sysExPayload.size()) && values[1][45] == 0.f,
+        "CLAP failed to deliver valid SysEx to the processor or delivered malformed SysEx");
+  check(captured.sysExCount == 1 && captured.sysExFrame == sysExFrame && fixtureEcho == sysExPayload,
         "CLAP changed a SysEx payload or timestamp, or forwarded malformed SysEx");
   incoming = {&event.header, &note.header, nullptr, nullptr};
   // Reject a note-off after the previous note-on reached the host.
@@ -503,7 +568,7 @@ void run(const char *path) {
 #endif
 }
 #else
-void run(const char *path) {
+void run(const char *path, const char *dumpPath) {
   using namespace Steinberg;
   using namespace Steinberg::Vst;
   std::string error;
@@ -595,7 +660,7 @@ void run(const char *path) {
       auto bytes = sysExPayload;
       Event sysex{};
       sysex.type = Event::kDataEvent;
-      sysex.sampleOffset = 23;
+      sysex.sampleOffset = sysExFrame;
       sysex.data = {uint32(bytes.size()), DataEvent::kMidiSysEx, bytes.data()};
       Event note{};
       note.type = Event::kNoteOnEvent;
@@ -606,16 +671,38 @@ void run(const char *path) {
       Event invalid = sysex;
       invalid.sampleOffset = 40;
       invalid.data = {uint32(malformed.size()), DataEvent::kMidiSysEx, malformed.data()};
-      check(eventInputs.addEvent(sysex) == kResultOk && eventInputs.addEvent(note) == kResultOk &&
-            eventInputs.addEvent(invalid) == kResultOk, "Could not stage the VST3 SysEx fixture");
       data.inputEvents = &eventInputs;
       data.outputEvents = &eventOutputs;
+      std::vector<std::uint8_t> dumpBytes;
+      verifyDump(dumpPath, [&](std::span<const std::uint8_t> message) {
+        dumpBytes.assign(message.begin(), message.end());
+        auto inputEvent = sysex;
+        inputEvent.data = {static_cast<uint32>(dumpBytes.size()), DataEvent::kMidiSysEx, dumpBytes.data()};
+        check(eventInputs.addEvent(inputEvent) == kResultOk, "Could not stage the VST3 dump");
+        check(processor->process(data) == kResultOk &&
+                  values[1][sysExFrame] == static_cast<float>(message.size()),
+              "VST3 dump did not reach the processor at the expected offset");
+        std::ranges::fill(dumpBytes, 0);
+        Event echoed{};
+        check(eventOutputs.getEventCount() == 1 && eventOutputs.getEvent(0, echoed) == kResultOk &&
+                  echoed.type == Event::kDataEvent && echoed.sampleOffset == sysExFrame &&
+                  echoed.busIndex == 0 && echoed.data.type == DataEvent::kMidiSysEx &&
+                  echoed.data.size == message.size() && echoed.data.bytes &&
+                  std::equal(message.begin(), message.end(), echoed.data.bytes),
+              "VST3 did not return owned, exact dump bytes at the expected offset");
+        eventInputs.clear();
+        eventOutputs.clear();
+      });
+      check(eventInputs.addEvent(sysex) == kResultOk && eventInputs.addEvent(note) == kResultOk &&
+            eventInputs.addEvent(invalid) == kResultOk, "Could not stage the VST3 SysEx fixture");
       check(processor->process(data) == kResultOk && eventOutputs.getEventCount() == 2,
             "VST3 dropped a valid event or returned malformed SysEx");
+      check(values[1][sysExFrame] == static_cast<float>(sysExPayload.size()) && values[1][40] == 0.f,
+            "VST3 failed to deliver valid SysEx to the processor or delivered malformed SysEx");
       bytes.fill(0);
       Event copied{}, forwardedNote{};
       check(eventOutputs.getEvent(0, copied) == kResultOk && copied.type == Event::kDataEvent &&
-            copied.sampleOffset == 23 && copied.data.type == DataEvent::kMidiSysEx &&
+            copied.sampleOffset == sysExFrame && copied.data.type == DataEvent::kMidiSysEx &&
             copied.data.size == sysExPayload.size() && copied.data.bytes &&
             std::equal(sysExPayload.begin(), sysExPayload.end(), copied.data.bytes),
             "VST3 lost SysEx data ownership or the sample offset");
@@ -631,8 +718,14 @@ void run(const char *path) {
 } // namespace
 int main(int argc, char **argv) {
   try {
-    check(argc == 2, "Supply the transport fixture plugin path");
-    run(argv[1]);
+    if (argc == 2 && std::string_view(argv[1]) == "--help") {
+      std::cout << "Usage: " << argv[0] << " <transport-fixture-plugin> [--dump <bank.syx>]\n";
+      return 0;
+    }
+    check((argc == 2 || (argc == 4 && std::string_view(argv[2]) == "--dump")) &&
+              !std::string_view(argv[1]).starts_with("--"),
+          "Usage: <transport-fixture-plugin> [--dump <bank.syx>]");
+    run(argv[1], argc == 4 ? argv[3] : nullptr);
     std::cout << "PASS: real adapter valid/missing/NaN/infinite/nonpositive "
                  "tempo and parameter segmentation\n";
   } catch (const std::exception &e) {

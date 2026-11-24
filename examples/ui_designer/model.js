@@ -8,6 +8,7 @@ const CellDesignerModel = (() => {
     const maxPanelAssetBytes = 1024 * 1024;
     const maxProjectBytes = 2 * 1024 * 1024;
     const maxDisplayCodes = 128;
+    const maxDetentLabels = 32;
     const schema = "cell.ui-layout.v3";
     const clipboardSchema = "cell.ui-controls.v1";
     const wideGrid = {columns, rows, maxHeight: rows};
@@ -56,11 +57,15 @@ const CellDesignerModel = (() => {
     const color = /^#[0-9a-f]{6}$/i;
     const clamp = (value, upper) => Math.min(Math.max(value, 0), upper);
     const isPanelArt = kind => kind === "image" || kind === "rectangle" || kind === "line";
+    const defaultLayers = {rectangle: 1, line: 2, image: 3};
+    const layerPriority = control => control.layer ?? defaultLayers[control.kind] ?? 4;
+    const layerOrder = controls => [...controls].sort((a, b) => layerPriority(a) - layerPriority(b));
     const isProgramControl = kind => ["bank", "program", "patch-name", "program-grid"].includes(kind);
     const hasDisplayCodes = kind => ["led", "stepper", "readout", "choice"].includes(kind);
     const hasArtwork = kind => kind === "knob" || kind === "fader" || kind === "image";
     const hasBinding = kind => !["text", "action", "action-pair"].includes(kind) && !isPanelArt(kind) && !isProgramControl(kind);
     const hasParameter = kind => hasBinding(kind) && kind !== "meter";
+    const hasParameterBinding = control => hasParameter(control.kind) && (control.kind !== "led" || Boolean(control.key));
     const validText = value => typeof value === "string" && value.trim() && value.length <= 80 && !/[\x00-\x1f\x7f]/.test(value);
     const plainNumber = "[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?";
     const validAction = key => typeof key === "string" && /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(key);
@@ -222,7 +227,8 @@ const CellDesignerModel = (() => {
         }
         return settings;
     }
-    // Segments a–g and the decimal point (p), used as the dot in the question mark.
+    // Standard glyphs use segments a–g and the decimal point (p).
+    // Extended glyphs use strokes [x1, y1, x2, y2] in percent of a cell.
     const ledGlyphs = Object.freeze({
         " ": "", "-": "g", "?": "abegp",
         0: "abcdef", 1: "bc", 2: "abdeg", 3: "abcdg", 4: "bcfg", 5: "acdfg",
@@ -231,8 +237,40 @@ const CellDesignerModel = (() => {
         D: "bcdeg", d: "bcdeg", E: "adefg", e: "abdefg", F: "aefg", f: "aefg",
         G: "acdef", H: "bcefg", h: "cefg", I: "bc", i: "c", J: "bcde",
         L: "def", l: "ef", n: "ceg", O: "abcdef", o: "cdeg", P: "abefg",
-        q: "abcfg", r: "eg", S: "acdfg", t: "defg", U: "bcdef", u: "cde", y: "bcdfg"
+        q: "abcfg", r: "eg", S: "acdfg", t: "defg", U: "bcdef", u: "cde", y: "bcdfg",
+        K: [[12, 8, 12, 92], [12, 50, 75, 8], [12, 50, 75, 92]],
+        M: [[12, 8, 12, 92], [12, 8, 44, 51], [44, 51, 76, 8], [76, 8, 76, 92]],
+        N: [[12, 8, 12, 92], [12, 8, 76, 92], [76, 8, 76, 92]],
+        R: [[12, 8, 12, 92], [12, 8, 66, 8], [66, 8, 76, 18], [76, 18, 76, 37],
+            [76, 37, 66, 47], [66, 47, 12, 47], [41, 47, 77, 92]],
+        V: [[10, 8, 44, 92], [44, 92, 78, 8]],
+        W: [[9, 8, 23, 92], [23, 92, 44, 51], [44, 51, 65, 92], [65, 92, 79, 8]],
+        X: [[11, 8, 77, 92], [77, 8, 11, 92]],
+        Y: [[10, 8, 44, 49], [78, 8, 44, 49], [44, 49, 44, 92]],
+        Z: [[11, 8, 77, 8], [77, 8, 11, 92], [11, 92, 77, 92]],
+        "+": [[44, 27, 44, 73], [11, 50, 77, 50]],
+        "#": [[35, 13, 23, 87], [65, 13, 53, 87], [12, 37, 79, 37], [9, 63, 76, 63]]
     });
+
+    function validLedText(text) {
+        return typeof text === "string" && text.trim() && text.length <= 2 &&
+            [...text].every(character => Object.hasOwn(ledGlyphs, character));
+    }
+
+    function ledSettings({kind, key, segmented, ledText, hideHeading}) {
+        const hasLed = kind === "led" || (kind === "stepper" && segmented);
+        if (ledText !== undefined || hideHeading !== undefined) {
+            if (!hasLed) throw new Error("LED settings require an LED display or segmented stepper.");
+            if (hideHeading !== undefined && typeof hideHeading !== "boolean")
+                throw new Error("Invalid LED heading setting.");
+        }
+        if ((ledText !== undefined || (kind === "led" && !key)) && !validLedText(ledText))
+            throw new Error("Enter one or two supported LED characters.");
+        return {
+            ...(ledText === undefined ? {} : {ledText}),
+            ...(hideHeading ? {hideHeading: true} : {})
+        };
+    }
 
     function readDisplayCodes(entries) {
         if (!Array.isArray(entries) || entries.length > maxDisplayCodes)
@@ -240,8 +278,7 @@ const CellDesignerModel = (() => {
         const values = new Set();
         return entries.map(entry => {
             const {value, code} = entry ?? {};
-            if (!Number.isFinite(value) || typeof code !== "string" || !code.length || code.length > 2 || code.includes(" ") ||
-                ![...code].every(character => Object.hasOwn(ledGlyphs, character)))
+            if (!Number.isFinite(value) || !validLedText(code) || code.includes(" "))
                 throw new Error("Each display code needs a finite value and one or two supported characters.");
             if (values.has(value)) throw new Error(`Value ${value} has more than one display code.`);
             values.add(value);
@@ -256,6 +293,20 @@ const CellDesignerModel = (() => {
             return {value: Number(match[1]), code: match[2]};
         });
         return readDisplayCodes(entries);
+    }
+
+    function readDetentLabels(labels) {
+        if (labels === "choices") return labels;
+        if (!Array.isArray(labels) || labels.length > maxDetentLabels || !labels.some(label => typeof label === "string" && label.trim()) ||
+            labels.some(label => typeof label !== "string" || label.length > 32 || /[\x00-\x1f\x7f]/.test(label)))
+            throw new Error(`Enter up to ${maxDetentLabels} detent labels of up to 32 characters each.`);
+        return labels.map(label => label.trim());
+    }
+
+    function readRotation(angle) {
+        if (!Number.isFinite(angle)) throw new Error("Enter a finite rotation in degrees.");
+        const degrees = angle % 360;
+        return degrees >= 180 ? degrees - 360 : degrees < -180 ? degrees + 360 : degrees;
     }
 
     function displayCode(entries, value, step) {
@@ -399,24 +450,37 @@ const CellDesignerModel = (() => {
     }
 
     function readControl(control, index, hasPhone) {
+        if (Object.hasOwn(control ?? {}, "cells"))
+            throw new Error(`Control ${index + 1} has an unsupported "cells" field. Segmented displays use exactly two cells.`);
         const {kind, label, key = "", x, y, width = kinds[kind]?.width, height = 1,
             accent = "", artwork = "", skin = "modern", phone, fit = "contain",
-            direction = "horizontal", thickness = 2, displayCodes, segmented} = control ?? {};
+            direction = "horizontal", thickness = 2, displayCodes, segmented, detentLabels, rotation = 0, layer} = control ?? {};
         const normalizedLabel = readLabel(label);
         if (typeof kind !== "string" || !Object.hasOwn(kinds, kind) || !normalizedLabel ||
-            (hasBinding(kind) && !validText(key)) || typeof skin !== "string" || !Object.hasOwn(skins, skin) ||
+            (hasBinding(kind) && !(kind === "led" && key === "") && !validText(key)) ||
+            typeof skin !== "string" || !Object.hasOwn(skins, skin) ||
             !validBox({x, y, width, height}, wideGrid) ||
+            (detentLabels !== undefined && kind !== "knob") ||
             typeof accent !== "string" || (accent && !color.test(accent)) ||
             (artwork !== "" && (!hasArtwork(kind) || !validArtwork(artwork, kind === "image" ? maxPanelAssetBytes : maxAssetBytes))) ||
             (kind === "image" && !imageFits.includes(fit)) ||
             (segmented !== undefined && (kind !== "stepper" || typeof segmented !== "boolean")) ||
-            (displayCodes !== undefined && !hasDisplayCodes(kind)) ||
+            (displayCodes !== undefined && (!hasDisplayCodes(kind) || (kind === "led" && !key))) ||
             (kind === "line" && (!["horizontal", "vertical"].includes(direction) ||
                 !Number.isInteger(thickness) || thickness < 1 || thickness > 16)))
             throw new Error(`Invalid settings for control ${index + 1}.`);
         const result = {kind, label: normalizedLabel, key: hasBinding(kind) ? key : "", x, y, width, height, accent, artwork, skin};
+        if (layer !== undefined) {
+            if (!Number.isInteger(layer) || layer < 1 || layer > maxControls)
+                throw new Error(`Invalid layer for control ${index + 1}. Use an integer from 1 to ${maxControls}.`);
+            result.layer = layer;
+        }
+        const angle = readRotation(rotation);
+        if (angle) result.rotation = angle;
+        if (detentLabels !== undefined) result.detentLabels = readDetentLabels(detentLabels);
         Object.assign(result, buttonSettings(kind, control));
         Object.assign(result, ruleSettings(control));
+        Object.assign(result, ledSettings(control));
         if (kind === "image") result.fit = fit;
         if (kind === "line") Object.assign(result, {direction, thickness});
         if (displayCodes !== undefined) result.displayCodes = readDisplayCodes(displayCodes);
@@ -465,8 +529,8 @@ const CellDesignerModel = (() => {
         const {x, y, width, height} = box;
         return Number.isInteger(width) && width >= 1 && width <= grid.columns &&
             Number.isInteger(height) && height >= 1 && height <= grid.maxHeight &&
-            Number.isInteger(x) && x >= 0 && x <= grid.columns - width &&
-            Number.isInteger(y) && y >= 0 && y <= grid.rows - height;
+            Number.isFinite(x) && x >= 0 && x <= grid.columns - width &&
+            Number.isFinite(y) && y >= 0 && y <= grid.rows - height;
     }
 
     function constrain(box, grid) {
@@ -476,8 +540,9 @@ const CellDesignerModel = (() => {
     }
 
     function overlaps(a, b) {
-        return a.x < b.x + b.width && b.x < a.x + a.width &&
-               a.y < b.y + b.height && b.y < a.y + a.height;
+        const tolerance = 1e-9;
+        return a.x + tolerance < b.x + b.width && b.x + tolerance < a.x + a.width &&
+               a.y + tolerance < b.y + b.height && b.y + tolerance < a.y + a.height;
     }
 
     function firstOpenPlace({width, height}, controls, grid = wideGrid) {
@@ -534,7 +599,8 @@ const CellDesignerModel = (() => {
         const result = [];
         let cursor = start;
         ordered.forEach(({box, index}, i) => {
-            result[index] = {...translate(box, 0, 0), [axis]: cursor + Math.round(i * space / (boxes.length - 1))};
+            const gap = i * space / (boxes.length - 1);
+            result[index] = {...translate(box, 0, 0), [axis]: cursor + (Number.isInteger(space) ? Math.round(gap) : gap)};
             cursor += box[size];
         });
         return result;
@@ -546,6 +612,24 @@ const CellDesignerModel = (() => {
         const {left, top, right, bottom} = bounds(boxes);
         const width = right - left;
         const height = bottom - top;
+        if ([...boxes, ...occupied].some(box => !Number.isInteger(box.x) || !Number.isInteger(box.y))) {
+            const rows = Array.from({length: grid.rows}, () => []);
+            for (const box of occupied)
+                for (let y = Math.floor(box.y); y < Math.min(grid.rows, Math.ceil(box.y + box.height)); y++) rows[y].push(box);
+            for (let y = 0; y <= grid.rows - height; y++) {
+                for (let x = 0; x <= grid.columns - width; x++) {
+                    const placed = boxes.map(box => translate(box, x - left, y - top));
+                    const fits = placed.every(box => {
+                        for (let row = Math.floor(box.y); row < Math.ceil(box.y + box.height); row++) {
+                            if (rows[row]?.some(other => overlaps(box, other))) return false;
+                        }
+                        return true;
+                    });
+                    if (fits) return placed.map(box => constrain(box, grid));
+                }
+            }
+            return null;
+        }
         const pattern = new Uint16Array(height);
         const taken = new Uint16Array(grid.rows);
         const mark = (mask, geometry, originX, originY) => {
@@ -601,7 +685,7 @@ const CellDesignerModel = (() => {
 
     function parameterKeys(controls) {
         return [...new Set([
-            ...controls.filter(control => hasParameter(control.kind)).map(control => control.key),
+            ...controls.filter(hasParameterBinding).map(control => control.key),
             ...controls.flatMap(ruleKeys)
         ])];
     }
@@ -647,7 +731,7 @@ const CellDesignerModel = (() => {
             if (unknownSource) return [control.label + ": unknown rule or label source " + unknownSource];
             if (isProgramControl(control.kind))
                 return programs?.banks.some(bank => bank.programs.length) ? [] : [`${control.label}: missing program memory snapshot`];
-            if (!catalog || !hasParameter(control.kind)) return [];
+            if (!catalog || !hasParameterBinding(control)) return [];
             const parameter = keys.get(control.key);
             if (!parameter) return [`${control.label}: unknown key ${control.key}`];
             if (control.kind === "choice" && !parameter.choices.length)
@@ -658,6 +742,14 @@ const CellDesignerModel = (() => {
                 return [`${control.label}: ${control.key} needs different press and release values`];
             if (control.kind === "stepper" && !stepCount(parameter))
                 return [`${control.label}: ${control.key} needs a stepped parameter`];
+            if (control.detentLabels) {
+                const detents = stepCount(parameter) + 1;
+                if (detents < 2 || detents > maxDetentLabels)
+                    return [`${control.label}: detent labels require 2 to ${maxDetentLabels} discrete values`];
+                const labels = control.detentLabels === "choices" ? parameter.choices : control.detentLabels;
+                if (labels.length !== detents)
+                    return [`${control.label}: supply one detent label for each of the ${detents} values`];
+            }
             const outside = control.displayCodes?.find(({value}) => value < parameter.minimum || value > parameter.maximum);
             if (outside) return [`${control.label}: display code value ${outside.value} is outside ${control.key}'s range`];
             return [];
@@ -671,7 +763,7 @@ const CellDesignerModel = (() => {
             return '"' + [...bytes].map(byte => byte >= 32 && byte <= 126 && byte !== 34 && byte !== 92 && byte !== 63
                 ? String.fromCharCode(byte) : "\\" + byte.toString(8).padStart(3, "0")).join("") + '"';
         };
-        const entries = controls.filter(control => hasParameter(control.kind));
+        const entries = controls.filter(hasParameterBinding);
         const keys = parameterKeys(controls);
         const edited = new Set(entries.map(control => control.key));
         const readOnly = keys.filter(key => !edited.has(key));
@@ -712,12 +804,14 @@ inline cell::web::ParameterBridge bind(cell::Engine& engine) {
 
     return {wideGrid, phoneGrid, kinds, skins, defaultTheme, showcase, maxControls, maxAssetBytes, maxPanelAssetBytes,
         maxProjectBytes, imageType, validArtwork, isPanelArt, isProgramControl, clamp, validText, hasArtwork, hasParameter,
-        hasDisplayCodes, ledGlyphs, parseDisplayCodes, displayCode, numericLedCode,
+        hasDisplayCodes, ledGlyphs, ledSettings, parseDisplayCodes, displayCode, numericLedCode, hasParameterBinding,
+        maxDetentLabels, readDetentLabels, readRotation,
         buttonDefaults, buttonSettings, actionBindings,
         readLabel, typographyFamilies, typographySettings, silkscreen,
         ruleSettings, ruleKeys, conditionRules, compareValue, variantsDisjoint, parseLabelMap,
         hasBinding, readProject, readCatalog, readPrograms, serialize, overlaps,
         writeClipboard, readClipboard,
         constrain, firstOpenPlace, moveBoxes, alignBoxes, distributeBoxes, findGroupPlacement,
-        readingOrder, phoneSize, phonePlacements, bindingIssues, parameterKeys, meterKeys, twoState, stepCount, cppBindings};
+        readingOrder, layerPriority, layerOrder, phoneSize, phonePlacements, bindingIssues,
+        parameterKeys, meterKeys, twoState, stepCount, cppBindings};
 })();

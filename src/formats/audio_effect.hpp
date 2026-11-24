@@ -56,12 +56,18 @@ inline void activate(AudioEffect& instance) noexcept {
     instance.engine.reset();
 }
 
-inline void run(AudioEffect& instance, std::size_t frames) noexcept {
+inline void run(AudioEffect& instance, std::size_t frames, std::span<double> observedPorts = {}) noexcept {
     const auto parameters = instance.engine.descriptor().parameters;
     instance.events.clear();
     for (std::size_t i = 0; i < parameters.size(); ++i) {
         const auto& parameter = parameters[i];
         const auto value = parameter.clamp(instance.controls[i] ? *instance.controls[i] : parameter.defaultValue);
+        // A successful editor recall can precede the host's control-port echo.
+        // An unchanged port value must not replace the newly recalled value.
+        if (!observedPorts.empty()) {
+            if (value == observedPorts[i]) continue;
+            observedPorts[i] = value;
+        }
         if (value != instance.engine.parameters().get(parameter.id))
             instance.events.push_back({0, parameter.id, value});
     }

@@ -174,11 +174,18 @@ Lines can be horizontal or vertical and 1–16 pixels thick. Open **Panel
 background** for an image that fills the entire editor. Images and the
 background offer **Fit**, **Fill and crop**, and **Stretch**.
 
-Rectangles and lines sit above the background, followed by images and
-interactive controls. Turn on **Edit panel artwork** to reach artwork behind
-the controls. Artwork elements can have their own wide and phone positions.
-The exported editor displays artwork offline and keeps its controls available
-for pointer and keyboard input. Artwork has no parameter binding.
+Open **Layers** in the inspector to select any element, including one covered
+by others. The list runs from front to back. Use **Bring forward** or
+**Send backward** to move one layer, or use **Bring to front** or **Send to
+back** to move to either end. Layer order is saved in the layout and shared
+by the wide and phone editors. After you set a custom order, new elements
+are inserted at the front. Copied groups keep their relative order.
+
+The panel background sits below every element. The default stack puts
+rectangles and lines below images and interactive controls. **Edit panel
+artwork** temporarily brings artwork into view for direct editing. Foreground
+artwork in the preview and exported editor lets pointer events reach controls
+beneath it.
 
 Each Image or background file can use up to 1 MiB, with raster dimensions
 up to 4096 × 4096 pixels. Use self-contained SVGs for scalable artwork.
@@ -207,11 +214,28 @@ one step, or hold either button to repeat. Arrow keys also step when either
 button has focus. Holding a button sends one host automation gesture and
 stops at the parameter limit.
 
-Bind a knob to a parameter with 2–32 discrete positions to show individual
-detents and highlight the current position. Drag the knob or use the arrow
-keys to select a stop. The knob retains its selected skin and artwork.
+Bind a knob to a parameter with 2–64 discrete positions to show individual
+detents and highlight the current position. Knobs with 33–64 stops use thinner
+ticks. Drag the knob or use the arrow keys to select a stop. The knob retains
+its selected skin and artwork.
+For knobs with up to 32 stops, set **Detent labels** to **Parameter choices**
+to show the host's choice names around the dial. Select **Custom labels** to
+enter shorter or different legends, one line per stop from minimum to maximum.
+Use a blank line to skip a legend.
+Custom legends leave the host's choice names and automation values intact.
+Use short legends when the stops are close together.
 The same controls and parameter bindings work in live preview and exported
 editors.
+
+### Position and rotate elements
+
+Enter a fractional **Column** or **Row** in the inspector for precise placement.
+For example, column `3.5` is halfway from column 3 to column 4. Turn off
+**Snap to grid** to move in tenths of a cell with the pointer or arrow keys.
+**Rotation (degrees)** turns the element clockwise around its center. Use a
+negative angle to turn counterclockwise. A control can have different
+positions in Wide and Phone layouts, with the same rotation in both. Resizing,
+alignment, and overlap checks use the unrotated grid box.
 
 ### Style panel text
 
@@ -227,7 +251,7 @@ increased letter spacing. Adjust the fields and click **Apply**. Use
 Panel Sans is based on Inter and includes variable weights. Panel Condensed
 is based on Rajdhani and includes weights from 300 through 700. The HTML
 export embeds the selected bundled fonts and their licenses. System font
-choices use the device's own fonts. The seven-segment display keeps its
+choices use the device's own fonts. The segmented display keeps its
 segment geometry while its heading follows the typography settings.
 
 ### Share a panel across device modes
@@ -290,14 +314,29 @@ enabled. The editor handles the hold timing. The processor owns any
 product-specific validation and state changes.
 
 The Cell Gain WebView example implements `factory-recall` and recalls its
-default trim. CLAP and Android Designer carry action bindings to their
-processing engines. The target product defines its own store, initialize,
-tuner, and patch-navigation behavior.
+default trim. CLAP, VST3, AU, AUv3, Android Designer, and LV2 hosts with
+processor access can carry action bindings to their processing engines. The
+target product defines its own store, initialize, tuner, and patch-navigation
+behavior.
 
 ### Show hardware display codes
 
-Add an **LED Display** and bind its parameter key. The display has two
-seven-segment character cells with dim unlit segments. Unmapped integer
+Add an **LED Display** with two segmented character cells and dim unlit
+segments. Digits and common pedal codes use the original seven-segment
+shapes. `M N R K V W X Y Z + #` use extra strokes where needed.
+The cell count is fixed. Layout and clipboard imports reject a control's
+`cells` field, including `"cells": 2`.
+**LED source** offers these modes.
+
+- **Parameter value** shows the bound parameter continuously.
+- **Static characters** displays one or two characters without a
+  parameter key. The characters render offline and add no parameter
+  binding to the export.
+- **Code at rest, value on change** displays the entered characters and
+  temporarily shows the bound value in the same cells after each change.
+  The code returns 1.2 seconds after the last change.
+
+Use **Hide heading** when the segments alone should be visible. Unmapped integer
 values from 0 through 99 are zero-padded. Integers from −9 through −1 use
 one cell for the minus sign. Other unmapped values show `--`.
 
@@ -321,6 +360,8 @@ You can also add codes to a **Stepper**, **Readout**, or **Choice**. Turn on
 plus buttons. Codes live in the layout. Menus, host labels, and automation
 keep the plug-in's chosen labels and values. On mapped outputs, the full
 choice label is available to screen readers and in the tooltip.
+Enter **LED characters** on a segmented Stepper to use the same at-rest
+code and value behavior within its two buttons.
 
 ### Bind a bank of programs
 
@@ -345,11 +386,12 @@ snapshot in the Designer to preview its names and slot selection. Live
 preview simulates the selection. Exported HTML uses the connected
 instance's catalog and the reference applies the patch to its gain.
 
-The Engine-backed CLAP and Android Designer bridges and the native
-WebView reference can use this interface. Separate-controller VST3, LV2
-UI, AU, and AUv3 editor adapters need a connection to their processing
-instance's program endpoint. A bridge without a program catalog shows
-the controls as unavailable.
+The Engine-backed CLAP and Android Designer bridges and the native WebView
+reference use this interface directly. VST3 sends recall and action requests
+over its component connection. AU and AUv3 call the processor that owns the
+attached audio unit. LV2 hosts must supply both instance-access and data-access
+to the UI for commands and program memory. A bridge without processor access
+or a program catalog shows the program controls as unavailable.
 
 ### Start a project from Designer exports
 

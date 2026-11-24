@@ -36,10 +36,30 @@ public:
             [this](cell::ParamId id) { return read(id); },
             [this](cell::ParamId id) { return gesture(id, kAudioUnitEvent_BeginParameterChangeGesture); },
             [this](cell::ParamId id, double value, bool active) { return write(id, value, active); },
-            [this](cell::ParamId id) { gesture(id, kAudioUnitEvent_EndParameterChangeGesture); return true; }},
-            cell::designer::parameters
+            [this](cell::ParamId id) { gesture(id, kAudioUnitEvent_EndParameterChangeGesture); return true; },
+            [this] {
+                const std::lock_guard lock(connection_->commandMutex);
+                return unit() && connection_->programs ? connection_->programs() : std::nullopt;
+            },
+            [this](cell::ProgramAddress address) {
+                return command([address](cell::Engine& engine) { return cell::web::detail::recallProcessorProgram(engine, address); });
+            },
+            {},
+            [this](std::string_view key, cell::web::ActionMode mode) {
+                const std::lock_guard lock(connection_->commandMutex);
+                return unit() && connection_->supportsAction && connection_->supportsAction(key, mode);
+            },
+            [this](std::string_view key, cell::web::ActionPhase phase) {
+                return command([=](cell::Engine& engine) { return cell::web::detail::processorAction(engine, key, phase); });
+            }},
+            cell::designer::parameters,
+#if defined(CELL_DESIGNER_HAS_ACTIONS)
+            cell::designer::actions
+#else
+            std::span<const cell::web::ActionBinding>{}
+#endif
 #if defined(CELL_DESIGNER_HAS_RULE_SOURCES)
-            , {}, cell::designer::readOnlyParameters
+            , cell::designer::readOnlyParameters
 #endif
         ) {}
 
@@ -80,6 +100,20 @@ public:
     }
 
 private:
+    bool command(const std::function<bool(cell::Engine&)>& operation) {
+        std::vector<cell::ParameterEdit> edits;
+        {
+            const std::lock_guard lock(connection_->commandMutex);
+            if (!unit() || !connection_->command || !connection_->command(operation, edits)) return false;
+        }
+        for (const auto& edit : edits) {
+            if (edit.type == cell::EditType::value) write(edit.id, edit.value, true);
+            else gesture(edit.id, edit.type == cell::EditType::begin ? kAudioUnitEvent_BeginParameterChangeGesture :
+                                                                      kAudioUnitEvent_EndParameterChangeGesture);
+        }
+        return true;
+    }
+
     // The host owns the AU instance while making AU calls. Invalidate any
     // remaining views at disposal and recheck after host notifications.
     AudioUnit unit() const noexcept { return connection_->unit.load(std::memory_order_acquire); }
@@ -251,11 +285,18 @@ std::shared_ptr<EditorConnection> registerEditorConnection(AudioUnit unit) {
 }
 
 void unregisterEditorConnection(AudioUnit unit) {
-    const std::lock_guard lock(editorConnectionsMutex);
-    const auto found = editorConnections.find(unit);
-    if (found == editorConnections.end()) return;
-    if (const auto connection = found->second.lock()) connection->unit.store(nullptr, std::memory_order_release);
-    editorConnections.erase(found);
+    std::shared_ptr<EditorConnection> connection;
+    {
+        const std::lock_guard lock(editorConnectionsMutex);
+        const auto found = editorConnections.find(unit);
+        if (found == editorConnections.end()) return;
+        connection = found->second.lock();
+        editorConnections.erase(found);
+    }
+    if (connection) {
+        const std::lock_guard commandLock(connection->commandMutex);
+        connection->unit.store(nullptr, std::memory_order_release);
+    }
 }
 
 OSStatus copyCocoaViewInfo(AudioUnitCocoaViewInfo& info) {

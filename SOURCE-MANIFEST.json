@@ -375,8 +375,8 @@
     },
     {
       "path": "examples/ui_designer/designer.js",
-      "bytes": 46023,
-      "sha256": "0ccc8254becaa3a374193f9b4e3319964669bfc2a0ea9bc80865d8ba54c292e1"
+      "bytes": 52444,
+      "sha256": "0b93f019b835669c0d5c821ff271a5000be3e054a4af4997d5a1519225b1d87c"
     },
     {
       "path": "examples/ui_designer/fonts.js",
@@ -385,18 +385,18 @@
     },
     {
       "path": "examples/ui_designer/index.html",
-      "bytes": 17863,
-      "sha256": "5e652ba656df3f85f8600ff3fd948b6ca5589cb4475100278463e9aa83668432"
+      "bytes": 19765,
+      "sha256": "ba07f936640d7477c9cdccc73cd449af113e6af5a66c7570ddd2660066d6d4f6"
     },
     {
       "path": "examples/ui_designer/model.js",
-      "bytes": 38451,
-      "sha256": "b2f22f73cddfe2852eda8ff66f9325a45a672a4065454b4d533aba8423c0e0ec"
+      "bytes": 44030,
+      "sha256": "8211ca014317127fdc894acf1af4a4ec93ff90862cf054ba4837fd09cba85669"
     },
     {
       "path": "examples/ui_designer/runtime.js",
-      "bytes": 64961,
-      "sha256": "aa2ffa44586e9b4664b28d49d5486e0b90322aa2f27e53f5a708417c1a31f1af"
+      "bytes": 72673,
+      "sha256": "819d3d3555fabb5154de3d807f87c8cab38cb4d072f6dbbaf702b7bc727f1190"
     },
     {
       "path": "examples/webview_editor/CMakeLists.txt",
@@ -455,8 +455,8 @@
     },
     {
       "path": "framework/CMakeLists.txt",
-      "bytes": 46675,
-      "sha256": "b35ed6698ab6f73b9fdb12e8778a55e2a8299f453bf09ec5b3d7ea37db412f3d"
+      "bytes": 46740,
+      "sha256": "d67e267ad1721791e4d17978c4056e545c141f9b141a8d9a4e022b4b663cd21e"
     },
     {
       "path": "framework/CPP-STANDARDS.md",
@@ -535,8 +535,8 @@
     },
     {
       "path": "framework/MIDI-OUTPUT.md",
-      "bytes": 5323,
-      "sha256": "16b7b3488d98930a92c954143a9aa7e4f7200309378f289d53d52d3a1ce09d9e"
+      "bytes": 6058,
+      "sha256": "a5b3e99b9b8a9060a3bf9cda5365bc5c5e5f6892eecc5b61021e653644a31e5e"
     },
     {
       "path": "framework/NATIVE-HANDOFF.md",
@@ -640,8 +640,8 @@
     },
     {
       "path": "framework/WEBVIEW.md",
-      "bytes": 32194,
-      "sha256": "0fade86a854806587d1e24b65a7900505f6874ff1f672dff6badec88748d739c"
+      "bytes": 34594,
+      "sha256": "9075d03ab8115cadcb75b9cab47ffa6448a028ecbf443e7ee0bd3ac5636ac2af"
     },
     {
       "path": "framework/cmake/CellAAXInfo.plist.in",
@@ -665,8 +665,8 @@
     },
     {
       "path": "framework/cmake/CellAddPlugin.cmake",
-      "bytes": 41048,
-      "sha256": "43f57b3dc685318090c1795b562d276f46dbba84c0b40be4ec61bd2a2dab18d7"
+      "bytes": 41218,
+      "sha256": "77feadc1475e47377654064e37484ea33be7d8877d8b113a08160d5d004d1816"
     },
     {
       "path": "framework/cmake/CellCompilerContract.cmake",
@@ -1300,8 +1300,8 @@
     },
     {
       "path": "include/cell/web_parameter_bridge.hpp",
-      "bytes": 15172,
-      "sha256": "ab9a2cc87b36edf5c31337874ce3f45b15e17496b2cbdc816749587dd50555c3"
+      "bytes": 15689,
+      "sha256": "9b02f184a8a2051484402be6f101a530c30fb088ddf6d5637fd1ba020651d2c0"
     },
     {
       "path": "include/cell/webview.hpp",
@@ -1455,28 +1455,28 @@
     },
     {
       "path": "src/formats/au.cpp",
-      "bytes": 16463,
-      "sha256": "00a6a5246fe0d0a442b8cf1c02d4581f3fcb2a9ca9086223a9569c9506cad13b"
+      "bytes": 17722,
+      "sha256": "93b73f8626e012cb9f95346ef582ddda749bd961611e123ff02133f76b07ac29"
     },
     {
       "path": "src/formats/au_editor.hpp",
-      "bytes": 749,
-      "sha256": "34874891720e93b22f15e93f53f8a498c48e0cf90426b0235255f787a1dd03da"
+      "bytes": 1071,
+      "sha256": "260f67c08817c4eb2484e67013bdf9f2727dc4b79f98e596115a34eb258069d5"
     },
     {
       "path": "src/formats/au_editor.mm",
-      "bytes": 10473,
-      "sha256": "01edd1748caed975962b02924fea7427d061b5d1adee2490582331b14bf56faf"
+      "bytes": 12393,
+      "sha256": "72cff6dd84957622547039a7d8fce72731e40c52471a434bce0e1175012de69b"
     },
     {
       "path": "src/formats/audio_effect.hpp",
-      "bytes": 3425,
-      "sha256": "6bd01256761213063942078d161d7fb4445f5e40d06ab90e2919e6f98f6ac00c"
+      "bytes": 3760,
+      "sha256": "7a11efa062107d0e19f905d0fde856a4e44079c14d7f8317aeb83d92191af4be"
     },
     {
       "path": "src/formats/auv3.mm",
-      "bytes": 41174,
-      "sha256": "9fde5c92c3322e4ae137cd41dd2acb14214837b525fd9824f83ef41cd8b1ccb4"
+      "bytes": 43166,
+      "sha256": "30b4d6655329dd9660b84ffe6da5c743557d8addaf7f027797b00608038e8e1a"
     },
     {
       "path": "src/formats/auv3_automation.hpp",
@@ -1485,8 +1485,8 @@
     },
     {
       "path": "src/formats/auv3_editor.mm",
-      "bytes": 12854,
-      "sha256": "f41f8de960a57054b3c765d1543b6fdbc17a88f345a705da40298f861fa1f4d1"
+      "bytes": 14768,
+      "sha256": "b7c9954d5b0d519ff47b1ea53808f29530e0df6b77c8dc8aebdd36bc0eca4c72"
     },
     {
       "path": "src/formats/auv3_layouts.hpp",
@@ -1510,13 +1510,18 @@
     },
     {
       "path": "src/formats/lv2.cpp",
-      "bytes": 2380,
-      "sha256": "629d56fd5c7f88c0841a5a418807824a92ac3047c2a392d174a8b591dcfba04e"
+      "bytes": 4385,
+      "sha256": "e0154a591f2043d23cd2cb6723be0f10476cdcb5c8a0a4402b4deb46de78f537"
+    },
+    {
+      "path": "src/formats/lv2_programs.hpp",
+      "bytes": 752,
+      "sha256": "3cc76c629bc96cc926b4d0ab8e6dc872f955c7ed651cbe0ff350daa19afe03bf"
     },
     {
       "path": "src/formats/lv2_ui.cpp",
-      "bytes": 8807,
-      "sha256": "f4ec33897b0670fb3d3b5ff6c93563603df85d04b631f9d2f53cdf6fb35a324f"
+      "bytes": 11421,
+      "sha256": "e3648d2a585efbb5e9c669921773707c9b4a369d2024101b9a231b0230b1564a"
     },
     {
       "path": "src/formats/reaper_project.hpp",
@@ -1530,8 +1535,8 @@
     },
     {
       "path": "src/formats/vst3.cpp",
-      "bytes": 68969,
-      "sha256": "247487aca66ee2217f427227df4179381cc0ffefba14dbda9e62984f6285039d"
+      "bytes": 78690,
+      "sha256": "86c764f91f9db9d1acb5665a7baee4dcf3555c9d043d5dc3d3a6aa7a457add6f"
     },
     {
       "path": "src/formats/webview2_plugin.hpp",
@@ -2200,8 +2205,8 @@
     },
     {
       "path": "tests/sdk_transport_consumer/CMakeLists.txt",
-      "bytes": 4372,
-      "sha256": "3d5cced3477ed339395ffe8e32404defe5478febe6308523c36612cc5f63832b"
+      "bytes": 5008,
+      "sha256": "cbf2e00bb739f82e8b374cd0bab4076b6132b3fbcc5e1abb4504a69c6a346dd2"
     },
     {
       "path": "tests/sdk_transport_consumer/auv3_host.mm",
@@ -2220,13 +2225,13 @@
     },
     {
       "path": "tests/sdk_transport_consumer/host.cpp",
-      "bytes": 30515,
-      "sha256": "3a56c4b5edd9850cdfef1b1a6d88a33e774371c3cb6587410a06f2dcfa13260e"
+      "bytes": 35373,
+      "sha256": "44377b93118403059aadeee68231603f8ce78b38f77cd47749a7fb48a1441e7e"
     },
     {
       "path": "tests/sdk_transport_consumer/processor.cpp",
-      "bytes": 2793,
-      "sha256": "9d1f4f3ce635ac066f94143811554099cd3c05ea740291fa058f570188e15db5"
+      "bytes": 3402,
+      "sha256": "c8268ce5bf813e6900e4bf47b369e3b99fb6accc26bee1cc30cb58aa0b4dc33f"
     },
     {
       "path": "tests/sdk_trg_consumer/CMakeLists.txt",
@@ -2320,13 +2325,13 @@
     },
     {
       "path": "tests/ui_designer_browser_tests.cjs",
-      "bytes": 71296,
-      "sha256": "aacd252f608c8d0acb492cdf59a8dc058163150da4aa5e278a88fa1e690ba9fb"
+      "bytes": 100284,
+      "sha256": "302e6890929cb04ae956f2b8790a7569b61ccbd1c48a3af5ee04cd9ab97732f9"
     },
     {
       "path": "tests/ui_designer_model_tests.cjs",
-      "bytes": 14636,
-      "sha256": "4d201f12dca5ee61dc89e10cb8e1e0fe8f97ed7fc9905c178e59f7dd5e97ba28"
+      "bytes": 19685,
+      "sha256": "46cac2df16130a543e7f7e8b14ed0c06a1c5625cb075ee9e9dca613ef21c2180"
     },
     {
       "path": "tests/ui_effects_tests.cpp",
@@ -2475,8 +2480,8 @@
     },
     {
       "path": "tools/package_framework.py",
-      "bytes": 17210,
-      "sha256": "3d8af01899d2a682bb5d9aac5824f37d4933c2ee2c69e1484a6bc55096dbb2b4"
+      "bytes": 17242,
+      "sha256": "9d53818136945c14b132b9867b9983db04db1c4cb797bee3c50f6ca22a6f8cea"
     },
     {
       "path": "tools/project/CMakeLists.txt.in",

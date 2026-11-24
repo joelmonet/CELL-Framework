@@ -45,6 +45,27 @@ public:
         events_.reserve(engine_.parameters().descriptors().size());
 #if defined(CELL_AU_WEB_EDITOR)
         editor_ = cell::au::registerEditorConnection(GetComponentInstance());
+        editor_->programs = [this]() -> std::optional<cell::ProgramCatalog> {
+            if (!dynamic_cast<const cell::ProgramMemory*>(&engine_.processor())) return {};
+            const auto fields = engine_.parameters().descriptors();
+            cell::ParameterBank values(fields);
+            for (const auto& field : fields) values.set(field.id, GetParameterRT(field.id));
+            return cell::web::detail::processorPrograms(engine_, values);
+        };
+        editor_->supportsAction = [this](std::string_view key, cell::web::ActionMode mode) {
+            return cell::web::detail::processorSupportsAction(engine_, key, mode);
+        };
+        editor_->command = [this](const std::function<bool(cell::Engine&)>& operation, std::vector<cell::ParameterEdit>& edits) {
+            cell::CallbackGate::PauseScope pause(callbacks_);
+            if (!pause) return false;
+            synchronizeParameters();
+            const bool accepted = operation(engine_);
+            for (cell::ParameterEdit edit; engine_.pollUiEdit(edit);) {
+                if (edit.type == cell::EditType::value) Globals()->SetParameter(edit.id, static_cast<float>(edit.value));
+                edits.push_back(edit);
+            }
+            return accepted;
+        };
 #endif
     }
 

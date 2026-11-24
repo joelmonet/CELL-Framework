@@ -5,6 +5,9 @@
 
 #include <cell/callback_gate.hpp>
 #include <cell/midi_delivery.hpp>
+#if defined(CELL_AUV3_CUSTOM_EDITOR)
+#include <cell/web_parameter_bridge.hpp>
+#endif
 #if defined(CELL_AUV3_EDITOR_METERS)
 #include <cell/web_meter.hpp>
 #endif
@@ -381,6 +384,26 @@ public:
     }
 
     cell::Engine engine;
+#if defined(CELL_AUV3_CUSTOM_EDITOR)
+    std::optional<cell::ProgramCatalog> editorPrograms() const {
+        if (!dynamic_cast<const cell::ProgramMemory*>(&engine.processor())) return {};
+        cell::ParameterBank values(fields());
+        for (const auto& field : fields()) values.set(field.id, value(field.id));
+        return cell::web::detail::processorPrograms(engine, values);
+    }
+
+    bool editorCommand(const std::function<bool(cell::Engine&)>& command, std::vector<cell::ParameterEdit>& edits) {
+        cell::CallbackGate::PauseScope pause(callbacks_);
+        if (!pause) return false;
+        for (const auto& field : fields()) engine.parameters().set(field.id, value(field.id));
+        const bool accepted = command(engine);
+        for (cell::ParameterEdit edit; engine.pollUiEdit(edit);) {
+            if (edit.type == cell::EditType::value) put(edit.id, static_cast<AUValue>(edit.value));
+            edits.push_back(edit);
+        }
+        return accepted;
+    }
+#endif
     const bool hasAudioInput;
     std::atomic<bool> bypass{false};
 #if defined(CELL_AUV3_EDITOR_METERS)
@@ -585,6 +608,9 @@ private:
 @end
 
 @interface CellAUv3Effect : AUAudioUnit
+#if defined(CELL_AUV3_CUSTOM_EDITOR)
+- (RenderState*)editorState;
+#endif
 #if defined(CELL_AUV3_EDITOR_METERS)
 - (cell::web::OutputMeter*)editorMeter;
 #endif
@@ -599,6 +625,10 @@ private:
     AUAudioUnitBusArray *_outputs;
     AUParameterTree *_tree;
 }
+
+#if defined(CELL_AUV3_CUSTOM_EDITOR)
+- (RenderState*)editorState { return _state.get(); }
+#endif
 
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)description
                                      options:(AudioComponentInstantiationOptions)options
@@ -799,6 +829,19 @@ private:
 #if defined(CELL_AUV3_CUSTOM_EDITOR)
 AUAudioUnit* cellCreateAUv3Unit(AudioComponentDescription description, NSError** error) {
     return [[CellAUv3Effect alloc] initWithComponentDescription:description options:0 error:error];
+}
+std::optional<cell::ProgramCatalog> cellAUv3EditorPrograms(AUAudioUnit* unit) {
+    const auto* state = [(CellAUv3Effect*)unit editorState];
+    return state ? state->editorPrograms() : std::nullopt;
+}
+bool cellAUv3EditorSupportsAction(AUAudioUnit* unit, std::string_view key, cell::web::ActionMode mode) {
+    const auto* state = [(CellAUv3Effect*)unit editorState];
+    return state && cell::web::detail::processorSupportsAction(state->engine, key, mode);
+}
+bool cellAUv3EditorCommand(AUAudioUnit* unit, const std::function<bool(cell::Engine&)>& command,
+                           std::vector<cell::ParameterEdit>& edits) {
+    auto* state = [(CellAUv3Effect*)unit editorState];
+    return state && state->editorCommand(command, edits);
 }
 #if defined(CELL_AUV3_EDITOR_METERS)
 cell::web::OutputMeter* cellAUv3EditorMeter(AUAudioUnit* unit) {

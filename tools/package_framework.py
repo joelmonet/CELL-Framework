@@ -56,7 +56,7 @@ FILES = {
     "tests/legacy_effect_host.cpp",
     "tests/ara_archive_tests.cpp",
     "src/formats/audio_effect.hpp", "src/formats/ladspa.cpp",
-    "src/formats/lv2.cpp", "src/formats/lv2_ui.cpp", "examples/sdk_gain/gain.lv2.ttl", "examples/sdk_gain/Cell Gain.jsfx",
+    "src/formats/lv2.cpp", "src/formats/lv2_ui.cpp", "src/formats/lv2_programs.hpp", "examples/sdk_gain/gain.lv2.ttl", "examples/sdk_gain/Cell Gain.jsfx",
     "framework/AAX.md", "tools/qualify_aax.py",
     "framework/AU.md", "framework/cmake/CellAUInfo.plist.in", "src/formats/au.cpp", "tests/au_gain_host.cpp",
     "src/formats/au_editor.hpp", "src/formats/au_editor.mm", "tests/au_cocoa_editor.mm",

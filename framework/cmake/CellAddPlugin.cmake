@@ -667,6 +667,7 @@ function(cell_add_lv2_plugin target)
         endif()
         set(ui_target "${target}_UI")
         set(ui_uri "${L_URI}/designer")
+        target_compile_definitions(${target} PRIVATE CELL_LV2_WEB_PROGRAMS=1)
         add_library(${ui_target} MODULE "${adapters}/lv2_ui.cpp")
         target_link_libraries(${ui_target} PRIVATE "${L_PROCESSOR}")
         target_include_directories(${ui_target} PRIVATE "${L_LV2_SDK}/include")
@@ -701,7 +702,8 @@ function(cell_add_lv2_plugin target)
 "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .
 @prefix ui: <http://lv2plug.in/ns/extensions/ui#> .
 <${ui_uri}> lv2:requiredFeature ui:parent, ui:idleInterface ;
-    lv2:optionalFeature ui:touch, ui:resize ;
+    lv2:optionalFeature ui:touch, ui:resize,
+        <http://lv2plug.in/ns/ext/instance-access>, <http://lv2plug.in/ns/ext/data-access> ;
     lv2:extensionData ui:idleInterface, ui:resize .
 ${meter_metadata}")
         set(ui_manifest "
