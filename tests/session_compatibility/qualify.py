@@ -40,9 +40,9 @@ def build(source, work, args):
     return install, paths
 
 
-def check_rejection(candidate, project, examples, expected):
+def check_rejection(candidate, project, expected):
     host, plugin = candidate
-    result = subprocess.run([host, "verify", plugin, project, examples],
+    result = subprocess.run([host, "verify", plugin, project],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if result.returncode == 0 or expected not in result.stdout:
         raise RuntimeError(f"Invalid fixture {project.name} did not fail at {expected!r}\n{result.stdout}")
@@ -79,22 +79,22 @@ def qualify(args):
     missing = negatives / "missing-asset"
     shutil.copytree(moved, missing)
     (missing / "assets/input.wav").unlink()
-    rejected = [check_rejection(candidate, missing, examples, "Referenced asset is missing")]
+    rejected = [check_rejection(candidate, missing, "Referenced asset is missing")]
     remapped = negatives / "lost-automation"
     shutil.copytree(moved, remapped)
     manifest = remapped / "session.json"
     session = json.loads(manifest.read_text(encoding="utf-8"))
     session["automation"][0]["parameter"] = (session["gain"] + 1) % (2**32 - 1)
     manifest.write_text(json.dumps(session), encoding="utf-8")
-    rejected.append(check_rejection(candidate, remapped, examples, "CLAP offline reference is outside its tolerance"))
+    rejected.append(check_rejection(candidate, remapped, "CLAP offline reference is outside its tolerance"))
     corrupted = negatives / "corrupted-preset"
     shutil.copytree(moved, corrupted)
     preset = corrupted / "factory.preset"
     data = preset.read_bytes()
     preset.write_bytes(bytes([data[0] ^ 1]) + data[1:])
-    rejected.append(check_rejection(candidate, corrupted, examples, "Candidate could not read the saved state or preset"))
+    rejected.append(check_rejection(candidate, corrupted, "Candidate could not read the saved state or preset"))
 
-    result = subprocess.run([candidate[0], "verify", candidate[1], moved, examples], check=True,
+    result = subprocess.run([candidate[0], "verify", candidate[1], moved], check=True,
                             stdout=subprocess.PIPE, text=True)
     print(result.stdout, end="")
     report = {

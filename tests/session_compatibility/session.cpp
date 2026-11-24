@@ -323,7 +323,8 @@ void graphProjects(const File& root, const File& asset, bool capture, const File
         require(project.graph.serialize() == parsed.serialize() &&
                 json::write(json::read(savedDocument.utf8())) == json::write(json::read(parsed.serialize())),
                 "Candidate changed the saved graph document");
-        const auto extracted = root.getChildFile(stem + "-extracted.wav");
+        const TemporaryFile extraction(root.getChildFile(stem + "-extracted.wav"));
+        const auto& extracted = extraction.getTemporaryFile();
         graph::extractProjectWave(archive, extracted);
         require(files::readBounded(extracted.nativePath(), 1024 * 1024) == files::readBounded(asset.nativePath(), 1024 * 1024),
                 "Packed asset is not byte-for-byte identical to the relocated source");
@@ -416,10 +417,12 @@ void run(const fs::path& pluginPath, const File& root, bool capture, const File&
 
 int main(int argc, char** argv) {
     try {
-        require(argc == 5, "usage: cell_session_reference capture|verify CLAP PROJECT GRAPH_EXAMPLES");
+        require(argc >= 2, "Specify capture or verify");
         const std::string_view mode(argv[1]);
         require(mode == "capture" || mode == "verify", "Invalid compatibility mode");
-        run(fs::path(argv[2]), File(fs::path(argv[3])), mode == "capture", File(fs::path(argv[4])));
+        const bool capture = mode == "capture";
+        require(argc == (capture ? 5 : 4), "usage: cell_session_reference capture|verify CLAP PROJECT [GRAPH_EXAMPLES]");
+        run(fs::path(argv[2]), File(fs::path(argv[3])), capture, capture ? File(fs::path(argv[4])) : File{});
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

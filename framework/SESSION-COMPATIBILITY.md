@@ -64,6 +64,16 @@ gh attestation verify cell-session-reference-linux-x64.zip \
   --signer-workflow joelmonet/CELL-Framework/.github/workflows/session-compatibility.yml
 ```
 
+After extracting a package, run the candidate host on its saved session.
+For Linux, run this from the extracted package directory:
+
+```sh
+candidate/bin/cell_session_reference verify candidate/plugins/CellGainReference.clap session
+```
+
+The host and plug-in paths for each platform are listed in
+`candidate/paths.txt`.
+
 Use the signed artifact from the candidate tag's successful workflow run
 when promoting a release. Keep it with the release so future qualification
 can identify the exact source revisions, fixtures, and render limits.
