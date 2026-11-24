@@ -27,7 +27,7 @@ public:
                 const auto note = static_cast<unsigned>(event.data[1]) + static_cast<unsigned>(bank.get(transpose));
                 event.data[1] = static_cast<std::uint8_t>(std::min(note, 127u));
             }
-            if (!output.push(event)) break;
+            if (!output.push(event) && !event.isSysEx()) break;
         }
     }
 };
@@ -36,7 +36,8 @@ public:
 namespace cell::plugin {
 const PluginDescriptor& descriptor() {
     static const PluginDescriptor result{.id = "cell.example.auv3-midi-probe", .name = "Cell MIDI Probe", .vendor = "Cell",
-        .version = "1", .channels = 0, .parameters = fields, .acceptsMidi = true, .producesMidi = true};
+        .version = "1", .channels = 0, .parameters = fields, .acceptsMidi = true,
+        .producesMidi = true, .supportsSysEx = true};
     return result;
 }
 std::unique_ptr<Processor> createProcessor() { return std::make_unique<MidiProbe>(); }

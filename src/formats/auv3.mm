@@ -149,6 +149,12 @@ public:
 
     bool push(cell::MidiEvent event) noexcept override {
         if (sent_ == cell::midi::eventCapacity) return false;
+        if (event.isSysEx()) {
+            if (!cell::plugin::descriptor().supportsSysEx || event.sysEx.size() > UINT16_MAX ||
+                block_(start_ + event.frame, 0, event.sysEx.size(), event.sysEx.data()) != noErr) return false;
+            ++sent_;
+            return true;
+        }
         const auto length = midiMessageSize(event.data[0]);
         if (block_(start_ + event.frame, 0, length, event.data.data()) != noErr) return false;
         ++sent_;
@@ -386,6 +392,7 @@ private:
                                          const AudioTimeStamp& time, const AURenderEvent* event, bool dry) noexcept {
         const bool acceptsMidi = engine.descriptor().acceptsMidi;
         const bool producesMidi = engine.descriptor().producesMidi;
+        const bool acceptsSysEx = acceptsMidi && engine.descriptor().supportsSysEx;
         std::size_t eventCount{};
         for (auto* item = event; item; item = item->head.next) {
             if (++eventCount > maxScheduled) {
@@ -401,8 +408,19 @@ private:
             const auto pending = pending_[i].exchange(noPending, std::memory_order_acq_rel);
             if (std::isfinite(pending)) events_.push_back({0, i, pending, 0});
         }
+        cell::midi::SysExBudget sysEx;
         for (; event; event = event->head.next) {
             const auto type = event->head.eventType;
+            if (acceptsSysEx && type == AURenderEventMIDISysEx) {
+                const auto frame = eventOffset(event->head.eventSampleTime, time);
+                if (frame >= audio.frames || (!midi_.empty() && frame < midi_.back().frame) || event->MIDI.cable != 0)
+                    continue;
+                // Core Audio places the variable-length payload after the fixed event header.
+                const auto* data = reinterpret_cast<const std::uint8_t*>(&event->MIDI) + offsetof(AUMIDIEvent, data);
+                const std::span<const std::uint8_t> bytes{data, event->MIDI.length};
+                if (sysEx.admit(bytes)) midi_.push_back(cell::MidiEvent::systemExclusive(frame, bytes));
+                continue;
+            }
             if (acceptsMidi && type == AURenderEventMIDI) {
                 const auto frame = eventOffset(event->head.eventSampleTime, time);
                 if (frame < audio.frames && (midi_.empty() || frame >= midi_.back().frame))
@@ -440,10 +458,7 @@ private:
         auto* output = dry ? static_cast<cell::midi::Output*>(&discard) : &midiDelivery_;
         automation_.process(engine, audio, events_, transport, sidechain, midi_, output);
         // Bypass keeps processing state current while routing only host input to MIDI output.
-        if (dry) {
-            for (auto event : midi_)
-                if (!midiDelivery_.push(event)) break;
-        }
+        if (dry) cell::midi::forward(midi_, midiDelivery_);
     }
 
     void appendMidi(const AUMIDIEvent& event, UInt32 frame) noexcept {

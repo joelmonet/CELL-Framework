@@ -85,7 +85,11 @@ std::unique_ptr<ParameterBridge> makeBridge(AUAudioUnit* unit, NSArray<NSString*
             automate(parameter, parameter.value, AUParameterAutomationEventTypeRelease, mach_absolute_time());
             return true;
         }
-    }, ids);
+    }, ids
+#if defined(CELL_AUV3_DESIGNER_BINDINGS) && defined(CELL_DESIGNER_HAS_RULE_SOURCES)
+        , std::span<const cell::web::ActionBinding>{}, cell::designer::readOnlyParameters
+#endif
+    );
 }
 
 NSString* bundledEditor(NSBundle* bundle) {

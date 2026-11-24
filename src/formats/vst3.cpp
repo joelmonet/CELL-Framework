@@ -92,10 +92,22 @@ bool writeState(IBStream* stream,const cell::Engine& engine) {
     return true;
 }
 
-// Convert channel MIDI to the VST3 event ABI. Host storage owns each copy.
+// VST3 event lists may copy the DataEvent pointer without copying its bytes.
 struct MidiOutput final:cell::midi::Output {
     IEventList* destination{};
+    cell::midi::SysExStorage* sysEx{};
     bool push(cell::MidiEvent message)noexcept override{
+        if (message.isSysEx()) {
+            if (!destination || !sysEx) return false;
+            const auto bytes = sysEx->copy(message.sysEx);
+            if (bytes.empty()) return false;
+            Event event{};
+            event.busIndex = 0;
+            event.sampleOffset = int32(message.frame);
+            event.type = Event::kDataEvent;
+            event.data = {uint32(bytes.size()), DataEvent::kMidiSysEx, bytes.data()};
+            return destination->addEvent(event) == kResultOk;
+        }
         if(!destination||!cell::midi::valid(message))return false;
         Event e{};e.busIndex=0;e.sampleOffset=int32(message.frame);const auto kind=message.data[0]&0xf0;const auto channel=message.data[0]&15;
         if(kind==0x90&&message.data[2]){e.type=Event::kNoteOnEvent;e.noteOn.channel=int16(channel);e.noteOn.pitch=message.data[1];e.noteOn.velocity=message.data[2]/127.f;e.noteOn.noteId=-1;}
@@ -138,7 +150,11 @@ public:
     tresult PLUGIN_API canProcessSampleSize(int32 size) override {return size==kSample32?kResultTrue:kResultFalse;}
     tresult PLUGIN_API setupProcessing(ProcessSetup& setup) override {
         if(active_||setup.symbolicSampleSize!=kSample32||setup.maxSamplesPerBlock<=0)return kInvalidArgument;
-        try{engine_.prepare(setup.sampleRate,std::uint32_t(setup.maxSamplesPerBlock),channels_);}catch(...){return kInvalidArgument;}
+        try {
+            engine_.prepare(setup.sampleRate, std::uint32_t(setup.maxSamplesPerBlock), channels_);
+            if (engine_.descriptor().supportsSysEx && engine_.descriptor().producesMidi)
+                sysExOutput_.prepare(cell::midi::sysExByteCapacity);
+        } catch (...) { return kInvalidArgument; }
         const auto result=AudioEffect::setupProcessing(setup);
         if(result==kResultOk){reportedLatency_=engine_.processor().latency();sampleRate_=setup.sampleRate;maximumFrames_=std::uint32_t(setup.maxSamplesPerBlock);setupValid_=activationPrepared_=true;openAnalysisQueue();}return result;
     }
@@ -281,9 +297,41 @@ public:
             if((context->state&ProcessContext::kProjectTimeMusicValid)&&std::isfinite(context->projectTimeMusic)){transport.beatPosition=context->projectTimeMusic;transport.beatPositionValid=true;}
             if((context->state&ProcessContext::kTimeSigValid)&&context->timeSigNumerator>0&&context->timeSigNumerator<=65535&&context->timeSigDenominator>0&&context->timeSigDenominator<=65535){transport.numerator=std::uint16_t(context->timeSigNumerator);transport.denominator=std::uint16_t(context->timeSigDenominator);}}
         cell::AudioBlock<float> side;if(cell::plugin::descriptor().supportsSidechain&&data.numInputs>1&&data.inputs&&data.inputs[1].channelBuffers32&&(data.inputs[1].numChannels==1||data.inputs[1].numChannels==2)){auto& bus=data.inputs[1];bool valid=true;for(int c=0;c<bus.numChannels;++c)valid&=bus.channelBuffers32[c]!=nullptr;if(valid)side={bus.channelBuffers32,std::uint32_t(bus.numChannels),std::uint32_t(data.numSamples),0};}
-        if(cell::plugin::descriptor().acceptsMidi&&data.inputEvents)for(int32 i=0;i<data.inputEvents->getEventCount();++i){Event event{};if(data.inputEvents->getEvent(i,event)!=kResultOk||event.busIndex!=0||event.sampleOffset<0||event.sampleOffset>=data.numSamples)continue;cell::MidiEvent midi;midi.frame=std::uint32_t(event.sampleOffset);if(event.type==Event::kNoteOnEvent){auto& e=event.noteOn;if(e.channel<0||e.channel>15||e.pitch<0||e.pitch>127||!std::isfinite(e.velocity))continue;midi.data={std::uint8_t(0x90|e.channel),std::uint8_t(e.pitch),std::uint8_t(std::lround(std::clamp(e.velocity,0.f,1.f)*127))};}else if(event.type==Event::kNoteOffEvent){auto& e=event.noteOff;if(e.channel<0||e.channel>15||e.pitch<0||e.pitch>127)continue;midi.data={std::uint8_t(0x80|e.channel),std::uint8_t(e.pitch),0};}else if(event.type==Event::kPolyPressureEvent){auto& e=event.polyPressure;if(e.channel<0||e.channel>15||e.pitch<0||e.pitch>127||!std::isfinite(e.pressure))continue;midi.data={std::uint8_t(0xa0|e.channel),std::uint8_t(e.pitch),std::uint8_t(std::lround(std::clamp(e.pressure,0.f,1.f)*127))};}else continue;if(midiCount==midi_.size())return kResultFalse;midi_[midiCount++]=midi;}
+        cell::midi::SysExBudget sysEx;
+        const auto& descriptor = engine_.descriptor();
+        if (descriptor.acceptsMidi && data.inputEvents)
+            for (int32 i = 0; i < data.inputEvents->getEventCount(); ++i) {
+                Event event{};
+                if (data.inputEvents->getEvent(i, event) != kResultOk || event.busIndex != 0 ||
+                    event.sampleOffset < 0 || event.sampleOffset >= data.numSamples) continue;
+                cell::MidiEvent midi;
+                midi.frame = std::uint32_t(event.sampleOffset);
+                if (event.type == Event::kNoteOnEvent) {
+                    const auto& e = event.noteOn;
+                    if (e.channel < 0 || e.channel > 15 || e.pitch < 0 || e.pitch > 127 || !std::isfinite(e.velocity)) continue;
+                    midi.data = {std::uint8_t(0x90 | e.channel), std::uint8_t(e.pitch), std::uint8_t(std::lround(std::clamp(e.velocity, 0.f, 1.f) * 127))};
+                } else if (event.type == Event::kNoteOffEvent) {
+                    const auto& e = event.noteOff;
+                    if (e.channel < 0 || e.channel > 15 || e.pitch < 0 || e.pitch > 127) continue;
+                    midi.data = {std::uint8_t(0x80 | e.channel), std::uint8_t(e.pitch), 0};
+                } else if (event.type == Event::kPolyPressureEvent) {
+                    const auto& e = event.polyPressure;
+                    if (e.channel < 0 || e.channel > 15 || e.pitch < 0 || e.pitch > 127 || !std::isfinite(e.pressure)) continue;
+                    midi.data = {std::uint8_t(0xa0 | e.channel), std::uint8_t(e.pitch), std::uint8_t(std::lround(std::clamp(e.pressure, 0.f, 1.f) * 127))};
+                } else if (event.type == Event::kDataEvent && descriptor.supportsSysEx) {
+                    const auto& e = event.data;
+                    if (e.type != DataEvent::kMidiSysEx || !e.bytes || !sysEx.admit({e.bytes, e.size})) continue;
+                    midi = cell::MidiEvent::systemExclusive(midi.frame, {e.bytes, e.size});
+                } else continue;
+                if (midiCount == midi_.size()) return kResultFalse;
+                midi_[midiCount++] = midi;
+            }
         cell::stableFrameSort<cell::MidiEvent>({midi_.data(),midiCount},midiScratch_);
-        MidiOutput midiOutput;const auto* midiBus=getEventOutput(0);midiOutput.destination=midiBus&&midiBus->isActive()?data.outputEvents:nullptr;const bool sends=cell::plugin::descriptor().producesMidi;if(sends)midiDelivery_.begin(midiOutput.destination?&midiOutput:nullptr,std::uint32_t(data.numSamples));
+        MidiOutput midiOutput;const auto* midiBus=getEventOutput(0);midiOutput.destination=midiBus&&midiBus->isActive()?data.outputEvents:nullptr;const bool sends=descriptor.producesMidi;if(sends)midiDelivery_.begin(midiOutput.destination?&midiOutput:nullptr,std::uint32_t(data.numSamples));
+        if (descriptor.supportsSysEx && midiOutput.destination) {
+            sysExOutput_.clear();
+            midiOutput.sysEx = &sysExOutput_;
+        }
         const cell::AudioBlock<float> audio{output,channels_,std::uint32_t(data.numSamples),0};
         engine_.process(audio,{events.data(),count},transport,{midi_.data(),midiCount},side,sends?&midiDelivery_:nullptr);
 #if defined(CELL_VST3_WEB_EDITOR)
@@ -298,6 +346,7 @@ private:
     bool meterClosed_{};
 #endif
     cell::midi::Delivery midiDelivery_;
+    cell::midi::SysExStorage sysExOutput_;
     bool loadProductBytes(std::span<const std::byte> bytes){cell::CallbackGate::PauseScope pause(callbacks_,engine_.stateRequiresStoppedProcessing());return pause&&engine_.loadState(bytes);}
     void sendGenerated(IParameterChanges* changes)noexcept{
         if(!changes)return;
@@ -688,7 +737,13 @@ class DesignerView final : public CPluginView
 {
 public:
     explicit DesignerView(Controller& controller)
-        : controller_(&controller), parameters_(controller.engine, cell::designer::parameters) {
+        // The controller's engine is a separate instance. Program memory belongs
+        // to the processing component, even if this copy implements the interface.
+        : controller_(&controller), parameters_(controller.engine, cell::designer::parameters, false
+#if defined(CELL_DESIGNER_HAS_RULE_SOURCES)
+            , {}, cell::designer::readOnlyParameters
+#endif
+        ) {
         const auto& descriptor = cell::plugin::descriptor();
         rect = {0, 0, int32(std::clamp(descriptor.editorWidth, 1u, 8192u)),
                        int32(std::clamp(descriptor.editorHeight, 1u, 8192u))};

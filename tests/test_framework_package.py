@@ -51,7 +51,8 @@ with tempfile.TemporaryDirectory() as temporary:
         for name in ('examples/auv3_gain/Cell Gain Editor.html', 'src/formats/auv3_editor.mm',
                      'include/cell/detail/web_document.hpp'):
             assert 'Cell-Framework/'+name in names
-        for name in ('examples/ui_designer/model.js', 'examples/ui_designer/runtime.js',
+        for name in ('examples/ui_designer/model.js', 'examples/ui_designer/runtime.js', 'examples/ui_designer/fonts.js',
+                     'tools/build_designer_fonts.py',
                      'include/cell/web_meter.hpp', 'tests/ui_designer_model_tests.cjs'):
             assert 'Cell-Framework/'+name in names
         assert 'Cell-Framework/framework/cmake/CellCompilerContract.cmake' in names

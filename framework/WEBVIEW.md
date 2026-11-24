@@ -135,7 +135,7 @@ below. DSP stays in the native processor.
 ## Design a parameter editor
 
 Open `examples/ui_designer/index.html` in a browser. Drag knobs, faders,
-sliders, toggles, menus, meters, readouts and labels onto the grid. Select
+sliders, steppers, toggles, menus, meters, readouts and labels onto the grid. Select
 a control to edit its size, position, style and binding. Drag the selected
 corner to resize, or use Shift+arrow keys. Arrow keys move the selected
 control. Duplicate and Remove are available in the inspector.
@@ -161,9 +161,30 @@ toolbar can use a copy kept in the current tab.
 **Load showcase** opens a layout with a 1940s field-radio knob, a 1960s
 recording-studio fader and 1950s broadcast-style needle meters. Choose a
 different style on any control. The styles are original interpretations.
-Resize controls, set editor colors, or embed PNG, JPEG or WebP artwork on a
-knob or fader. Artwork is limited to 256 KiB per control and 2048 × 2048
-pixels. The layout file can hold up to 2 MiB.
+Resize controls, set editor colors, or embed SVG, PNG, JPEG or WebP artwork on a
+knob or fader. Face artwork can use up to 256 KiB per control and raster
+dimensions up to 2048 × 2048 pixels.
+
+### Design the panel
+
+Drag **Image**, **Rectangle**, and **Line** onto the grid. Use **Image** for
+logos, markings, and illustrations. Its label is the image's accessible
+description. Use the accent color picker to set a rectangle or line color.
+Lines can be horizontal or vertical and 1–16 pixels thick. Open **Panel
+background** for an image that fills the entire editor. Images and the
+background offer **Fit**, **Fill and crop**, and **Stretch**.
+
+Rectangles and lines sit above the background, followed by images and
+interactive controls. Turn on **Edit panel artwork** to reach artwork behind
+the controls. Artwork elements can have their own wide and phone positions.
+The exported editor displays artwork offline and keeps its controls available
+for pointer and keyboard input. Artwork has no parameter binding.
+
+Each Image or background file can use up to 1 MiB, with raster dimensions
+up to 4096 × 4096 pixels. Use self-contained SVGs for scalable artwork.
+SVG paths, text, gradients, and local references are supported. Export the
+artwork with scripts, animation, and external references removed. The layout
+file can hold up to 2 MiB, including embedded artwork.
 
 The native WebView reference can load an exported document with
 `cell_web_editor_example --html cell-plugin-editor.html`. Build it with
@@ -176,6 +197,159 @@ To bundle the same exports in a macOS or iOS AUv3 extension, pass
 `AU_EDITOR_HTML` and `AU_EDITOR_BINDINGS` to the AUv3 helper. The host
 opens the editor through Core Audio and records its edits through the Audio
 Unit parameter tree. See [Bundle a designer editor](AU.md#bundle-a-designer-editor).
+
+### Add hardware-style selectors
+
+Add a **Stepper** for a module code or any stepped parameter. Integer values
+display as `00`, `01`, and so on. A parameter's choice name is available
+from the value's tooltip and accessible label. Use **−** or **+** to change
+one step, or hold either button to repeat. Arrow keys also step when either
+button has focus. Holding a button sends one host automation gesture and
+stops at the parameter limit.
+
+Bind a knob to a parameter with 2–32 discrete positions to show individual
+detents and highlight the current position. Drag the knob or use the arrow
+keys to select a stop. The knob retains its selected skin and artwork.
+The same controls and parameter bindings work in live preview and exported
+editors.
+
+### Style panel text
+
+Open **Typography** in the inspector to set a control's font family, size,
+weight, tracking, alignment, and letter case. Add line breaks directly in
+the **Label** field for text elements, control headings, and button captions.
+Labels can contain up to 240 characters across eight lines.
+
+**Silkscreen** fills the inspector with a condensed, uppercase style and
+increased letter spacing. Adjust the fields and click **Apply**. Use
+**Reset typography** and **Apply** to return the control to the panel defaults.
+
+Panel Sans is based on Inter and includes variable weights. Panel Condensed
+is based on Rajdhani and includes weights from 300 through 700. The HTML
+export embeds the selected bundled fonts and their licenses. System font
+choices use the device's own fonts. The seven-segment display keeps its
+segment geometry while its heading follows the typography settings.
+
+### Share a panel across device modes
+
+Expand **Conditional behavior** for any control. Put `device = 0` in
+**Visible when** for the row bound to `dist_guitar` and `device = 1` for
+the row bound to `dist_bass`. Both rows can occupy the same grid slot.
+When the wide boxes match and their rules are mutually exclusive, automatic
+phone placement gives them the same slot. Use **Conditional control** above
+the canvas to select a row covered by another row while editing.
+
+Use **Enabled when** to leave a control visible while restricting input,
+for example `tuner = 0 && device >= 0`. Conditions compare plain numeric
+parameter values. Use `=`, `!=`, `<`, `<=`, `>`, and `>=`, with
+`&&` evaluated before `||`. Use double quotes around keys with spaces.
+Each condition supports up to 12 comparisons. A comparison with a missing
+source is false.
+
+**Label from** takes another parameter key. Use its current choice label,
+parameter name, or formatted value, or map each value to your own label.
+For example, map `0 = COMP` and `1 = COMP/LIMIT` on a control that gets
+its own value from `comp`. The ordinary Label field supplies the fallback
+when the source or a matching label is unavailable.
+
+The exported editor evaluates rules from the host's parameter snapshots.
+If a control becomes hidden or disabled during an edit, the editor ends
+that gesture and releases momentary controls. The C++ export includes any
+extra source parameters as read-only snapshot bindings.
+
+### Add buttons and product commands
+
+Use **Momentary** for a parameter that goes to its maximum on press and
+returns to its minimum on release. The bridge reserves the release and
+gesture end together before accepting the press. **Toggle** latches between
+the two values. Both use the control's label as their caption.
+
+Use **Action** for a named plug-in command. The inspector offers **Tap**,
+**Press and release**, **Long press**, and **Hold to repeat**. For example,
+bind a button labelled STORE to the product's `store` action and set
+**Hold time** to 2000 ms. Releasing early cancels the command. The Designer
+preview reports the command and phase so you can check the layout.
+
+**Action Pair** gives minus and plus their own command keys. Add a
+**Two-button action key** to fire a third command after both buttons have
+been held for the specified time. A Stepper also supports this two-button
+action while its individual buttons edit its parameter. With a two-button
+action available, a single quick tap activates on release and a held
+single button starts repeating after 350 ms. Starting both within that
+interval suppresses the individual actions. Release either button early to
+cancel the chord. Both touch points can participate. For keyboard use,
+focus the pair and hold Left and Right together.
+
+Implement `cell::web::ActionTarget` on the processor to expose product
+actions. `supportsWebAction` declares a key and mode. `webAction`
+accepts an invoke, press, or release on the control thread. A successful
+press must leave its release available through editor cancellation.
+The C++ export includes a separate `cell::designer::actions` allow-list.
+Only actions that the layout lists and that the product supports are
+enabled. The editor handles the hold timing. The processor owns any
+product-specific validation and state changes.
+
+The Cell Gain WebView example implements `factory-recall` and recalls its
+default trim. CLAP and Android Designer carry action bindings to their
+processing engines. The target product defines its own store, initialize,
+tuner, and patch-navigation behavior.
+
+### Show hardware display codes
+
+Add an **LED Display** and bind its parameter key. The display has two
+seven-segment character cells with dim unlit segments. Unmapped integer
+values from 0 through 99 are zero-padded. Integers from −9 through −1 use
+one cell for the minus sign. Other unmapped values show `--`.
+
+In the inspector, enter one plain parameter value and code per line in
+**Display codes**. **Bound choices** lists the values and labels from the
+loaded parameter snapshot. The character mapping is case-sensitive and
+supports codes such as `A1`, `oF`, `L7`, `Ac`, and `?1`. A single
+character aligns to the right. **Supported characters** lists all available
+glyphs, including the question mark with its dot.
+
+```text
+0 = A1
+1 = oF
+2 = L7
+3 = Ac
+4 = ?1
+```
+
+You can also add codes to a **Stepper**, **Readout**, or **Choice**. Turn on
+**Segmented digits** on a Stepper to combine the display with its minus and
+plus buttons. Codes live in the layout. Menus, host labels, and automation
+keep the plug-in's chosen labels and values. On mapped outputs, the full
+choice label is available to screen readers and in the tooltip.
+
+### Bind a bank of programs
+
+Add **Bank**, **Program**, and **Patch Name** for a split layout, or
+**Program Grid** for direct access to every populated slot. Bank selects
+which slots the Program control browses. Choosing a program or clicking a
+grid button requests recall. The patch name and active slot reflect the
+next snapshot from the plug-in.
+
+Program controls bind to a separate memory catalog. Implement
+`cell::ProgramMemory` on a processor to publish its banks, named slots,
+and current address. Use `Engine::editTransaction` for parameter-only
+patches. A processor whose patches include other state supplies its own
+safe publication mechanism. The product owns patch contents, persistence,
+and any slot editing. The GUI requests recall by bank and program index
+using `{"type":"recall-program","bank":0,"program":5}`. The bridge accepts
+only populated addresses from the published catalog.
+
+The Cell Gain reference exposes six banks of six real gain patches.
+Run `cell_web_bridge_example --parameters > parameters.json` and load that
+snapshot in the Designer to preview its names and slot selection. Live
+preview simulates the selection. Exported HTML uses the connected
+instance's catalog and the reference applies the patch to its gain.
+
+The Engine-backed CLAP and Android Designer bridges and the native
+WebView reference can use this interface. Separate-controller VST3, LV2
+UI, AU, and AUv3 editor adapters need a connection to their processing
+instance's program endpoint. A bridge without a program catalog shows
+the controls as unavailable.
 
 ### Start a project from Designer exports
 

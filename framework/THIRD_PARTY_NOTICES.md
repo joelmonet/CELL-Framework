@@ -31,6 +31,12 @@ Unicode case mappings in `src/unicode_case_data.hpp` are generated from the Unic
 
 Brand faces: `assets/CellBrandGrotesk-SemiBold.ttf` is a renamed static weight600 instance derived from Space Grotesk, Copyright 2020 The Space Grotesk Project Authors, under SIL OFL1.1 (`assets/SpaceGrotesk-OFL.txt`). `assets/Rajdhani-SemiBold.ttf` is Copyright2014 Indian Type Foundry, under SIL OFL1.1 (`assets/Rajdhani-OFL.txt`). `assets/BRAND-FONTS.json` records source URLs, hashes and the static-instance modification. Font licenses are retained separately from original Cell code licensing.
 
+The UI Designer's `fonts.js` bundles renamed WOFF2 subsets of Inter
+(Cell Panel Sans) and Rajdhani (Cell Panel Condensed). The generated data
+includes the original copyright and SIL OFL 1.1 text for each family.
+The Designer carries those notices into HTML exports that embed the fonts.
+`tools/build_designer_fonts.py` records the source revision and regeneration steps.
+
 
 Android builds use separately supplied fast_float headers for locale-independent
 floating-point parsing. The Cell source archive does not include these headers.

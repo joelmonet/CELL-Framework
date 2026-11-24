@@ -19,7 +19,11 @@ public:
               [this](cell::ParamId id) { grab(id, true); return true; },
               [this](cell::ParamId id, double value, bool active) { return edit(id, value, active); },
               [this](cell::ParamId id) { grab(id, false); return true; }},
-              cell::designer::parameters) {
+              cell::designer::parameters
+#if defined(CELL_DESIGNER_HAS_RULE_SOURCES)
+              , {}, cell::designer::readOnlyParameters
+#endif
+          ) {
         for (std::size_t i = 0; i < fields_.size(); ++i) values_[i] = fields_[i].defaultValue;
     }
 

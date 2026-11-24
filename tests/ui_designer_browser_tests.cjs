@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
+const {execFileSync} = require("node:child_process");
 const {chromium} = require(process.env.CELL_PLAYWRIGHT_MODULE || "playwright");
 
 const source = path.join(__dirname, "../examples/ui_designer");
@@ -33,7 +34,7 @@ async function download(page, id, directory) {
         page.on("dialog", dialog => dialog.accept());
         const serveDesigner = async route => {
             const name = new URL(route.request().url()).pathname.slice(1);
-            if (!["index.html", "model.js", "runtime.js", "designer.js"].includes(name)) return route.abort();
+            if (!["index.html", "model.js", "fonts.js", "runtime.js", "designer.js"].includes(name)) return route.abort();
             await route.fulfill({body: await fs.readFile(path.join(source, name)),
                 contentType: name.endsWith(".js") ? "text/javascript" : "text/html; charset=utf-8"});
         };
@@ -127,7 +128,7 @@ async function download(page, id, directory) {
             buffer: Buffer.from(JSON.stringify(project))});
         await page.getByText("3 parameters loaded", {exact: true}).waitFor();
         const preview = page.frameLocator("#preview-panel iframe");
-        await preview.getByRole("slider", {name: "Field Radio Gain"}).waitFor();
+        await preview.locator('.fader input[aria-valuetext="-6.00 dB"]').waitFor();
         const fader = preview.getByRole("slider", {name: "Studio Fader"});
         assert.equal(await fader.inputValue(), "-6");
         await fader.press("ArrowUp");
@@ -368,8 +369,698 @@ async function download(page, id, directory) {
         await touch.getByRole("button", {name: "Paste controls"}).tap();
         await touch.getByText("Control pasted.", {exact: true}).waitFor();
         assert.equal(await touch.getByRole("button", {name: "Drive · knob"}).count(), 2);
+
+        const panel = await context.newPage();
+        panel.on("pageerror", error => errors.push(error));
+        panel.on("dialog", dialog => dialog.accept());
+        await panel.route(origin + "/**", serveDesigner);
+        await panel.goto(origin + "/index.html");
+        await panel.getByRole("button", {name: "Add stepper"}).click();
+        await panel.getByRole("button", {name: "Live preview"}).click();
+        const panelPreview = panel.frameLocator("#preview-panel iframe");
+        await panelPreview.getByRole("button", {name: "Increase Code"}).click();
+        assert.equal(await panelPreview.locator(".stepper output").textContent(), "01");
+        const parameter = {key: "program", name: "Program", minimum: 0, maximum: 11, step: 1, value: 3, unit: "",
+            choices: Array.from({length: 12}, (_, index) => "Preset " + index)};
+        const fixture = {schema: "cell.ui-layout.v3", catalog: [parameter], controls: [
+            {kind: "stepper", label: "Program", key: "program", x: 0, y: 0, width: 4, height: 1},
+            {kind: "knob", label: "Selector", key: "program", skin: "field", x: 4, y: 0, width: 4, height: 2}
+        ]};
+        await panel.locator("#layout-file").setInputFiles({name: "discrete-layout.json", mimeType: "application/json",
+            buffer: Buffer.from(JSON.stringify(fixture))});
+        await panel.getByText("Layout opened.", {exact: true}).waitFor();
+        const selector = panelPreview.getByRole("slider", {name: "Selector"});
+        assert.equal(await panelPreview.locator(".detents span").count(), 12);
+        assert.equal(await selector.inputValue(), "3");
+        await panelPreview.getByRole("button", {name: "Increase Program"}).press("ArrowUp");
+        assert.equal(await selector.inputValue(), "4");
+        assert.equal(await panelPreview.locator(".stepper output").textContent(), "04");
+        assert.equal(await panelPreview.locator(".stepper output").getAttribute("title"), "Preset 4");
+        assert.equal(await panelPreview.locator(".detents span").nth(4).getAttribute("data-active"), "");
+        await selector.press("ArrowDown");
+        assert.equal(await panelPreview.locator(".stepper output").textContent(), "03");
+        const discreteHeader = await download(panel, "#export-cpp", temp);
+        assert.match(discreteHeader, /ControlKind::stepper/);
+        assert.match(discreteHeader, /std::array<cell::ParamId, 1>/);
+        const discreteHtml = await download(panel, "#export", temp);
+
+        const controlsPage = await browser.newPage({viewport: {width: 700, height: 540}, hasTouch: true});
+        controlsPage.on("pageerror", error => errors.push(error));
+        await controlsPage.addInitScript(() => {
+            window.sent = [];
+            window.cell = {onMessage(callback) { window.receive = callback; }, postMessage(message) { window.sent.push(message); }};
+        });
+        await controlsPage.route(origin + "/discrete.html", route =>
+            route.fulfill({body: discreteHtml, contentType: "text/html; charset=utf-8"}));
+        await controlsPage.goto(origin + "/discrete.html");
+        const publish = value => controlsPage.evaluate(parameter => window.receive({type: "parameters", parameters: [parameter]}),
+            {...parameter, value});
+        await publish(3);
+        const plus = controlsPage.getByRole("button", {name: "Increase Program"});
+        const minus = controlsPage.getByRole("button", {name: "Decrease Program"});
+        const code = controlsPage.locator(".stepper output");
+        const messagesFor = () => controlsPage.evaluate(() => window.sent.map(message => message.value ?? message.type));
+        await plus.tap();
+        assert.deepEqual(await messagesFor(), ["begin", 4, "end"]);
+        await publish(8);
+        await controlsPage.evaluate(() => { window.sent.length = 0; });
+        await plus.hover();
+        await controlsPage.mouse.down();
+        await controlsPage.waitForFunction(() => window.sent.some(message => message.value === 11));
+        assert.equal(await plus.getAttribute("aria-disabled"), "true");
+        await controlsPage.mouse.up();
+        assert.equal(await code.textContent(), "11");
+        assert.deepEqual(await messagesFor(), ["begin", 9, 10, 11, "end"]);
+        await plus.click({force: true});
+        assert.deepEqual(await messagesFor(), ["begin", 9, 10, 11, "end"]);
+
+        await controlsPage.evaluate(() => { window.sent.length = 0; });
+        await minus.hover();
+        await controlsPage.mouse.down();
+        await controlsPage.setViewportSize({width: 390, height: 540});
+        await controlsPage.locator('main[data-layout="phone"]').waitFor();
+        await controlsPage.mouse.up();
+        assert.deepEqual(await messagesFor(), ["begin", 10, "end"]);
+
+        await publish(3);
+        await controlsPage.evaluate(() => { window.sent.length = 0; });
+        await minus.focus();
+        await controlsPage.keyboard.down("ArrowDown");
+        await controlsPage.waitForFunction(() => window.sent.some(message => message.value === 0));
+        await controlsPage.keyboard.up("ArrowDown");
+        assert.deepEqual(await messagesFor(), ["begin", 2, 1, 0, "end"]);
+        assert.equal(await code.textContent(), "00");
+        assert.equal(await minus.getAttribute("aria-disabled"), "true");
+        await controlsPage.evaluate(() => window.receive({type: "parameters", parameters: []}));
+        assert.equal(await plus.isDisabled(), true);
+        assert.equal(await code.textContent(), "—");
+
+        const artwork = await context.newPage();
+        artwork.on("pageerror", error => errors.push(error));
+        artwork.on("dialog", dialog => dialog.accept());
+        await artwork.route(origin + "/**", serveDesigner);
+        await artwork.goto(origin + "/index.html");
+        const svg = (name, content) => ({name, mimeType: "image/svg+xml",
+            buffer: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40">${content}</svg>`)});
+        const logo = svg("logo.svg", '<style>.mark{fill:url(#ink)}</style>' +
+            '<defs><linearGradient id="ink"><stop stop-color="#ffdd99"/></linearGradient>' +
+            '<path id="shape" d="M0,35L20,5L40,35Z"/></defs><use class="mark" href="#shape"/>');
+        const background = svg("background.svg", '<rect width="120" height="40" fill="#254754"/>' +
+            '<!--' + " ".repeat(270 * 1024) + '-->');
+        const loadLayout = value => artwork.locator("#layout-file").setInputFiles({name: "layout.json",
+            mimeType: "application/json", buffer: Buffer.from(value)});
+        await artwork.getByRole("button", {name: "Add slider"}).click();
+        await artwork.getByRole("button", {name: "Add rectangle"}).click();
+        await artwork.getByRole("button", {name: "Add line"}).click();
+        assert.equal(await artwork.getByLabel("Parameter key").isVisible(), false);
+        await artwork.getByLabel("Direction").selectOption("vertical");
+        await artwork.getByLabel("Thickness (px)").fill("6");
+        await artwork.getByRole("button", {name: "Apply", exact: true}).click();
+        await artwork.getByRole("button", {name: "Add image"}).click();
+        await artwork.getByLabel("Label", {exact: true}).fill("Module logo");
+        await artwork.getByLabel("Image fit").selectOption("fill");
+        await artwork.getByRole("button", {name: "Apply", exact: true}).click();
+        await artwork.locator("#artwork-file").setInputFiles(logo);
+        await artwork.getByText("Artwork embedded in the layout.", {exact: true}).waitFor();
+        await artwork.locator("#artwork-file").setInputFiles(svg("external.svg", '<use href="https://example.com/file.svg#shape"/>'));
+        await artwork.getByText(/SVG artwork must be self-contained/).waitFor();
+        await artwork.getByText("Panel background", {exact: true}).click();
+        await artwork.locator("#background-file").setInputFiles(background);
+        await artwork.getByText("Background embedded in the layout.", {exact: true}).waitFor();
+        await artwork.getByLabel("Background fit").selectOption("contain");
+        await artwork.getByRole("button", {name: "Remove background image"}).click();
+        assert.equal(await artwork.locator("#canvas .panel-background").isVisible(), false);
+        await artwork.locator("#undo").click();
+        assert.equal(await artwork.locator("#canvas .panel-background").isVisible(), true);
+        assert.equal(await artwork.getByLabel("Background fit").inputValue(), "contain");
+
+        await artwork.getByRole("button", {name: "Edit panel artwork"}).click();
+        await artwork.getByRole("button", {name: "Rectangle · rectangle"}).click();
+        assert.equal(await artwork.getByLabel("Label", {exact: true}).inputValue(), "Rectangle");
+        await artwork.getByRole("button", {name: "Live preview"}).click();
+        const artPreview = artwork.frameLocator("#preview-panel iframe");
+        const verifyArtwork = async frame => {
+            assert.equal(await frame.locator(".panel-background").evaluate(img => img.decode().then(() => img.style.objectFit)), "contain");
+            const image = frame.getByRole("img", {name: "Module logo"});
+            assert.equal(await image.evaluate(img => img.decode().then(() => img.style.objectFit)), "fill");
+            assert.equal(await frame.locator(".panel-art.line").evaluate(element =>
+                getComputedStyle(element, "::before").width), "6px");
+            assert.equal(await frame.locator(".panel-art.rectangle").evaluate(element =>
+                getComputedStyle(element, "::before").backgroundColor), "rgb(188, 239, 144)");
+        };
+        await verifyArtwork(artPreview);
+        await artPreview.getByRole("slider", {name: "Gain"}).click();
+        await artwork.getByLabel("Viewport").selectOption("phone");
+        await artPreview.locator("main[data-layout=phone]").waitFor();
+        await verifyArtwork(artPreview);
+
+        const artLayout = await download(artwork, "#save", temp);
+        const settings = JSON.parse(artLayout);
+        assert.equal(settings.controls[3].artwork, "data:image/svg+xml;base64," + logo.buffer.toString("base64"));
+        assert.equal(settings.theme.backgroundFit, "contain");
+        await loadLayout(artLayout);
+        await artwork.getByText("Layout opened.", {exact: true}).waitFor();
+        const artHeader = await download(artwork, "#export-cpp", temp);
+        assert.match(artHeader, /array<Binding, 1>/);
+        const artHtml = await download(artwork, "#export", temp);
+        const standalone = await browser.newPage({viewport: {width: 800, height: 540}});
+        standalone.on("pageerror", error => errors.push(error));
+        await standalone.route(origin + "/artwork.html", route =>
+            route.fulfill({body: artHtml, contentType: "text/html; charset=utf-8"}));
+        await standalone.goto(origin + "/artwork.html");
+        await verifyArtwork(standalone);
+        await standalone.screenshot({path: path.join(temp, "panel-artwork-wide.png")});
+        await standalone.setViewportSize({width: 390, height: 540});
+        await standalone.locator("main[data-layout=phone]").waitFor();
+        await verifyArtwork(standalone);
+        await standalone.screenshot({path: path.join(temp, "panel-artwork-phone.png")});
+
+        const active = svg("script.svg", "<script>throw 1</script>");
+        settings.theme.backgroundArtwork = "data:image/svg+xml;base64," + active.buffer.toString("base64");
+        await loadLayout(JSON.stringify(settings));
+        await artwork.getByText("The layout has invalid background artwork.", {exact: true}).waitFor();
+        await verifyArtwork(artPreview);
+
+        const native = process.env.CELL_WEB_BRIDGE_TEST_BINARY;
+        const nativeSnapshot = (mode, input) => JSON.parse(execFileSync(native, [mode], {input, encoding: "utf8"}));
+        const patchName = (bank, program) => `${-60 + 2 * (bank * 6 + program)} dB Trim`;
+        const memory = native ? nativeSnapshot("--parameters") : {
+            ...project, programs: {type: "program-memory", active: {bank: 5, program: 0},
+                banks: Array.from({length: 6}, (_, bank) => ({number: bank, name: "Bank " + "ABCDEF"[bank],
+                    programs: Array.from({length: 6}, (_, program) => ({number: program, name: patchName(bank, program)}))}))}
+        };
+        const memoryDesigner = await context.newPage();
+        memoryDesigner.on("pageerror", error => errors.push(error));
+        memoryDesigner.on("dialog", dialog => dialog.accept());
+        await memoryDesigner.route(origin + "/**", serveDesigner);
+        await memoryDesigner.goto(origin + "/index.html");
+        await memoryDesigner.getByRole("button", {name: "Add bank", exact: true}).click();
+        await memoryDesigner.getByRole("button", {name: "Add program", exact: true}).click();
+        await memoryDesigner.getByRole("button", {name: "Add patch name", exact: true}).click();
+        await memoryDesigner.getByRole("button", {name: "Add program grid", exact: true}).click();
+        await memoryDesigner.getByRole("button", {name: "Add slider", exact: true}).click();
+        await memoryDesigner.getByRole("button", {name: "Live preview"}).click();
+        const memoryPreview = memoryDesigner.frameLocator("#preview-panel iframe");
+        await memoryPreview.getByRole("combobox", {name: "Program", exact: true}).waitFor();
+        assert.equal(await memoryPreview.getByRole("combobox", {name: "Program", exact: true}).isDisabled(), true);
+        await memoryDesigner.locator("#parameter-file").setInputFiles({name: "program-memory.json", mimeType: "application/json",
+            buffer: Buffer.from(JSON.stringify(memory))});
+        await memoryDesigner.getByText("6 banks, 36 programs", {exact: true}).waitFor();
+        const previewPatch = memoryPreview.getByRole("status", {name: "Patch Name"});
+        assert.equal(await previewPatch.textContent(), "0 dB Trim");
+        assert.equal(await memoryPreview.locator(".program-buttons button").count(), 36);
+        await memoryPreview.getByRole("combobox", {name: "Bank", exact: true}).selectOption("2");
+        assert.equal(await previewPatch.textContent(), "0 dB Trim");
+        await memoryPreview.getByRole("combobox", {name: "Program", exact: true}).selectOption("4");
+        assert.equal(await previewPatch.textContent(), "-28 dB Trim");
+        const memoryLayout = await download(memoryDesigner, "#save", temp);
+        assert.deepEqual(JSON.parse(memoryLayout).programs, memory.programs);
+        await memoryDesigner.locator("#layout-file").setInputFiles({name: "memory-layout.json", mimeType: "application/json",
+            buffer: Buffer.from(memoryLayout)});
+        await memoryDesigner.getByText("Layout opened.", {exact: true}).waitFor();
+        assert.equal(await previewPatch.textContent(), "0 dB Trim");
+        assert.match(await download(memoryDesigner, "#export-cpp", temp), /array<Binding, 1>/);
+        const memoryHtml = await download(memoryDesigner, "#export", temp);
+        const memoryEditor = await browser.newPage({viewport: {width: 390, height: 720}});
+        memoryEditor.on("pageerror", error => errors.push(error));
+        await memoryEditor.addInitScript(() => {
+            window.sent = [];
+            window.cell = {onMessage(callback) { window.receive = callback; }, postMessage(message) { window.sent.push(message); }};
+        });
+        await memoryEditor.route(origin + "/memory.html", route => route.fulfill({body: memoryHtml, contentType: "text/html"}));
+        await memoryEditor.goto(origin + "/memory.html");
+        const patch = memoryEditor.getByRole("status", {name: "Patch Name"});
+        assert.equal(await patch.textContent(), "—");
+        await memoryEditor.evaluate(snapshot => window.receive(snapshot), memory);
+        const slot = memoryEditor.getByRole("button", {name: "Bank C, 05 -28 dB Trim", exact: true});
+        await slot.click();
+        assert.equal(await patch.textContent(), "0 dB Trim");
+        assert.equal(await slot.getAttribute("aria-pressed"), "false");
+        const recallMessages = await memoryEditor.evaluate(() => window.sent);
+        assert.deepEqual(recallMessages, [{type: "recall-program", bank: 2, program: 4}]);
+        const recalled = native ? nativeSnapshot("--apply-gestures", JSON.stringify(recallMessages[0]) + "\n") :
+            {...memory, programs: {...memory.programs, active: {bank: 2, program: 4}}};
+        await memoryEditor.evaluate(snapshot => window.receive(snapshot), recalled);
+        assert.equal(await patch.textContent(), "-28 dB Trim");
+        assert.equal(await slot.getAttribute("aria-pressed"), "true");
+        assert.equal(await slot.evaluate(button => document.activeElement === button), true);
+        if (native) assert.equal(await memoryEditor.getByRole("slider", {name: "Gain"}).inputValue(), "-28");
+        await memoryEditor.screenshot({path: path.join(temp, "program-memory-phone.png"), fullPage: true});
+
+        const digital = await context.newPage();
+        digital.on("pageerror", error => errors.push(error));
+        digital.on("dialog", dialog => dialog.accept());
+        await digital.route(origin + "/**", serveDesigner);
+        await digital.goto(origin + "/index.html");
+        const choiceLabels = ["Algorithm One", "OFF", "LFO Seven", "AC Coupled", "Unknown", "Manual"];
+        const mode = {key: "mode", name: "Module Mode", unit: "", minimum: 10, maximum: 15, step: 1, value: 11,
+            choices: choiceLabels};
+        const counter = {key: "count", name: "Slot", unit: "", minimum: -9, maximum: 100, step: 1, value: 7};
+        const snapshot = (parameters = [mode, counter]) => ({type: "parameters", parameters});
+        await digital.locator("#parameter-file").setInputFiles({name: "digital-parameters.json", mimeType: "application/json",
+            buffer: Buffer.from(JSON.stringify(snapshot()))});
+        await digital.getByText("2 parameters loaded", {exact: true}).waitFor();
+        const displayCodes = "10 = A1\n11 = oF\n12 = L7\n13 = Ac\n14 = ?1";
+        const codeField = digital.getByLabel("Display codes", {exact: true});
+        const apply = digital.getByRole("button", {name: "Apply", exact: true});
+        await digital.getByRole("button", {name: "Add led display", exact: true}).click();
+        await digital.getByLabel("Label", {exact: true}).fill("Mode LED");
+        await digital.getByText("Bound choices", {exact: true}).click();
+        assert.deepEqual(await digital.locator("#display-choices dd").allTextContents(), choiceLabels);
+        await codeField.fill("11 = OFF");
+        await apply.click();
+        await digital.getByText("Each display code needs a finite value and one or two supported characters.", {exact: true}).waitFor();
+        await codeField.fill(displayCodes);
+        await digital.getByLabel("Custom accent").check();
+        await digital.getByLabel("Control accent").fill("#ff9748");
+        await apply.click();
+        await digital.getByRole("button", {name: "Add choice", exact: true}).click();
+        await digital.getByLabel("Label", {exact: true}).fill("Mode menu");
+        await apply.click();
+        await digital.getByRole("button", {name: "Add stepper", exact: true}).click();
+        await digital.getByLabel("Label", {exact: true}).fill("Mode stepper");
+        await digital.getByLabel("Segmented digits").check();
+        await codeField.fill(displayCodes);
+        await apply.click();
+        await digital.getByRole("button", {name: "Add led display", exact: true}).click();
+        await digital.getByLabel("Label", {exact: true}).fill("Slot LED");
+        await digital.getByLabel("Parameter key", {exact: true}).fill("count");
+        await codeField.fill("7 = C");
+        await apply.click();
+        await digital.getByRole("button", {name: "Live preview"}).click();
+
+        const digitalPreview = digital.frameLocator("#preview-panel iframe");
+        const modeLed = digitalPreview.locator(".led output").first();
+        const slotLed = digitalPreview.locator(".led output").nth(1);
+        const modeMenu = digitalPreview.getByRole("combobox", {name: "Mode menu"});
+        const modeStepper = digitalPreview.locator(".stepper output");
+        const activeSegments = output => output.locator(".led-digit").evaluateAll(digits =>
+            digits.map(digit => [...digit.querySelectorAll("[data-lit]")].map(segment => segment.dataset.segment).join("")));
+        assert.equal(await modeLed.getAttribute("data-code"), "oF");
+        assert.equal(await modeLed.getAttribute("aria-label"), "Mode LED value oF, OFF");
+        assert.deepEqual(await activeSegments(modeLed), ["cdeg", "aefg"]);
+        assert.equal(await modeLed.locator('[data-segment=a]:not([data-lit])').first().evaluate(segment =>
+            Number(getComputedStyle(segment).opacity)), .17);
+        assert.equal(await modeLed.locator("[data-lit]").first().evaluate(segment =>
+            Number(getComputedStyle(segment).opacity)), 1);
+        assert.equal(await slotLed.getAttribute("data-code"), " C");
+        assert.deepEqual(await activeSegments(slotLed), ["", "adef"]);
+        assert.deepEqual(await modeMenu.locator("option").allTextContents(), choiceLabels);
+        await digitalPreview.getByRole("button", {name: "Increase Mode stepper"}).click();
+        assert.equal(await modeStepper.getAttribute("data-code"), "L7");
+        assert.equal(await modeLed.getAttribute("data-code"), "L7");
+        assert.equal(await modeMenu.inputValue(), "12");
+        for (const [value, code] of [["10", "A1"], ["13", "Ac"], ["14", "?1"]]) {
+            await modeMenu.selectOption(value);
+            assert.equal(await modeLed.getAttribute("data-code"), code);
+            assert.equal(await modeStepper.getAttribute("data-code"), code);
+        }
+        assert.deepEqual(await activeSegments(modeLed), ["abegp", "bc"]);
+
+        const ledLayoutText = await download(digital, "#save", temp);
+        const leds = JSON.parse(ledLayoutText).controls;
+        assert.deepEqual(leds[0].displayCodes.map(({code}) => code), ["A1", "oF", "L7", "Ac", "?1"]);
+        assert.equal(leds.find(control => control.kind === "stepper").segmented, true);
+        await digital.locator("#layout-file").setInputFiles({name: "led-layout.json", mimeType: "application/json",
+            buffer: Buffer.from(ledLayoutText)});
+        await digital.getByText("Layout opened.", {exact: true}).waitFor();
+        await digitalPreview.locator('.led output[data-code="oF"]').waitFor();
+        assert.equal(await modeLed.getAttribute("data-code"), "oF");
+        assert.equal(await codeField.inputValue(), displayCodes);
+        const ledHeader = await download(digital, "#export-cpp", temp);
+        assert.match(ledHeader, /ControlKind::led/);
+        assert.match(ledHeader, /std::array<cell::ParamId, 2>/);
+        const ledEditorHtml = await download(digital, "#export", temp);
+        const exportedLED = await browser.newPage({viewport: {width: 390, height: 520}});
+        exportedLED.on("pageerror", error => errors.push(error));
+        await exportedLED.addInitScript(() => {
+            window.sent = [];
+            window.cell = {onMessage(callback) { window.receive = callback; }, postMessage(message) { window.sent.push(message); }};
+        });
+        await exportedLED.route(origin + "/digital.html", route =>
+            route.fulfill({body: ledEditorHtml, contentType: "text/html; charset=utf-8"}));
+        await exportedLED.goto(origin + "/digital.html");
+        const exportedMode = exportedLED.locator(".led output").first();
+        const exportedSlot = exportedLED.locator(".led output").nth(1);
+        assert.equal(await exportedMode.getAttribute("data-code"), "  ");
+        assert.equal(await exportedMode.getAttribute("aria-label"), "Mode LED value Unavailable");
+        const sendSnapshot = parameters => exportedLED.evaluate(message => window.receive(message), snapshot(parameters));
+        await sendSnapshot([{...mode, value: 14}, {...counter, value: 8}]);
+        assert.equal(await exportedMode.getAttribute("data-code"), "?1");
+        assert.equal(await exportedSlot.getAttribute("data-code"), "08");
+        await exportedLED.screenshot({path: path.join(temp, "segmented-display-phone.png"), fullPage: true});
+        await sendSnapshot([{...mode, value: 15}, {...counter, value: 100}]);
+        assert.equal(await exportedMode.getAttribute("data-code"), "15");
+        assert.equal(await exportedSlot.getAttribute("data-code"), "--");
+        await sendSnapshot([{...counter, value: -4}]);
+        assert.equal(await exportedMode.getAttribute("data-code"), "  ");
+        assert.equal(await exportedSlot.getAttribute("data-code"), "-4");
+        assert.deepEqual(await exportedLED.evaluate(() => window.sent), []);
+
+        const commandDesigner = await context.newPage();
+        commandDesigner.on("pageerror", error => errors.push(error));
+        commandDesigner.on("dialog", dialog => dialog.accept());
+        await commandDesigner.route(origin + "/**", serveDesigner);
+        await commandDesigner.goto(origin + "/index.html");
+        const commandField = name => commandDesigner.getByLabel(name, {exact: true});
+        const saveControl = () => commandDesigner.getByRole("button", {name: "Apply", exact: true}).click();
+        const addButton = async (kind, label) => {
+            await commandDesigner.getByRole("button", {name: "Add " + kind, exact: true}).click();
+            await commandField("Label").fill(label);
+        };
+        const addAction = async (label, key, trigger) => {
+            await addButton("action", label);
+            await commandField("Action key").fill(key);
+            await commandDesigner.locator('select[name="trigger"]').selectOption(trigger);
+            await saveControl();
+        };
+        await addAction("STORE", "store", "hold");
+        await addAction("Factory Recall", "factory-recall", "tap");
+        await addAction("Tuner", "tuner", "momentary");
+        await addAction("Scan", "scan", "repeat");
+        await addButton("action pair", "Patch");
+        await commandField("Two-button action key").fill("bank-select");
+        await saveControl();
+        await addButton("momentary", "GATE");
+        await saveControl();
+        await addButton("toggle", "BYPASS");
+        await saveControl();
+        await commandDesigner.getByRole("button", {name: "Live preview"}).click();
+        const commandPreview = commandDesigner.frameLocator("#preview-panel iframe");
+        await commandPreview.getByRole("button", {name: "Factory Recall"}).click();
+        await commandDesigner.getByText("Simulated action factory-recall (invoke)", {exact: true}).waitFor();
+        const commandLayout = await download(commandDesigner, "#save", temp);
+        const savedButtons = JSON.parse(commandLayout).controls;
+        assert.equal(savedButtons[0].holdMs, 2000);
+        assert.equal(savedButtons[4].chordMs, 1000);
+        await commandDesigner.locator("#layout-file").setInputFiles({name: "commands.json", mimeType: "application/json",
+            buffer: Buffer.from(commandLayout)});
+        await commandDesigner.getByText("Layout opened.", {exact: true}).waitFor();
+        assert.equal(await commandField("Hold time (ms)").inputValue(), "2000");
+        const commandHeader = await download(commandDesigner, "#export-cpp", temp);
+        assert.match(commandHeader, /std::array<cell::web::ActionBinding, 7>/);
+        assert.match(commandHeader, /"tuner", cell::web::ActionMode::momentary/);
+        assert.match(commandHeader, /std::array<cell::ParamId, 2>/);
+        const commandHtml = await download(commandDesigner, "#export", temp);
+
+        const commandEditor = await browser.newPage({viewport: {width: 780, height: 560}, hasTouch: true});
+        commandEditor.on("pageerror", error => errors.push(error));
+        await commandEditor.clock.install();
+        await commandEditor.clock.pauseAt(new Date(Date.now() + 1000));
+        await commandEditor.addInitScript(() => {
+            window.sent = [];
+            window.cell = {onMessage(callback) { window.receive = callback; }, postMessage(message) { window.sent.push(message); }};
+        });
+        await commandEditor.route(origin + "/commands.html", route => route.fulfill({body: commandHtml, contentType: "text/html"}));
+        await commandEditor.goto(origin + "/commands.html");
+        const button = name => commandEditor.getByRole("button", {name, exact: true});
+        assert.equal(await button("STORE").isDisabled(), true);
+        const availableActions = ["store", "factory-recall", "scan", "previous-patch", "next-patch", "bank-select"]
+            .map(key => ({key, mode: "invoke"})).concat({key: "tuner", mode: "momentary"});
+        await commandEditor.evaluate(snapshot => window.receive(snapshot), {type: "parameters", momentary: true,
+            actions: availableActions,
+            parameters: [{key: "gate", minimum: 0, maximum: 1, value: 0, step: 1}, project.parameters[1]]});
+        const takeMessages = () => commandEditor.evaluate(() => window.sent.splice(0));
+        const invoke = (key, phase = "invoke") => ({type: "action", key, phase});
+        await button("Factory Recall").click({force: true});
+        const factoryRecall = await takeMessages();
+        assert.deepEqual(factoryRecall, [invoke("factory-recall")]);
+        if (native) {
+            const recalled = nativeSnapshot("--apply-gestures", [
+                {type: "recall-program", bank: 2, program: 4}, ...factoryRecall
+            ].map(message => JSON.stringify(message) + "\n").join(""));
+            assert.equal(recalled.parameters[0].value, 0);
+            assert.deepEqual(recalled.programs.active, {bank: 5, program: 0});
+        }
+        assert.equal(await button("BYPASS").textContent(), "BYPASS");
+        await button("STORE").click({force: true});
+        assert.deepEqual(await takeMessages(), []);
+        await button("STORE").focus();
+        await commandEditor.keyboard.down("Space");
+        await commandEditor.clock.runFor(1999);
+        assert.deepEqual(await takeMessages(), []);
+        await commandEditor.clock.runFor(1);
+        assert.deepEqual(await takeMessages(), [invoke("store")]);
+        await commandEditor.clock.runFor(2000);
+        await commandEditor.keyboard.up("Space");
+        assert.deepEqual(await takeMessages(), []);
+        await button("Scan").focus();
+        await commandEditor.keyboard.down("Enter");
+        await commandEditor.clock.runFor(350 + 2 * 85);
+        await commandEditor.keyboard.up("Enter");
+        await commandEditor.clock.runFor(400);
+        assert.deepEqual(await takeMessages(), Array.from({length: 4}, () => invoke("scan")));
+        await button("Tuner").focus();
+        await commandEditor.keyboard.down("Space");
+        assert.deepEqual(await takeMessages(), [invoke("tuner", "press")]);
+        await commandEditor.evaluate(() => window.dispatchEvent(new Event("blur")));
+        await commandEditor.keyboard.up("Space");
+        assert.deepEqual(await takeMessages(), [invoke("tuner", "release")]);
+        await button("GATE").focus();
+        await commandEditor.keyboard.down("Space");
+        await commandEditor.setViewportSize({width: 390, height: 620});
+        await commandEditor.locator("main[data-layout=phone]").waitFor();
+        await commandEditor.keyboard.up("Space");
+        assert.deepEqual(await takeMessages(), ["momentary-press", "momentary-release"].map(type => ({type, key: "gate"})));
+        const down = button("Decrease Patch"), up = button("Increase Patch");
+        await down.focus();
+        await commandEditor.keyboard.down("ArrowLeft");
+        await commandEditor.keyboard.down("ArrowRight");
+        await commandEditor.clock.runFor(500);
+        await commandEditor.keyboard.up("ArrowRight");
+        await commandEditor.clock.runFor(600);
+        await commandEditor.keyboard.up("ArrowLeft");
+        assert.deepEqual(await takeMessages(), []);
+        await commandEditor.keyboard.down("ArrowLeft");
+        await commandEditor.keyboard.down("ArrowRight");
+        await commandEditor.clock.runFor(999);
+        assert.deepEqual(await takeMessages(), []);
+        await commandEditor.clock.runFor(1);
+        await commandEditor.keyboard.up("ArrowLeft");
+        await commandEditor.keyboard.up("ArrowRight");
+        assert.deepEqual(await takeMessages(), [invoke("bank-select")]);
+        await up.click({force: true});
+        assert.deepEqual(await takeMessages(), [invoke("next-patch")]);
+
+        const touchSession = await commandEditor.context().newCDPSession(commandEditor);
+        const touchPoints = await Promise.all([down, up].map(async (locator, id) => {
+            const box = await locator.boundingBox();
+            return {x: box.x + box.width / 2, y: box.y + box.height / 2, id};
+        }));
+        await touchSession.send("Input.dispatchTouchEvent", {type: "touchStart", touchPoints});
+        await commandEditor.clock.runFor(1000);
+        await touchSession.send("Input.dispatchTouchEvent", {type: "touchEnd", touchPoints: []});
+        assert.deepEqual(await takeMessages(), [invoke("bank-select")]);
+        await commandEditor.screenshot({path: path.join(temp, "action-buttons-phone.png"), fullPage: true});
+
+        const variants = await context.newPage();
+        variants.on("pageerror", error => errors.push(error));
+        variants.on("dialog", dialog => dialog.accept());
+        await variants.route(origin + "/**", serveDesigner);
+        await variants.goto(origin + "/index.html");
+        const parameterField = (key, name, maximum, choices = []) =>
+            ({key, name, unit: "", minimum: 0, maximum, step: 1, value: 0, choices});
+        const variantCatalog = [
+            parameterField("device", "Device", 1, ["505 II", "506 II"]),
+            parameterField("dist_guitar", "Guitar distortion", 2, ["Clean", "Drive", "High gain"]),
+            parameterField("dist_bass", "Bass distortion", 1, ["Bass clean", "Bass drive"]),
+            parameterField("comp", "Compression", 3),
+            parameterField("gate", "Gate", 1),
+            parameterField("tuner", "Tuner", 1)
+        ];
+        const variantFixture = {schema: "cell.ui-layout.v3", catalog: variantCatalog, controls: [
+            {kind: "choice", label: "Device", key: "device", x: 0, y: 0, width: 4, height: 1},
+            {kind: "text", label: "Device panel", labelFrom: {key: "device", source: "choice"}, x: 4, y: 0, width: 8, height: 1},
+            {kind: "choice", label: "DIST", key: "dist_guitar", visibleWhen: "device = 0", x: 0, y: 1, width: 6, height: 1},
+            {kind: "choice", label: "DIST", key: "dist_bass", visibleWhen: "device = 1", x: 0, y: 1, width: 6, height: 1},
+            {kind: "stepper", label: "COMP", key: "comp", x: 6, y: 1, width: 6, height: 1},
+            {kind: "momentary", label: "Gate", key: "gate", visibleWhen: "device = 0", x: 0, y: 2, width: 4, height: 1}
+        ]};
+        const openVariants = data => variants.locator("#layout-file").setInputFiles({name: "shared-panel.json",
+            mimeType: "application/json", buffer: Buffer.from(data)});
+        await openVariants(JSON.stringify(variantFixture));
+        await variants.getByText("Layout opened.", {exact: true}).waitFor();
+        assert.equal(await variants.locator("#overlap-status").isVisible(), false);
+        await variants.locator("#rule-element").selectOption("2");
+        await variants.getByText("Conditional behavior", {exact: true}).click();
+        const visibleWhen = variants.getByLabel("Visible when", {exact: true});
+        assert.equal(await visibleWhen.inputValue(), "device = 0");
+        await visibleWhen.fill("device = 0 &&");
+        await variants.getByRole("button", {name: "Apply", exact: true}).click();
+        await variants.getByText(/Use numeric conditions/).waitFor();
+        await visibleWhen.fill("device = 0");
+        await variants.getByRole("button", {name: "Apply", exact: true}).click();
+        await variants.getByRole("button", {name: "COMP · stepper", exact: true}).click();
+        await variants.getByLabel("Enabled when", {exact: true}).fill("tuner = 0 && device >= 0");
+        await variants.getByLabel("Label from", {exact: true}).fill("device");
+        await variants.locator('select[name="label-source"]').selectOption("map");
+        await variants.getByLabel("Labels by value", {exact: true}).fill("0 = COMP\n1 = COMP/LIMIT");
+        await variants.getByRole("button", {name: "Apply", exact: true}).click();
+        await variants.getByRole("button", {name: "Live preview"}).click();
+        const variantPreview = variants.frameLocator("#preview-panel iframe");
+        const previewDevice = variantPreview.getByRole("combobox", {name: "Device", exact: true});
+        const previewDist = variantPreview.getByRole("combobox", {name: "DIST", exact: true});
+        await variantPreview.locator(".text .control-title").filter({hasText: "505 II"}).waitFor();
+        assert.deepEqual(await previewDist.locator("option").allTextContents(), variantCatalog[1].choices);
+        await previewDevice.selectOption("1");
+        await variantPreview.getByRole("button", {name: "Increase COMP/LIMIT"}).waitFor();
+        assert.deepEqual(await previewDist.locator("option").allTextContents(), variantCatalog[2].choices);
+        assert.equal(await variantPreview.getByRole("button", {name: "Gate", exact: true}).count(), 0);
+        await previewDevice.selectOption("0");
+        assert.deepEqual(await previewDist.locator("option").allTextContents(), variantCatalog[1].choices);
+
+        const variantSaved = await download(variants, "#save", temp);
+        assert.equal(JSON.parse(variantSaved).controls[4].labelFrom.labels[1].label, "COMP/LIMIT");
+        await openVariants(variantSaved);
+        await variants.getByText("Layout opened.", {exact: true}).waitFor();
+        const variantHeader = await download(variants, "#export-cpp", temp);
+        assert.match(variantHeader, /array<cell::ParamId, 6> parameters/);
+        assert.match(variantHeader, /array<cell::ParamId, 1> readOnlyParameters/);
+        const variantHtml = await download(variants, "#export", temp);
+
+        const variantEditor = await browser.newPage({viewport: {width: 390, height: 600}});
+        variantEditor.on("pageerror", error => errors.push(error));
+        await variantEditor.addInitScript(() => {
+            window.sent = [];
+            window.cell = {onMessage(callback) { window.receive = callback; }, postMessage(message) { window.sent.push(message); }};
+        });
+        await variantEditor.route(origin + "/variants.html", route => route.fulfill({body: variantHtml, contentType: "text/html"}));
+        await variantEditor.goto(origin + "/variants.html");
+        const activeDist = variantEditor.getByRole("combobox", {name: "DIST", exact: true});
+        assert.equal(await activeDist.count(), 0);
+        const updateVariant = (device, tuner = 0) => variantEditor.evaluate(message => window.receive(message), {
+            type: "parameters", momentary: true,
+            parameters: variantCatalog.filter(parameter => device !== undefined || parameter.key !== "device").map(parameter => ({
+                ...parameter, value: ({device, tuner})[parameter.key] ?? parameter.value
+            }))
+        });
+        await updateVariant(0);
+        const guitarPosition = await activeDist.boundingBox();
+        await activeDist.focus();
+        await updateVariant(1);
+        assert.deepEqual(await activeDist.locator("option").allTextContents(), variantCatalog[2].choices);
+        const bassPosition = await activeDist.boundingBox();
+        assert.equal(guitarPosition.y, bassPosition.y);
+        assert.equal(guitarPosition.x, bassPosition.x);
+        assert.equal(await activeDist.evaluate(element => document.activeElement === element), true);
+        const compButton = variantEditor.getByRole("button", {name: "Increase COMP/LIMIT"});
+        await compButton.focus();
+        await variantEditor.keyboard.down("ArrowUp");
+        await updateVariant(1, 1);
+        await variantEditor.keyboard.up("ArrowUp");
+        assert.equal(await compButton.isDisabled(), true);
+        assert.deepEqual(await variantEditor.evaluate(() => window.sent.splice(0)), [
+            {type: "begin", key: "comp"}, {type: "parameter", key: "comp", value: 1}, {type: "end", key: "comp"}
+        ]);
+        await updateVariant(0);
+        const gate = variantEditor.getByRole("button", {name: "Gate", exact: true});
+        await gate.focus();
+        await variantEditor.keyboard.down("Space");
+        await updateVariant(1);
+        await variantEditor.keyboard.up("Space");
+        assert.deepEqual(await variantEditor.evaluate(() => window.sent.splice(0)), [
+            {type: "momentary-press", key: "gate"}, {type: "momentary-release", key: "gate"}
+        ]);
+        assert.equal(await compButton.isEnabled(), true);
+        await variantEditor.screenshot({path: path.join(temp, "506-variant-phone.png"), fullPage: true});
+        await updateVariant(0);
+        await variantEditor.screenshot({path: path.join(temp, "505-variant-phone.png"), fullPage: true});
+        await updateVariant(undefined);
+        assert.equal(await activeDist.count(), 0);
+        await variantEditor.getByText("Device panel", {exact: true}).waitFor();
+
+        const typeDesigner = await context.newPage();
+        typeDesigner.on("pageerror", error => errors.push(error));
+        typeDesigner.on("dialog", dialog => dialog.accept());
+        await typeDesigner.route(origin + "/**", serveDesigner);
+        await typeDesigner.goto(origin + "/index.html");
+        const typeField = name => typeDesigner.locator(`#properties [name="${name}"]`);
+        const applyType = () => typeDesigner.getByRole("button", {name: "Apply", exact: true}).click();
+        const legend = "Signal path\nInput processing";
+        await typeDesigner.getByRole("button", {name: "Add text", exact: true}).click();
+        await typeField("label").fill(legend);
+        await typeDesigner.getByText("Typography", {exact: true}).click();
+        await typeDesigner.getByRole("button", {name: "Silkscreen", exact: true}).click();
+        assert.equal(await typeField("type-family").inputValue(), "panel-condensed");
+        await applyType();
+        const legendTile = typeDesigner.locator("#canvas .tile-label");
+        const readType = locator => locator.evaluate(element => {
+            const style = getComputedStyle(element);
+            return [style.fontFamily, style.fontSize, style.fontWeight, style.letterSpacing,
+                style.textAlign, style.textTransform, style.whiteSpace];
+        });
+        const tileType = await readType(legendTile);
+        assert.match(tileType[0], /Cell Panel Condensed/);
+        assert.deepEqual(tileType.slice(1), ["15px", "600", "1.2px", "left", "uppercase", "pre-wrap"]);
+        assert.equal(await legendTile.textContent(), legend);
+        await typeDesigner.getByRole("button", {name: "Reset typography", exact: true}).click();
+        await applyType();
+        assert.equal(await typeDesigner.locator("#canvas [data-type-family]").count(), 0);
+        await typeDesigner.locator("#undo").click();
+        assert.deepEqual(await readType(legendTile), tileType);
+
+        await typeDesigner.getByRole("button", {name: "Add readout", exact: true}).click();
+        await typeField("label").fill("Output trim");
+        await typeField("type-family").selectOption("panel-sans");
+        await typeField("type-size").fill("22");
+        await typeField("type-weight").fill("725");
+        await typeField("type-tracking").fill("-0.4");
+        await typeField("type-alignment").selectOption("right");
+        await applyType();
+
+        await typeDesigner.getByRole("button", {name: "Add action", exact: true}).click();
+        const caption = "Factory\nrecall";
+        await typeField("label").fill(caption);
+        await typeField("type-family").selectOption("system-mono");
+        await typeField("type-size").fill("16");
+        await typeField("type-alignment").selectOption("center");
+        await typeField("type-letter-case").selectOption("uppercase");
+        await applyType();
+        await typeDesigner.getByRole("button", {name: "Live preview", exact: true}).click();
+        const typePreview = typeDesigner.frameLocator("#preview-panel iframe");
+        assert.deepEqual(await readType(typePreview.locator(".text .control-title")), tileType);
+        assert.equal(await typePreview.locator(".action button").textContent(), caption);
+        assert.equal((await readType(typePreview.locator(".action button"))).at(-1), "pre-wrap");
+        const typeLayout = await download(typeDesigner, "#save", temp);
+        const formattedControls = JSON.parse(typeLayout).controls;
+        assert.equal(formattedControls[0].label, legend);
+        assert.equal(formattedControls[0].typography.letterCase, "uppercase");
+        assert.equal(formattedControls[1].typography.weight, 725);
+        await typeDesigner.locator("#layout-file").setInputFiles({name: "typography-layout.json", mimeType: "application/json",
+            buffer: Buffer.from(typeLayout)});
+        await typeDesigner.getByText("Layout opened.", {exact: true}).waitFor();
+        assert.equal(await typeField("label").inputValue(), legend);
+        assert.equal(await typeField("type-family").inputValue(), "panel-condensed");
+
+        const typeHtml = await download(typeDesigner, "#export", temp);
+        assert.match(typeHtml, /data:font\/woff2;base64,/);
+        assert.match(typeHtml, /SIL OPEN FONT LICENSE/);
+        const typeExport = await browser.newPage({viewport: {width: 390, height: 540}});
+        typeExport.on("pageerror", error => errors.push(error));
+        const fontErrors = [];
+        typeExport.on("console", message => { if (/font/i.test(message.text()) && message.type() === "warning") fontErrors.push(message.text()); });
+        await typeExport.route(origin + "/typography.html", route => route.fulfill({
+            body: typeHtml, contentType: "text/html; charset=utf-8",
+            headers: {"content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:"}
+        }));
+        await typeExport.goto(origin + "/typography.html");
+        assert.deepEqual(await readType(typeExport.locator(".text .control-title")), tileType);
+        const trimType = await readType(typeExport.locator(".readout .control-title"));
+        assert.match(trimType[0], /Cell Panel Sans/);
+        assert.deepEqual(trimType.slice(1, 5), ["22px", "725", "-0.4px", "right"]);
+        for (const request of ['600 15px "Cell Panel Condensed"', '725 22px "Cell Panel Sans"']) {
+            assert.deepEqual(await typeExport.evaluate(async spec => (await document.fonts.load(spec)).map(font => font.status),
+                request), ["loaded"]);
+        }
+        assert.deepEqual(fontErrors, []);
+        assert.equal(await typeExport.locator(".text .control-title").evaluate(element => {
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            return new Set([...range.getClientRects()].filter(rect => rect.width > 0).map(rect => rect.y)).size;
+        }), 2);
+        await typeExport.screenshot({path: path.join(temp, "typography-phone.png"), fullPage: true});
         assert.deepEqual(errors, []);
-        console.log("Designer passed group editing, cross-tab clipboard, responsive controls, assets, meters, and exports.");
+        console.log("Designer passed layout editing, program recall, displays, actions, conditional panels, and offline typography exports.");
     } finally {
         await browser.close();
         if (!process.env.CELL_UI_DESIGNER_TEST_OUTPUT) await fs.rm(temp, {recursive: true, force: true});

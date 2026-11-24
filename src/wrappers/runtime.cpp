@@ -149,7 +149,13 @@ Result Runtime::process(const Block& block) noexcept {
         if (event.frame > block.frames || !std::isfinite(event.value) || !engine_.parameters().find(event.id))
             return reject(block, Result::invalidEvent, true);
     if (!block.midi.empty() && !engine_.descriptor().acceptsMidi) return reject(block, Result::invalidEvent, false);
+    midi::SysExBudget sysEx;
     for (const auto& event : block.midi) {
+        if (event.isSysEx()) {
+            if (event.frame >= block.frames || !engine_.descriptor().supportsSysEx || !sysEx.admit(event.sysEx))
+                return reject(block, Result::invalidEvent, true);
+            continue;
+        }
         const auto status = event.data[0];
         const auto size = (status & 0xf0) == 0xc0 || (status & 0xf0) == 0xd0 ? 2u : 3u;
         if (event.frame >= block.frames || status < 0x80 || status >= 0xf0 || event.size != size ||

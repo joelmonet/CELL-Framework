@@ -53,7 +53,7 @@ const PluginDescriptor &descriptor() {
                                   "Cell",
                                   "0.1.0",
                                   2,
-                                  fields, false, 1000, 620, true, true, layouts, true};
+                                  fields, false, 1000, 620, true, true, layouts, true, true};
   return d;
 }
 std::unique_ptr<Processor> createProcessor() {

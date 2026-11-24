@@ -75,6 +75,13 @@ struct MidiEvent {
     std::uint32_t frame{};
     std::array<std::uint8_t, 3> data{};
     std::uint8_t size = 3;
+    // Complete MIDI 1.0 wire message, borrowed for the current process call.
+    std::span<const std::uint8_t> sysEx{};
+
+    bool isSysEx() const noexcept { return data[0] == 0xf0 || !sysEx.empty(); }
+    static MidiEvent systemExclusive(std::uint32_t frame, std::span<const std::uint8_t> bytes) noexcept {
+        return {frame, {0xf0, 0, 0}, 0, bytes};
+    }
 };
 
 inline float dbToGain(float db) noexcept { return std::pow(10.0f, db * 0.05f); }

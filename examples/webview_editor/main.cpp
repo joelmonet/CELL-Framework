@@ -95,7 +95,9 @@ int main(int argc,char** argv){
         }
         cell::Engine engine(cell::plugin::descriptor(),cell::plugin::createProcessor());
         engine.prepare(48000,64,2);
-        const std::array allowed{cell::example::gainId};cell::web::ParameterBridge bridge(engine,allowed);
+        const std::array allowed{cell::example::gainId};
+        const std::array actions{cell::web::ActionBinding{cell::example::factoryRecallAction, cell::web::ActionMode::invoke}};
+        cell::web::ParameterBridge bridge(engine,allowed,true,actions);
         Shell shell;cell::ui::Window window(shell);
         if(!window.open(0,760,420))throw std::runtime_error("Cannot open native window");
         cell::web::View browser;cell::web::Options options;options.parent=window.nativeHandle();options.bounds={0,0,760,420};

@@ -25,7 +25,8 @@ def parameter_snapshot(result):
 
 def main():
     binary = sys.argv[1]
-    gain = parameter_snapshot(run(binary, "--parameters"))["gain"]
+    exported = run(binary, "--parameters")
+    gain = parameter_snapshot(exported)["gain"]
     assert gain["minimum"] < gain["value"] < gain["maximum"]
     new_value = round(gain["value"] + gain["step"], 8)
     gesture = (
@@ -45,6 +46,37 @@ def main():
         assert result.returncode != 0
         assert "Parameter message rejected on line 2" in result.stderr, result.stderr
         assert not result.stdout
+
+    catalog = json.loads(exported.stdout)["programs"]
+    assert catalog["type"] == "program-memory"
+    assert [len(bank["programs"]) for bank in catalog["banks"]] == [6] * 6
+    recall = {"type": "recall-program", "bank": 2, "program": 4}
+    recalled = run(binary, "--apply-gestures", (recall,))
+    assert parameter_snapshot(recalled)["gain"]["value"] == -28
+    assert json.loads(recalled.stdout)["programs"]["active"] == {"bank": 2, "program": 4}
+    modified = run(binary, "--apply-gestures", (recall, {"type": "parameter", "key": "gain", "value": -27.5}))
+    assert parameter_snapshot(modified)["gain"]["value"] == -27.5
+    assert json.loads(modified.stdout)["programs"]["active"] is None
+    assert {"key": "factory-recall", "mode": "invoke"} in json.loads(exported.stdout)["actions"]
+    factory = {"type": "action", "key": "factory-recall", "phase": "invoke"}
+    restored = run(binary, "--apply-gestures", (recall, factory))
+    assert parameter_snapshot(restored)["gain"]["value"] == 0
+    assert json.loads(restored.stdout)["programs"]["active"] == {"bank": 5, "program": 0}
+    momentary = ({"type": "momentary-press", "key": "gain"}, {"type": "momentary-release", "key": "gain"})
+    assert parameter_snapshot(run(binary, "--apply-gestures", momentary))["gain"]["value"] == gain["minimum"]
+    for messages in (
+        ({**recall, "bank": 6},),
+        ({**recall, "program": 6},),
+        ({**recall, "program": 4.5},),
+        ({**recall, "bank": "2"},),
+        (gesture[0], recall),
+        ({**factory, "key": "store"},),
+        ({**factory, "phase": "press"},),
+        (momentary[1],),
+    ):
+        rejected = run(binary, "--apply-gestures", messages)
+        assert rejected.returncode != 0 and not rejected.stdout
+        assert "Parameter message rejected" in rejected.stderr
 
 
 if __name__ == "__main__":

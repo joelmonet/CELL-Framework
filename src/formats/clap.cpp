@@ -103,7 +103,11 @@ const clap_plugin_descriptor_t& clapDescriptor() {
 
 #if defined(CELL_CLAP_WEB_EDITOR)
 struct WebEditor {
+#if defined(CELL_DESIGNER_HAS_ACTIONS) || defined(CELL_DESIGNER_HAS_RULE_SOURCES)
+    explicit WebEditor(Engine& engine) : parameters(cell::designer::bind(engine)) {}
+#else
     explicit WebEditor(Engine& engine) : parameters(engine, cell::designer::parameters) {}
+#endif
     web::ParameterBridge parameters;
     web::View view;
     std::uintptr_t parent{};
@@ -184,7 +188,7 @@ bool webEditorRunning(const Instance& instance) {
 void closeWebView(Instance& instance, bool flush) {
     if (!instance.webEditor) return;
     auto& editor = *instance.webEditor;
-    const auto gestures = editor.parameters.activeGestures();
+    const auto gestures = editor.parameters.activeGestures() + editor.parameters.activeActions();
     editor.parameters.cancel();
     instance.editorMeter.setEnabled(false);
 #if defined(__APPLE__)
@@ -346,6 +350,14 @@ AudioBlock<float> sidechainInput(Instance& instance,const clap_process_t& block,
 struct MidiOutput final:midi::Output {
     const clap_output_events_t* destination{};
     bool push(MidiEvent message) noexcept override {
+        if (message.isSysEx()) {
+            if (!cell::plugin::descriptor().supportsSysEx) return false;
+            clap_event_midi_sysex_t event{};
+            event.header = {sizeof(event), message.frame, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI_SYSEX, 0};
+            event.buffer = message.sysEx.data();
+            event.size = std::uint32_t(message.sysEx.size());
+            return destination->try_push(destination, &event.header);
+        }
         clap_event_midi_t event{};
         event.header={sizeof(event),message.frame,CLAP_CORE_EVENT_SPACE_ID,CLAP_EVENT_MIDI,0};
         event.port_index=0;
@@ -377,10 +389,19 @@ clap_process_status CLAP_ABI process(const clap_plugin_t* p,const clap_process_t
         if(t->flags&CLAP_TRANSPORT_HAS_TIME_SIGNATURE){transport.numerator=t->tsig_num;transport.denominator=t->tsig_denom;}
     }
     AudioBlock<float> audio{output,i.channels,block->frames_count,0};
+    midi::SysExBudget sysEx;
+    const auto& descriptor = cell::plugin::descriptor();
     std::size_t eventCount=0,midiCount=0;const auto count=block->in_events?block->in_events->size(block->in_events):0;
     for(std::uint32_t n=0;n<count;++n){const auto* h=block->in_events->get(block->in_events,n);if(!h||h->time>block->frames_count)continue;
         if(paramEvent(h)){const auto* e=reinterpret_cast<const clap_event_param_value_t*>(h);if(e->note_id!=-1||e->channel!=-1||e->key!=-1||!std::isfinite(e->value)||!i.engine.parameters().find(e->param_id))continue;if(eventCount==i.events.size())return CLAP_PROCESS_ERROR;i.events[eventCount++]={h->time,e->param_id,e->value};}
         else if(cell::plugin::descriptor().acceptsMidi&&h->space_id==CLAP_CORE_EVENT_SPACE_ID&&h->type==CLAP_EVENT_MIDI&&h->size>=sizeof(clap_event_midi_t)&&h->time<block->frames_count){auto* e=reinterpret_cast<const clap_event_midi_t*>(h);if(e->port_index!=0||e->data[0]<0x80||e->data[0]>=0xf0)continue;if(midiCount==i.midi.size())return CLAP_PROCESS_ERROR;i.midi[midiCount++]={h->time,{e->data[0],e->data[1],e->data[2]},3};}
+        else if (descriptor.acceptsMidi && descriptor.supportsSysEx && h->space_id == CLAP_CORE_EVENT_SPACE_ID &&
+                 h->type == CLAP_EVENT_MIDI_SYSEX && h->size >= sizeof(clap_event_midi_sysex_t) && h->time < block->frames_count) {
+            const auto& event = *reinterpret_cast<const clap_event_midi_sysex_t*>(h);
+            if (event.port_index != 0 || !event.buffer || !sysEx.admit({event.buffer, event.size})) continue;
+            if (midiCount == i.midi.size()) return CLAP_PROCESS_ERROR;
+            i.midi[midiCount++] = MidiEvent::systemExclusive(h->time, {event.buffer, event.size});
+        }
     }
     stableEventSort({i.events.data(),eventCount},i.eventScratch);stableFrameSort<MidiEvent>({i.midi.data(),midiCount},i.midiScratch);
     std::array<float*,2> sidechainChannels{};
@@ -752,7 +773,7 @@ void updateWebEditor(Instance& instance) {
                 edits |= editor.parameters.apply(event.text);
                 editor.lastParameters.clear();
             } else if (event.kind == web::Event::Kind::error) {
-                cancelled |= editor.parameters.activeGestures() != 0;
+                cancelled |= editor.parameters.activeGestures() != 0 || editor.parameters.activeActions() != 0;
                 editor.parameters.cancel();
                 webLog(instance, event.text.c_str());
                 if (!editor.loaded) {
@@ -769,7 +790,7 @@ void updateWebEditor(Instance& instance) {
             send(instance.editorMeter.snapshot(), editor.lastMeters);
         }
     } catch (...) {
-        cancelled |= editor.parameters.activeGestures() != 0;
+        cancelled |= editor.parameters.activeGestures() != 0 || editor.parameters.activeActions() != 0;
         editor.parameters.cancel();
         webLog(instance, "Cell CLAP editor update failed");
         startupFailed = !editor.loaded;

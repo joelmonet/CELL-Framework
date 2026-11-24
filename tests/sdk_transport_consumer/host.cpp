@@ -20,6 +20,7 @@
 #else
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
+#include "public.sdk/source/vst/hosting/eventlist.h"
 #include "public.sdk/source/vst/hosting/hostclasses.h"
 #include "public.sdk/source/vst/hosting/module.h"
 #include "public.sdk/source/vst/hosting/parameterchanges.h"
@@ -40,6 +41,14 @@ void output(const Channels &values, bool valid) {
 }
 const std::array bpms{137.5, 0., -10., std::numeric_limits<double>::quiet_NaN(),
                       std::numeric_limits<double>::infinity()};
+constexpr auto sysExPayload = [] {
+  std::array<std::uint8_t, 4099> bytes{};
+  bytes.front() = 0xf0;
+  bytes[1] = 0x7d;
+  for (std::size_t i = 2; i < bytes.size() - 1; ++i) bytes[i] = std::uint8_t(i % 128);
+  bytes.back() = 0xf7;
+  return bytes;
+}();
 #if CELL_TRANSPORT_CLAP
 void run(const char *path) {
 #if defined(_WIN32)
@@ -171,22 +180,43 @@ void run(const char *path) {
   note.data[0] = 0x92;
   note.data[1] = 60;
   note.data[2] = 100;
-  std::array<const clap_event_header_t *, 2> incoming{&event.header, &note.header};
+  constexpr std::array<std::uint8_t, 3> malformed{0xf0, 0x80, 0xf7};
+  clap_event_midi_sysex_t sysEx{};
+  sysEx.header = {sizeof(sysEx), 23, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI_SYSEX, 0};
+  sysEx.buffer = sysExPayload.data();
+  sysEx.size = sysExPayload.size();
+  auto badSysEx = sysEx;
+  badSysEx.header.time = 45;
+  badSysEx.buffer = malformed.data();
+  badSysEx.size = malformed.size();
+  using Incoming = std::array<const clap_event_header_t *, 4>;
+  Incoming incoming{&event.header, &sysEx.header, &note.header, &badSysEx.header};
   const clap_input_events_t midiInput{
       &incoming,
-      [](const clap_input_events_t *) -> std::uint32_t { return 2; },
+      [](const clap_input_events_t *) -> std::uint32_t { return 4; },
       [](const clap_input_events_t *list, std::uint32_t index) {
-        const auto &items = *static_cast<const std::array<const clap_event_header_t *, 2> *>(list->ctx);
+        const auto &items = *static_cast<const Incoming *>(list->ctx);
         return items[index];
       }};
   struct CapturedMidi {
     std::array<clap_event_midi_t, 49> events{};
     unsigned count{};
     unsigned limit{49};
+    std::array<std::uint8_t, sysExPayload.size()> sysEx{};
+    unsigned sysExCount{}, sysExFrame{};
   } captured;
   const clap_output_events_t midiOutput{&captured,
       [](const clap_output_events_t *list, const clap_event_header_t *header) {
         auto &capture = *static_cast<CapturedMidi *>(list->ctx);
+        if (header->type == CLAP_EVENT_MIDI_SYSEX) {
+          const auto& message = *reinterpret_cast<const clap_event_midi_sysex_t *>(header);
+          if (message.size != capture.sysEx.size() || message.port_index != 0 || !message.buffer)
+            return false;
+          ++capture.sysExCount;
+          capture.sysExFrame = header->time;
+          std::copy_n(message.buffer, message.size, capture.sysEx.begin());
+          return true;
+        }
         if (header->type != CLAP_EVENT_MIDI) return true;
         if (capture.count == capture.limit) return false;
         capture.events[capture.count++] = *reinterpret_cast<const clap_event_midi_t *>(header);
@@ -199,6 +229,9 @@ void run(const char *path) {
             captured.events[0].header.time == 31 && captured.events[0].port_index == 0 &&
             std::equal(note.data, note.data + 3, captured.events[0].data),
         "CLAP lost the routed MIDI event or its block-relative sample offset");
+  check(captured.sysExCount == 1 && captured.sysExFrame == 23 && captured.sysEx == sysExPayload,
+        "CLAP changed a SysEx payload or timestamp, or forwarded malformed SysEx");
+  incoming = {&event.header, &note.header, nullptr, nullptr};
   // Reject a note-off after the previous note-on reached the host.
   note.data[0] = 0x82;
   note.data[2] = 0;
@@ -503,6 +536,9 @@ void run(const char *path) {
             "Transport VST3 buses failed");
       component->activateBus(kAudio, kInput, 0, true);
       component->activateBus(kAudio, kOutput, 0, true);
+      check(component->activateBus(kEvent, kInput, 0, true) == kResultOk &&
+            component->activateBus(kEvent, kOutput, 0, true) == kResultOk,
+            "VST3 event buses could not activate");
       ProcessSetup setup{kRealtime, kSample32, 64, 48000};
       check(processor->setupProcessing(setup) == kResultOk &&
                 component->setActive(true) == kResultOk &&
@@ -555,6 +591,37 @@ void run(const char *path) {
       check(processor->process(data) == kResultOk,
             "Transport VST3 missing context render failed");
       output(values, false);
+      EventList eventInputs(3), eventOutputs(4);
+      auto bytes = sysExPayload;
+      Event sysex{};
+      sysex.type = Event::kDataEvent;
+      sysex.sampleOffset = 23;
+      sysex.data = {uint32(bytes.size()), DataEvent::kMidiSysEx, bytes.data()};
+      Event note{};
+      note.type = Event::kNoteOnEvent;
+      note.sampleOffset = 31;
+      note.noteOn.pitch = 60;
+      note.noteOn.velocity = 1.f;
+      const std::array<std::uint8_t, 3> malformed{0xf0, 0x80, 0xf7};
+      Event invalid = sysex;
+      invalid.sampleOffset = 40;
+      invalid.data = {uint32(malformed.size()), DataEvent::kMidiSysEx, malformed.data()};
+      check(eventInputs.addEvent(sysex) == kResultOk && eventInputs.addEvent(note) == kResultOk &&
+            eventInputs.addEvent(invalid) == kResultOk, "Could not stage the VST3 SysEx fixture");
+      data.inputEvents = &eventInputs;
+      data.outputEvents = &eventOutputs;
+      check(processor->process(data) == kResultOk && eventOutputs.getEventCount() == 2,
+            "VST3 dropped a valid event or returned malformed SysEx");
+      bytes.fill(0);
+      Event copied{}, forwardedNote{};
+      check(eventOutputs.getEvent(0, copied) == kResultOk && copied.type == Event::kDataEvent &&
+            copied.sampleOffset == 23 && copied.data.type == DataEvent::kMidiSysEx &&
+            copied.data.size == sysExPayload.size() && copied.data.bytes &&
+            std::equal(sysExPayload.begin(), sysExPayload.end(), copied.data.bytes),
+            "VST3 lost SysEx data ownership or the sample offset");
+      check(eventOutputs.getEvent(1, forwardedNote) == kResultOk &&
+            forwardedNote.type == Event::kNoteOnEvent && forwardedNote.sampleOffset == 31,
+            "VST3 reordered SysEx and channel MIDI");
       processor->setProcessing(false);
       component->setActive(false);
     }

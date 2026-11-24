@@ -28,20 +28,36 @@ button:disabled{opacity:.52;cursor:default}
 .panel{border:1px solid #3e545a;background:#162126;border-radius:10px;padding:12px;min-width:0}
 .design .section-head{margin-bottom:8px}
 .help,.muted{color:#b8c8c9;font-size:13px}
-#canvas{position:relative;width:100%;height:clamp(360px,56vh,600px);margin:12px 0 8px;border:1px solid #557077;border-radius:6px;
-background-color:var(--background,#14272d);background-image:linear-gradient(to right,#6e8d9365 1px,transparent 1px),linear-gradient(to bottom,#6e8d9365 1px,transparent 1px);background-size:calc(100% / var(--columns,12)) calc(100% / var(--rows,8))}
+#canvas{position:relative;isolation:isolate;width:100%;height:clamp(360px,56vh,600px);margin:12px 0 8px;border:1px solid #557077;border-radius:6px;
+background-color:var(--background,#14272d)}
+#canvas::after{content:"";position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(to right,#6e8d9365 1px,transparent 1px),linear-gradient(to bottom,#6e8d9365 1px,transparent 1px);background-size:calc(100% / var(--columns,12)) calc(100% / var(--rows,8))}
 .layout-options{margin-bottom:8px}
 #canvas-frame[data-size=phone]{max-width:410px;max-height:min(62vh,620px);overflow:auto;margin:12px auto 8px}
 #canvas-frame[data-size=phone] #canvas{height:calc(var(--rows,8) * 54px);margin:0}
-.tile{position:absolute;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:0;padding:3px;overflow:hidden;
+.panel-background{position:absolute;inset:0;width:100%;height:100%;border-radius:inherit;pointer-events:none}
+.tile{position:absolute;z-index:4;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:0;padding:3px;overflow:hidden;
 color:var(--text);background:var(--surface);border-color:var(--tile-accent);touch-action:none;cursor:grab}
 .tile-label,.tile-kind{position:relative;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile .tile-label{white-space:pre-wrap;overflow-wrap:anywhere}
+.tile[data-type-alignment] .tile-label{width:100%}
 .tile-kind{font-size:12px;opacity:.85}
 .tile img{position:absolute;width:100%;height:100%;object-fit:cover;opacity:.34;pointer-events:none}
 .tile[data-skin=field]{color:#f4edbe;background:#30392c;border-style:dashed}
 .tile[data-skin=studio]{color:#e9eff0;background:#26343e;border-bottom:3px solid #93c9e3}
 .tile[data-skin=broadcast]{color:#382512;background:#e7d3a6;border-style:double}
-.tile[aria-pressed=true]{z-index:1;outline:2px solid #bcef90;outline-offset:-3px}
+.tile[data-panel-art]{z-index:1;background:transparent;border-color:transparent;border-radius:0}
+.tile[data-kind=line]{z-index:2}
+.tile[data-kind=image]{z-index:3}
+.tile[data-kind=image] img{inset:0;opacity:1}
+.tile[data-kind=image]:has(img:not([hidden])):not([aria-pressed=true]):not(:hover) span,
+.tile[data-panel-art]:not([data-kind=image]):not([aria-pressed=true]):not(:hover) span{visibility:hidden}
+.tile[data-panel-art] span{background:var(--background);color:var(--text);padding:0 4px;border-radius:3px}
+.tile[data-kind=rectangle]::before,.tile[data-kind=line]::before{content:"";position:absolute;inset:0;background:var(--tile-accent)}
+.tile[data-kind=line]::before{top:50%;bottom:auto;height:var(--line-thickness);transform:translateY(-50%)}
+.tile[data-kind=line][data-direction=vertical]::before{inset:0 auto 0 50%;height:auto;width:var(--line-thickness);transform:translateX(-50%)}
+#canvas.edit-art .tile[data-panel-art]{outline:1px dashed var(--text);outline-offset:-2px}
+#canvas.edit-art .tile:not([data-panel-art]){z-index:0;opacity:.34;pointer-events:none}
+.tile[aria-pressed=true],#canvas.edit-art .tile[aria-pressed=true]{z-index:5;outline:2px solid #bcef90;outline-offset:-3px}
 #canvas:not(.multi-selection) .tile[aria-pressed=true]::after{content:"";position:absolute;right:4px;bottom:4px;width:9px;height:9px;border-right:2px solid currentColor;border-bottom:2px solid currentColor}
 #multi-select[aria-pressed=true]{border-color:#bcef90;background:#34412b}
 #selection-tools{display:grid;gap:10px;margin-top:10px}
@@ -49,6 +65,13 @@ color:var(--text);background:var(--surface);border-color:var(--tile-accent);touc
 .properties{display:grid;gap:10px;margin-top:10px}
 .properties label,.theme-grid label{display:grid;gap:4px}
 .properties input:not([type=checkbox]),.properties select{width:100%;min-width:0}
+.properties textarea{box-sizing:border-box;width:100%;min-height:72px;resize:vertical;background:#111b20;
+color:inherit;border:1px solid #577076;border-radius:5px;padding:6px;font:13px ui-monospace,monospace}
+.properties textarea[name=label]{min-height:52px;font:inherit}
+#typography-settings[open]{display:grid;gap:8px}
+#typography-settings label,#typography-settings .action-row{margin-top:6px}
+#display-choices dl{margin:4px 0;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 8px;max-height:130px;overflow:auto}
+#display-choices dd{margin:0;overflow-wrap:anywhere}
 .properties .coordinates,.theme-grid{display:grid;gap:8px;grid-template-columns:repeat(2,minmax(0,1fr))}
 .properties .check{display:flex;gap:6px;align-items:center}
 input[type=color]{width:100%;padding:3px}
@@ -64,6 +87,7 @@ summary{cursor:pointer;font-weight:600}
 @media(max-width:850px){main{padding:12px}.workspace{grid-template-columns:1fr}}
 </style>
 <script src="model.js" defer></script>
+<script src="fonts.js" defer></script>
 <script src="runtime.js" defer></script>
 <script src="designer.js" defer></script>
 </head>
@@ -92,6 +116,9 @@ summary{cursor:pointer;font-weight:600}
 <div class="layout-options">
 <label>Edit layout <select id="layout-size"><option value="wide">Wide</option><option value="phone">Phone</option></select></label>
 <button id="multi-select" type="button" aria-pressed="false">Select multiple</button>
+<button id="edit-art" type="button" aria-pressed="false" aria-controls="canvas">Edit panel artwork</button>
+<label id="artwork-picker" hidden>Artwork element <select id="artwork-element"></select></label>
+<label id="rule-picker" hidden>Conditional control <select id="rule-element"></select></label>
 <button id="reset-phone-layout" type="button" hidden>Reset phone layout</button>
 </div>
 <p class="help">Drag controls onto the grid. Shift-click to select several. Drag or use the arrow keys to move the selection. Drag the selected corner or use Shift+arrows to resize a single control.</p>
@@ -121,7 +148,7 @@ summary{cursor:pointer;font-weight:600}
 </div>
 </section>
 <form id="properties" class="properties" hidden>
-<label>Label<input name="label" maxlength="80" required></label>
+<label>Label<textarea name="label" rows="2" maxlength="240" required></textarea></label>
 <label id="binding-field"><span id="binding-label">Parameter key</span><input name="key" list="parameter-keys" maxlength="80"></label>
 <datalist id="parameter-keys"></datalist>
 <datalist id="meter-keys">
@@ -134,13 +161,78 @@ summary{cursor:pointer;font-weight:600}
 <label>Height<input name="height" type="number" min="1" max="8" required></label>
 </div>
 <button id="auto-phone-position" type="button" hidden>Auto-place on phone</button>
-<label>Style<select name="skin"></select></label>
+<label id="skin-field">Style<select name="skin"></select></label>
 <label class="check"><input type="checkbox" name="use-accent">Custom accent</label>
 <label>Control accent<input type="color" name="accent"></label>
+<details id="typography-settings">
+<summary>Typography</summary>
+<label>Font family<select name="type-family"><option value="">Default</option></select></label>
+<div class="coordinates">
+<label>Font size (px)<input name="type-size" type="number" min="8" max="96" step="any" placeholder="Default"></label>
+<label>Font weight<input name="type-weight" type="number" min="100" max="900" step="1" placeholder="Default"></label>
+<label>Tracking (px)<input name="type-tracking" type="number" min="-2" max="12" step="any" placeholder="Default"></label>
+<label>Text alignment<select name="type-alignment"><option value="">Default</option>
+<option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>
+</div>
+<label>Letter case<select name="type-letter-case">
+<option value="">Default</option><option value="none">As typed</option>
+<option value="uppercase">Uppercase</option><option value="lowercase">Lowercase</option></select></label>
+<div class="action-row">
+<button type="button" id="silkscreen">Silkscreen</button>
+<button type="button" id="reset-typography">Reset typography</button>
+</div>
+</details>
+<details id="rule-settings">
+<summary>Conditional behavior</summary>
+<label>Visible when<input name="visible-when" maxlength="512" spellcheck="false" placeholder="device = 1"></label>
+<label>Enabled when<input name="enabled-when" maxlength="512" spellcheck="false" placeholder="device = 1 &amp;&amp; comp &gt; 0"></label>
+<label>Label from<input name="label-key" list="parameter-keys" maxlength="80" spellcheck="false"></label>
+<label id="label-source-setting" hidden>Label source<select name="label-source">
+<option value="choice">Current choice label</option><option value="name">Parameter name</option>
+<option value="value">Formatted value</option><option value="map">Custom labels by value</option>
+</select></label>
+<label id="label-map-setting" hidden>Labels by value<textarea name="label-map" maxlength="16384" rows="3" spellcheck="false"
+placeholder="0 = COMP&#10;1 = COMP/LIMIT"></textarea></label>
+</details>
+<div id="action-settings" hidden>
+<label>Action key<input name="action-key" maxlength="80" spellcheck="false"></label>
+<label>Trigger<select name="trigger">
+<option value="tap">Tap</option><option value="momentary">Press and release</option>
+<option value="hold">Long press</option><option value="repeat">Hold to repeat</option>
+</select></label>
+<label id="hold-settings" hidden>Hold time (ms)<input name="hold-ms" type="number" min="100" max="10000"></label>
+<div id="repeat-settings" class="coordinates" hidden>
+<label>Repeat delay (ms)<input name="repeat-delay" type="number" min="100" max="10000"></label>
+<label>Repeat interval (ms)<input name="repeat-ms" type="number" min="40" max="2000"></label>
+</div>
+</div>
+<div id="action-pair-settings" hidden>
+<label>Minus action key<input name="minus-action" maxlength="80" spellcheck="false"></label>
+<label>Plus action key<input name="plus-action" maxlength="80" spellcheck="false"></label>
+</div>
+<div id="chord-settings" hidden>
+<label>Two-button action key<input name="chord-action" maxlength="80" spellcheck="false"></label>
+<label>Two-button hold time (ms)<input name="chord-ms" type="number" min="100" max="10000"></label>
+</div>
+<div id="display-settings" hidden>
+<label id="segmented-setting" class="check"><input name="segmented" type="checkbox">Segmented digits</label>
+<label>Display codes<textarea name="display-codes" maxlength="8192" spellcheck="false" rows="3"
+aria-describedby="display-code-help"></textarea></label>
+<small id="display-code-help" class="help">One value = code per line, such as 0 = oF. Codes use one or two characters.</small>
+<details id="display-choices" hidden><summary>Bound choices</summary><dl></dl></details>
+<details><summary>Supported characters</summary><code id="display-glyphs"></code></details>
+</div>
+<label id="image-fit" hidden>Image fit<select name="fit">
+<option value="contain">Fit</option><option value="cover">Fill and crop</option><option value="fill">Stretch</option>
+</select></label>
+<div id="line-options" class="coordinates" hidden>
+<label>Direction<select name="direction"><option value="horizontal">Horizontal</option><option value="vertical">Vertical</option></select></label>
+<label>Thickness (px)<input name="thickness" type="number" min="1" max="16" required></label>
+</div>
 <div id="artwork" class="action-row" hidden>
 <button id="load-artwork" type="button">Add artwork</button>
 <button id="clear-artwork" type="button">Remove artwork</button>
-<input id="artwork-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+<input id="artwork-file" type="file" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp" hidden>
 </div>
 <div class="action-row">
 <button>Apply</button>
@@ -160,9 +252,23 @@ summary{cursor:pointer;font-weight:600}
 <button type="button" id="reset-theme">Reset colors</button>
 </form>
 </details>
+<details>
+<summary>Panel background</summary>
+<div class="theme-grid">
+<label>Background fit<select id="background-fit">
+<option value="cover">Fill and crop</option><option value="contain">Fit</option><option value="fill">Stretch</option>
+</select></label>
+</div>
+<div class="action-row">
+<button id="load-background" type="button">Add background image</button>
+<button id="clear-background" type="button">Remove background image</button>
+<input id="background-file" type="file" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp" hidden>
+</div>
+</details>
 <details open>
 <summary>Parameter snapshot</summary>
 <p id="catalog-status" class="help" style="margin:8px 0"></p>
+<p id="program-status" class="help" style="margin:8px 0"></p>
 <div class="action-row">
 <button id="load-parameters" type="button">Load parameters</button>
 <button id="clear-parameters" type="button">Clear</button>
@@ -181,6 +287,7 @@ summary{cursor:pointer;font-weight:600}
 </div>
 </div>
 <p class="help">Controls use simulated parameter values and meter signals.</p>
+<p id="preview-action-status" role="status" hidden></p>
 <div class="preview-frame"><iframe title="Plugin control preview" sandbox="allow-scripts" data-size="wide"></iframe></div>
 </section>
 </main></body>

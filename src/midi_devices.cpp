@@ -231,6 +231,10 @@ bool PadInput::process(std::span<const MidiEvent> input,
     captureHeld_.fill(0);
   }
   for (auto event : input) {
+    if (event.isSysEx()) {
+      if (event.frame < frames) output[count++] = event;
+      continue;
+    }
     if (!valid(event) || event.frame >= frames)
       continue;
     const unsigned kind = event.data[0] & 0xf0, ch = event.data[0] & 15,

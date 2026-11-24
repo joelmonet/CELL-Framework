@@ -123,8 +123,15 @@ bool Tools::process(std::uint32_t frames,std::span<const MidiEvent> input,Output
     if(!frames)return true;
     if(panic_&&!panic(output,0))return false;
     std::uint32_t previous{};
-    for(const auto& event:input){++stats_.input;if(event.frame>=frames||event.frame<previous||!valid(event)){++stats_.rejected;continue;}previous=event.frame;
+    SysExBudget sysEx;
+    bool accepted = true;
+    for(const auto& event:input){++stats_.input;if(event.frame>=frames||event.frame<previous||!(event.isSysEx()?sysEx.admit(event.sysEx):valid(event))){++stats_.rejected;continue;}previous=event.frame;
+        if(event.isSysEx()){
+            if(output.push(event))++stats_.output;
+            else{++stats_.overflows;accepted=false;}
+            continue;
+        }
         if(!message(event,output)){++stats_.overflows;panic_=true;return false;}}
-    return true;
+    return accepted;
 }
 }

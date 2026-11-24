@@ -44,7 +44,11 @@ int checkDesignerBindings() {
     }
     try {
         cell::Engine engine(descriptor, cell::plugin::createProcessor());
-        const cell::web::ParameterBridge bridge(engine, cell::designer::parameters);
+        const cell::web::ParameterBridge bridge(engine, cell::designer::parameters
+#if defined(CELL_DESIGNER_HAS_RULE_SOURCES)
+            , true, {}, cell::designer::readOnlyParameters
+#endif
+        );
         (void)bridge.snapshot();
     } catch (const std::exception& error) {
         std::cerr << "Invalid Designer bindings: " << error.what() << '\n';

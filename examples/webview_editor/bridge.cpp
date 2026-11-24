@@ -6,7 +6,8 @@ int main(int argc, char** argv){
         cell::Engine engine(cell::plugin::descriptor(),cell::plugin::createProcessor());
         engine.prepare(48000,64,2);
         const std::array allowed{cell::example::gainId};
-        cell::web::ParameterBridge bridge(engine,allowed);
+        const std::array actions{cell::web::ActionBinding{cell::example::factoryRecallAction, cell::web::ActionMode::invoke}};
+        cell::web::ParameterBridge bridge(engine,allowed,true,actions);
         if (argc == 2 && std::string_view(argv[1]) == "--parameters") {
             std::cout << bridge.snapshot() << '\n';
             return 0;

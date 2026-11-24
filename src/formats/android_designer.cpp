@@ -140,7 +140,11 @@ private:
     }
 
     cell::Engine engine_{cell::plugin::descriptor(), cell::plugin::createProcessor()};
+#if defined(CELL_DESIGNER_HAS_ACTIONS) || defined(CELL_DESIGNER_HAS_RULE_SOURCES)
+    cell::web::ParameterBridge bridge_ = cell::designer::bind(engine_);
+#else
     cell::web::ParameterBridge bridge_{engine_, cell::designer::parameters};
+#endif
     cell::web::OutputMeter meter_;
     cell::audio::Device device_;
     std::array<float, blockFrames> left_{}, right_{};

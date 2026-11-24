@@ -107,7 +107,7 @@ void Engine::process(AudioBlock<float> block, std::span<const ParameterEvent> ev
     if(routed&&midi.size()>midi::eventCapacity){
         processor_->reset();if(output){output->reject();for(unsigned ch=0;ch<16;++ch)for(unsigned cc:{64u,120u,123u})output->push({0,{std::uint8_t(0xb0|ch),std::uint8_t(cc),0},3});}return;
     }
-    if(output&&!routed)for(const auto& event:midi)if(event.frame<block.frames)if(!output->push(event))break;
+    if(output&&!routed)midi::forward(midi,*output,block.frames);
     auto render = [&](std::uint32_t begin, std::uint32_t end) noexcept {
         if (begin == end) return;
         std::span<const MidiEvent> segmentMidi;

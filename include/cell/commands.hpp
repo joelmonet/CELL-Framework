@@ -8,7 +8,25 @@
 #include <chrono>
 #include <algorithm>
 #include <cstdint>
+#include <string_view>
 namespace cell {
+class Engine;
+
+namespace web {
+enum class ActionMode { invoke, momentary };
+enum class ActionPhase { invoke, press, release };
+struct ActionBinding { std::string_view key; ActionMode mode; };
+
+// Optional, control-thread interface. A successful press owns one release.
+// Release must remain available until the press has been cleared.
+class ActionTarget {
+public:
+    virtual ~ActionTarget() = default;
+    virtual bool supportsWebAction(std::string_view, ActionMode) const noexcept = 0;
+    virtual bool webAction(Engine&, std::string_view, ActionPhase) = 0;
+};
+}
+
 enum class RestoreStatus { unknown, pending, succeeded, failed };
 inline constexpr char productRestoreMessage[]="Cell.State.Restore.v2";
 inline constexpr char productRestoreReplyMessage[]="Cell.State.Restore.Reply.v2";

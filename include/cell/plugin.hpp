@@ -32,7 +32,8 @@ struct PluginDescriptor {
     std::uint32_t editorWidth=1000,editorHeight=620;
     bool supportsSidechain{},acceptsMidi{};
     std::span<const MainBusLayout> mainBusLayouts{};
-    bool producesMidi{}; // Optional host-facing channel MIDI output, independent of audio.
+    bool producesMidi{}; // Optional host-facing MIDI output, independent of audio.
+    bool supportsSysEx{}; // Opt in on the enabled MIDI input and output ports.
 };
 
 // Optional non-audio format context. The adapter retains the native context
@@ -86,7 +87,7 @@ public:
     virtual bool routesMidi()const noexcept{return false;}
     virtual void processMidi(AudioBlock<float> block,const ParameterBank& p,const Transport& t,
                              std::span<const MidiEvent> input,AudioBlock<float> side,midi::Output& output)noexcept{
-        processSidechain(block,p,t,input,side);for(const auto& event:input)if(!output.push(event))break;
+        processSidechain(block,p,t,input,side);midi::forward(input,output);
     }
     virtual std::uint32_t latency() const noexcept { return 0; }
     virtual std::uint32_t tail() const noexcept { return 0; }
@@ -103,6 +104,36 @@ public:
     // Non-audio: false while a graph or an asset replacement is incomplete.
     virtual bool stateSnapshotReady() const { return true; }
     virtual std::uint64_t stateSnapshotRevision() const noexcept { return 0; }
+};
+
+class Engine;
+
+struct ProgramAddress {
+    unsigned bank{}, program{};
+    friend bool operator==(const ProgramAddress&, const ProgramAddress&) = default;
+};
+struct ProgramSlot {
+    unsigned number{};
+    std::string name;
+};
+struct ProgramBank {
+    unsigned number{};
+    std::string name;
+    std::vector<ProgramSlot> programs;
+};
+struct ProgramCatalog {
+    std::vector<ProgramBank> banks;
+    std::optional<ProgramAddress> active;
+};
+
+// Optional product-owned patch memory. Called on the serialized control thread.
+// A recall must safely publish to the running processor or reject the request.
+// Parameter-only patches can use Engine::editTransaction.
+class ProgramMemory {
+public:
+    virtual ~ProgramMemory() = default;
+    virtual ProgramCatalog programs(const ParameterBank&) const = 0;
+    virtual bool recallProgram(Engine&, ProgramAddress) = 0;
 };
 
 class Engine : private ParameterOutput {

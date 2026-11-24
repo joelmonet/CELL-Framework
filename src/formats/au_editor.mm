@@ -37,7 +37,11 @@ public:
             [this](cell::ParamId id) { return gesture(id, kAudioUnitEvent_BeginParameterChangeGesture); },
             [this](cell::ParamId id, double value, bool active) { return write(id, value, active); },
             [this](cell::ParamId id) { gesture(id, kAudioUnitEvent_EndParameterChangeGesture); return true; }},
-            cell::designer::parameters) {}
+            cell::designer::parameters
+#if defined(CELL_DESIGNER_HAS_RULE_SOURCES)
+            , {}, cell::designer::readOnlyParameters
+#endif
+        ) {}
 
     ~Editor() { setVisible(false); }
 
