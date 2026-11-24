@@ -8,6 +8,7 @@
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
+#include "windows_file_io.hpp"
 #else
 #include <cerrno>
 #include <fcntl.h>
@@ -29,9 +30,7 @@ void closeFile(Handle h) {
     CloseHandle(h);
 }
 Handle openFile(const std::filesystem::path &p) {
-  return CreateFileW(p.c_str(), GENERIC_READ,
-                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  return detail::openSharedWindowsFile(p.c_str(), GENERIC_READ, FILE_ATTRIBUTE_NORMAL);
 }
 Identity inspect(Handle h) {
   BY_HANDLE_FILE_INFORMATION i{};

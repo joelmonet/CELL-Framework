@@ -9,6 +9,7 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include "windows_file_io.hpp"
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -83,8 +84,10 @@ DWORD renameOpenFile(HANDLE source, const std::filesystem::path& to, bool replac
     info.RootDirectory = nullptr;
     info.FileNameLength = nameBytes;
     std::memcpy(reinterpret_cast<std::byte*>(storage.data()) + nameOffset, name.data(), nameBytes);
-    return SetFileInformationByHandle(source, renameInfoEx, storage.data(), static_cast<DWORD>(size)) ?
-        ERROR_SUCCESS : GetLastError();
+    return detail::retryWindowsFileSharing([&] {
+        return SetFileInformationByHandle(source, renameInfoEx, storage.data(), static_cast<DWORD>(size)) ?
+            ERROR_SUCCESS : GetLastError();
+    });
 }
 
 bool needsLegacyRename(DWORD error) {
@@ -93,17 +96,17 @@ bool needsLegacyRename(DWORD error) {
 }
 
 DWORD moveWindows(const std::filesystem::path& from, const std::filesystem::path& to, bool replace) {
-    return MoveFileExW(from.c_str(), to.c_str(),
-                       MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0)) ?
-        ERROR_SUCCESS : GetLastError();
+    return detail::retryWindowsFileSharing([&] {
+        return MoveFileExW(from.c_str(), to.c_str(),
+                           MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0)) ?
+            ERROR_SUCCESS : GetLastError();
+    });
 }
 
 DWORD publishWindows(const std::filesystem::path& from,
                      const std::filesystem::path& to, bool replace) {
     if (replace) {
-        const auto source = CreateFileW(from.c_str(), DELETE,
-                                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        const auto source = detail::openSharedWindowsFile(from.c_str(), DELETE, FILE_FLAG_OPEN_REPARSE_POINT);
         if (source == INVALID_HANDLE_VALUE)
             return GetLastError();
         const auto error = renameOpenFile(source, to, true);

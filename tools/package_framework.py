@@ -135,7 +135,7 @@ FILES = {
     'framework/ARA-SOURCES.md',
     'src/midi_message.cpp', 'src/smf.cpp', 'tests/midi_message_tests.cpp', 'tests/smf_tests.cpp', 'framework/MIDI-FILES.md',
     'src/text.cpp', 'src/unicode_case_data.hpp', 'src/localization.cpp',
-    'src/uuid.cpp', 'src/file.cpp', 'src/file_streams.cpp',
+    'src/uuid.cpp', 'src/file.cpp', 'src/file_streams.cpp', 'src/windows_file_io.hpp',
     'src/action_history.cpp', 'src/dispatch.cpp', 'src/xml.cpp', 'src/state_tree.cpp',
     'src/ara/source_reader.cpp', 'src/ui/timeline.cpp',
     'src/ui/widget_component.cpp', 'src/ui/widget_controls.cpp',

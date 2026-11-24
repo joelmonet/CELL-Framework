@@ -39,7 +39,10 @@ jobs:
           cmake --install "$env:RUNNER_TEMP/cell-build" --config Release --prefix "$env:RUNNER_TEMP/cell-sdk"
       - name: Run native Windows file and pooled-reader contracts
         run: |
-          ctest --test-dir "$env:RUNNER_TEMP/cell-build" -C Release --output-on-failure --no-tests=error -R "^cell_(file|pooled_file)$"
+          ctest --test-dir "$env:RUNNER_TEMP/cell-build" -C Release --output-on-failure --no-tests=error -R "^cell_(file|pooled_file)$" --repeat until-fail:8
+      - name: Verify the convolution reference on MSVC
+        run: |
+          ctest --test-dir "$env:RUNNER_TEMP/cell-build" -C Release --output-on-failure --no-tests=error -R "^cell_convolution$"
       - name: Run Windows UDP network audio contracts
         run: |
           ctest --test-dir "$env:RUNNER_TEMP/cell-build" -C Release --output-on-failure --no-tests=error -R "^cell_network_audio(_loopback|_wave)?$"

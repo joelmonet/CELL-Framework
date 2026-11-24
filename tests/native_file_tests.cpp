@@ -43,7 +43,7 @@ int main(){cell::File root;try{
         encoded.push_back(std::byte(unit & 255));
         encoded.push_back(std::byte(unit >> 8));
     }
-    need(utf16.replaceWithData(encoded.data(), encoded.size()), "Could not publish UTF-16 fixture");
+    cell::files::atomicWrite(utf16.nativePath(), encoded, true);
     cell::ByteBlock storedUtf16;
     need(utf16.loadFileAsData(storedUtf16) && std::ranges::equal(storedUtf16.bytes(), encoded),
          "The UTF-16 fixture did not persist its original bytes");
