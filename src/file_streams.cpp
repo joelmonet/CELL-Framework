@@ -3,7 +3,6 @@
 #include <system_error>
 #ifdef _WIN32
 #include <windows.h>
-#include "windows_file_io.hpp"
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -39,7 +38,7 @@ struct FileInputStream::Impl {Handle handle;std::int64_t position{},length{};Res
 FileInputStream::FileInputStream(const File&file):impl_(std::make_unique<Impl>()){
     auto&p=*impl_;
 #ifdef _WIN32
-    p.handle.value = files::detail::openSharedWindowsFile(file.nativePath().c_str(), GENERIC_READ, FILE_ATTRIBUTE_NORMAL);
+    p.handle.value=CreateFileW(file.nativePath().c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
 #else
     p.handle.value=::open(file.nativePath().c_str(),O_RDONLY|O_CLOEXEC|O_NONBLOCK);
 #endif
