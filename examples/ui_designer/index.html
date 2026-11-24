@@ -46,6 +46,15 @@ color:var(--text);background:var(--surface);border-color:var(--tile-accent);touc
 .tile[data-skin=studio]{color:#e9eff0;background:#26343e;border-bottom:3px solid #93c9e3}
 .tile[data-skin=broadcast]{color:#382512;background:#e7d3a6;border-style:double}
 .tile[data-panel-art]{background:transparent;border-color:transparent;border-radius:0}
+.tile[data-hardware-artwork] img{inset:5px;width:calc(100% - 10px);height:calc(100% - 10px);opacity:.9}
+.tile[data-hardware-artwork] span{color:#f6f7f4;background:#151e24e6;border-radius:4px;padding:0 4px}
+.artwork-library{margin:6px 0 10px}
+.artwork-library summary{cursor:pointer}
+.artwork-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:8px}
+.artwork-options button{display:grid;grid-template-rows:auto 1fr;gap:4px;padding:5px;font-size:12px;text-align:left;line-height:1.25}
+.artwork-options img{width:100%;height:66px;object-fit:contain;background:#111b20;border-radius:3px}
+.artwork-options[data-group=panel] img{object-fit:cover}
+.artwork-options button[aria-pressed=true]{border-color:#bcef90;background:#34412b}
 .tile[data-kind=image] img{inset:0;opacity:1}
 .tile[data-kind=image]:has(img:not([hidden])):not([aria-pressed=true]):not(:hover) span,
 .tile[data-panel-art]:not([data-kind=image]):not([aria-pressed=true]):not(:hover) span{visibility:hidden}
@@ -91,6 +100,7 @@ summary{cursor:pointer;font-weight:600}
 </style>
 <script src="model.js" defer></script>
 <script src="fonts.js" defer></script>
+<script src="artwork.js" defer></script>
 <script src="runtime.js" defer></script>
 <script src="designer.js" defer></script>
 </head>
@@ -99,6 +109,8 @@ summary{cursor:pointer;font-weight:600}
 <nav class="toolbar" aria-label="Layout actions">
 <button type="button" id="open">Open layout</button>
 <button type="button" id="showcase">Load showcase</button>
+<select id="hardware-style" aria-label="Hardware style"></select>
+<button type="button" id="hardware-showcase">Hardware showcase</button>
 <input id="layout-file" type="file" accept=".json,application/json" hidden>
 <button type="button" id="save">Save layout</button>
 <button type="button" id="undo" disabled>Undo</button>
@@ -164,6 +176,10 @@ summary{cursor:pointer;font-weight:600}
 <form id="properties" class="properties" hidden>
 <label>Label<textarea name="label" rows="2" maxlength="240" required></textarea></label>
 <label id="binding-field"><span id="binding-label">Parameter key</span><input name="key" list="parameter-keys" maxlength="80"></label>
+<div id="indicator-settings" hidden>
+<label>Lamp source<select name="indicator-source"><option value="parameter">Parameter</option><option value="meter">Meter</option></select></label>
+<label>Light at or above<input name="indicator-threshold" type="number" step="any"></label>
+</div>
 <datalist id="parameter-keys"></datalist>
 <datalist id="meter-keys">
 <option value="output-peak">Output peak</option><option value="output-rms">Output RMS</option>
@@ -260,11 +276,20 @@ aria-describedby="display-code-help"></textarea></label>
 <label>Direction<select name="direction"><option value="horizontal">Horizontal</option><option value="vertical">Vertical</option></select></label>
 <label>Thickness (px)<input name="thickness" type="number" min="1" max="16" required></label>
 </div>
+<details id="control-artwork-library" class="artwork-library" hidden>
+<summary>Hardware artwork</summary>
+<div id="control-artwork-options" class="artwork-options"></div>
+</details>
 <div id="artwork" class="action-row" hidden>
 <button id="load-artwork" type="button">Add artwork</button>
 <button id="clear-artwork" type="button">Remove artwork</button>
 <input id="artwork-file" type="file" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp" hidden>
 </div>
+<label id="artwork-placement-option" hidden>Artwork placement
+<select id="artwork-placement" aria-label="Artwork placement">
+<option value="">Face overlay</option><option value="cap">Hardware cap</option>
+<option value="pointer-cap">Directional knob cap</option>
+</select></label>
 <div class="action-row">
 <button>Apply</button>
 <button id="duplicate" type="button" data-duplicate>Duplicate</button>
@@ -285,6 +310,7 @@ aria-describedby="display-code-help"></textarea></label>
 </details>
 <details>
 <summary>Panel background</summary>
+<div id="panel-artwork-options" class="artwork-options" aria-label="Panel materials"></div>
 <div class="theme-grid">
 <label>Background fit<select id="background-fit">
 <option value="cover">Fill and crop</option><option value="contain">Fit</option><option value="fill">Stretch</option>

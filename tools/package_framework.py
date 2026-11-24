@@ -23,6 +23,7 @@ FILES = {
     "examples/ui_designer/index.html", "examples/ui_designer/designer.js",
     "examples/ui_designer/model.js", "examples/ui_designer/runtime.js",
     "examples/ui_designer/fonts.js", "tools/build_designer_fonts.py",
+    "examples/ui_designer/artwork.js",
     "tests/ui_designer_model_tests.cjs", "tests/ui_designer_browser_tests.cjs",
     "examples/graph_editor/index.html", "examples/graph_editor/editor.js", "examples/graph_editor/serve.py",
     "examples/portable_graph/modulation.json", "examples/portable_graph/azimuth-modulation.json",

@@ -5,7 +5,7 @@ const vm = require("node:vm");
 
 const root = path.join(__dirname, "../examples/ui_designer");
 const context = vm.createContext({ assert, TextEncoder });
-for (const name of ["model.js", "fonts.js", "runtime.js"])
+for (const name of ["model.js", "fonts.js", "artwork.js", "runtime.js"])
     vm.runInContext(fs.readFileSync(path.join(root, name), "utf8"), context);
 
 vm.runInContext(`
@@ -267,6 +267,49 @@ for (const layer of [0, 1.5, 257, null, "2"])
 assert.throws(() => model.readProject(model.serialize([{...panelArt[1], thickness: 17}], panelTheme, null)), /Invalid settings/);
 assert.throws(() => model.readProject(model.serialize([], {...panelTheme, backgroundArtwork: "https://example.com/panel"}, null)),
     /invalid background artwork/);
+
+for (const [group, assets] of Object.entries(CellDesignerArtwork)) {
+    assert.ok(assets.length >= 3);
+    for (const asset of assets)
+        assert.ok(model.validArtwork(asset.artwork, group === "panel" ? model.maxPanelAssetBytes : model.maxAssetBytes));
+}
+for (const family of ["british", "soviet", "german", "field"])
+    for (const group of ["panel", "knob", "fader", "display"])
+        assert.equal(CellDesignerArtwork[group].filter(asset => asset.family === family).length, 1);
+
+const cap = {...project.controls[1], artwork: CellDesignerArtwork.knob[0].artwork, artworkMode: "cap"};
+const display = {kind: "led", label: "Code", ledText: "A1", x: 0, y: 4, width: 3, height: 2,
+    artwork: CellDesignerArtwork.display[0].artwork};
+const hardware = model.readProject(model.serialize([cap, display], panelTheme, null));
+assert.equal(hardware.controls[0].artworkMode, "cap");
+assert.equal(hardware.controls[1].artwork, display.artwork);
+assert.deepEqual(model.readClipboard(model.writeClipboard(hardware.controls)), hardware.controls);
+for (const invalid of [{...cap, artwork: ""}, {...cap, artworkMode: "other"}, {...display, artworkMode: "cap"}])
+    assert.throws(() => model.readClipboard(model.writeClipboard([invalid])), /Invalid settings/);
+
+const pointer = {...cap, artworkMode: "pointer-cap"};
+assert.equal(model.readClipboard(model.writeClipboard([pointer]))[0].artworkMode, "pointer-cap");
+assert.throws(() => model.readClipboard(model.writeClipboard([{...pointer, kind: "fader"}])), /Invalid settings/);
+for (const kind of ["toggle", "momentary", "action"]) assert.equal(model.hasArtwork(kind), true);
+
+const lamp = {kind: "indicator", label: "Ready", key: "ready", x: 0, y: 0, width: 3, height: 2,
+    artwork: CellDesignerArtwork.indicator[0].artwork};
+const meterLamp = {...lamp, label: "Peak", key: "output-peak", x: 3, indicatorSource: "meter"};
+const indicators = model.readClipboard(model.writeClipboard([lamp, meterLamp, {...meterLamp, threshold: -12.5}]));
+assert.deepEqual(indicators.map(({indicatorSource, threshold}) => [indicatorSource, threshold]),
+    [["parameter", 1], ["meter", -18], ["meter", -12.5]]);
+assert.equal(indicators[0].artwork, lamp.artwork);
+assert.deepEqual(model.parameterKeys(indicators), ["ready"]);
+assert.deepEqual(model.meterKeys(indicators), ["output-peak"]);
+assert.deepEqual(model.bindingIssues(indicators.slice(1), []), []);
+const lampBindings = model.cppBindings(indicators);
+assert.ok(lampBindings.includes('{ControlKind::indicator, "ready", cell::stableId("ready")}'));
+assert.ok(lampBindings.includes('array<std::string_view, 1> meters{{\\n    "output-peak"'));
+assert.ok(lampBindings.includes('array<cell::ParamId, 1> readOnlyParameters{{\\n    cell::stableId("ready")'));
+const shared = model.cppBindings([...indicators, {...lamp, kind: "toggle"}]);
+assert.ok(shared.includes("array<cell::ParamId, 0> readOnlyParameters"));
+for (const override of [{indicatorSource: "action"}, {threshold: "1"}, {threshold: null}, {kind: "toggle", threshold: 1}])
+    assert.throws(() => model.readClipboard(model.writeClipboard([{...lamp, ...override}])), /lamp source/);
 
 const hostileLabel = "<" + "/script>";
 const html = CellDesignerRuntime.html([{...project.controls[1], label: hostileLabel}], project.theme);

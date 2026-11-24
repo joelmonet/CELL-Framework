@@ -2,12 +2,13 @@
 
 const CellDesignerRuntime = (() => {
     // Serialized into the standalone document along with the selected controls.
-    function mount(controls, background, phoneBreakpoint, stepCount, maxDetentLabels, isPanelArt, isProgramControl, readPrograms, led, compareValue, paintType, families) {
+    function mount(controls, background, phoneBreakpoint, stepCount, maxDetentLabels, isPanelArt, isProgramControl, hasDisplayArtwork, hasSwitchArtwork, isMeterBinding, readPrograms, led, compareValue, paintType, families) {
         const stage = document.querySelector("main");
         const items = [];
         const states = new Map();
         const bindings = new Map();
         const meters = new Map();
+        const indicatorMeters = new Map(), indicatorParameters = new Map();
         const parameters = new Map();
         const owners = new Map();
         const stopDrags = [];
@@ -736,6 +737,13 @@ const CellDesignerRuntime = (() => {
             updateProgramControls(rebuild);
         }
 
+        function updateIndicator({control, item, output}, value) {
+            const state = Number.isFinite(value) ? (value >= (control.threshold ?? 1) ? "On" : "Off") : "Unavailable";
+            if (output.textContent === state) return;
+            item.dataset.lamp = state.toLowerCase();
+            output.textContent = state;
+        }
+
         for (const control of controls) {
             const item = document.createElement("div");
             item.className = "control " + control.kind;
@@ -743,6 +751,10 @@ const CellDesignerRuntime = (() => {
             item.dataset.skin = control.skin;
             if (control.typography) paintType(item, control.typography, families);
             if (control.accent) item.style.setProperty("--accent", control.accent);
+            if (control.artwork && (control.artworkMode || hasDisplayArtwork(control.kind) || hasSwitchArtwork(control.kind) || control.kind === "indicator")) {
+                item.dataset.hardwareArtwork = control.artworkMode ?? (hasSwitchArtwork(control.kind) ? "switch" : control.kind === "indicator" ? "lamp" : "display");
+                item.style.setProperty("--hardware-image", `url(${JSON.stringify(control.artwork)})`);
+            }
             const state = {control, item, label: control.label, interactive: true, rename: []};
             states.set(control, state);
             items.push(state);
@@ -783,10 +795,22 @@ const CellDesignerRuntime = (() => {
 
             const output = document.createElement("output");
             output.textContent = "—";
-            nameElement(control, output, "aria-label", label => label + " value");
+            nameElement(control, output, "aria-label", label => label + (control.kind === "indicator" ? " status" : " value"));
             output.setAttribute("aria-live", "off");
             item.append(output);
             const {key} = control;
+            if (control.kind === "indicator") {
+                const lens = document.createElement("span");
+                lens.className = "indicator-lens";
+                lens.setAttribute("aria-hidden", "true");
+                item.insertBefore(lens, output);
+                const indicator = {control, item, output};
+                const sources = isMeterBinding(control) ? indicatorMeters : indicatorParameters;
+                if (!sources.has(key)) sources.set(key, []);
+                sources.get(key).push(indicator);
+                updateIndicator(indicator);
+                continue;
+            }
             if (control.kind === "meter") {
                 const face = document.createElement("div");
                 face.className = "meter-face";
@@ -828,7 +852,7 @@ const CellDesignerRuntime = (() => {
                 stepperInput(binding, face);
                 continue;
             }
-            if (control.artwork) {
+            if (control.artwork && !item.dataset.hardwareArtwork) {
                 const image = document.createElement("img");
                 image.className = "artwork";
                 image.src = control.artwork;
@@ -950,6 +974,7 @@ const CellDesignerRuntime = (() => {
                     if (!signal || ![signal.value, signal.minimum, signal.maximum].every(Number.isFinite) ||
                         signal.minimum >= signal.maximum) continue;
                     const value = Math.min(Math.max(signal.value, signal.minimum), signal.maximum);
+                    for (const indicator of indicatorMeters.get(signal.key) ?? []) updateIndicator(indicator, value);
                     for (const {output, gauge, face, marks} of meters.get(signal.key) ?? []) {
                         gauge.min = signal.minimum;
                         gauge.max = signal.maximum;
@@ -990,6 +1015,8 @@ const CellDesignerRuntime = (() => {
             const {changed, focusFrom} = updateRules();
             actionControls.forEach(update => update());
             if (programControls.length) updateMemory(message, changed);
+            for (const [key, indicators] of indicatorParameters)
+                for (const indicator of indicators) updateIndicator(indicator, parameters.get(key)?.value);
             for (const [key, items] of bindings) {
                 const parameter = parameters.get(key);
                 for (const binding of items) {
@@ -1022,7 +1049,7 @@ const CellDesignerRuntime = (() => {
         }
     }
 
-    function simulate(controls, catalog, memory, values, generation, isProgramControl, isPanelArt, actions, keys) {
+    function simulate(controls, catalog, memory, values, generation, isProgramControl, isPanelArt, isMeterBinding, actions, keys) {
         const byKey = new Map((catalog ?? []).map(parameter => [parameter.key, parameter]));
         const parameters = new Map();
         const prior = new Map(values);
@@ -1037,7 +1064,7 @@ const CellDesignerRuntime = (() => {
         }
         for (const control of controls) {
             const {kind, key} = control;
-            if (kind === "meter") { meterKeys.add(key); continue; }
+            if (isMeterBinding(control)) { meterKeys.add(key); continue; }
             if (["text", "action", "action-pair"].includes(kind) || (kind === "led" && !key) ||
                 isProgramControl(kind) || isPanelArt(kind) || parameters.has(key)) continue;
             const fallback = stepperKeys.has(key) ? {minimum: 0, maximum: 99, step: 1, unit: ""} :
@@ -1197,6 +1224,52 @@ clip-path:polygon(50% 0,100% 12%,100% 88%,50% 100%,0 88%,0 12%)}
 .control[data-skin=broadcast] .meter-scale{margin-top:-24px;padding:0 7%;letter-spacing:.02em}
 .control[data-skin=broadcast] button,.control[data-skin=broadcast] select{background:#f7e7c7;color:#372512}
 .control[data-skin=broadcast] .dial{background:radial-gradient(circle,#f7e7c7,#ad8f62)}
+.control[data-hardware-artwork]{color:var(--text);color-scheme:dark;border:1px solid #ffffff29}
+.control[data-hardware-artwork]{background:var(--surface);background:color-mix(in srgb,var(--surface) 82%,transparent)}
+.knob[data-hardware-artwork=cap] .dial{width:min(90%,92px);border:0;border-radius:50%;box-shadow:none;background:var(--hardware-image) center/contain no-repeat}
+.knob[data-hardware-artwork=cap] .dial::after{inset:15%;filter:drop-shadow(0 1px 1px #000c)}
+.knob[data-hardware-artwork=pointer-cap] .dial{width:min(90%,92px);border:0;border-radius:50%;box-shadow:none;background:none}
+.knob[data-hardware-artwork=pointer-cap] .dial::after{inset:0;background:var(--hardware-image) center/contain no-repeat}
+.control.indicator{align-items:center;justify-content:center;gap:4px;text-align:center}
+.indicator .indicator-lens{display:block;width:44px;height:44px;flex:none;border-radius:50%;background:
+radial-gradient(circle at 34% 32%,#696751,#29261e 67%,#161b19 70%);border:2px solid #434643}
+.indicator[data-lamp=on] .indicator-lens{background:radial-gradient(circle at 34% 32%,#fff8ad,var(--accent) 65%,#171b19 70%);
+filter:drop-shadow(0 0 5px var(--accent))}
+.control.indicator[data-hardware-artwork=lamp] .indicator-lens{width:min(90%,96px);height:56px;border:0;border-radius:0;
+background:var(--hardware-image) center/contain no-repeat;filter:brightness(.75)}
+.control.indicator[data-hardware-artwork=lamp][data-lamp=on] .indicator-lens{
+filter:brightness(1.65) saturate(1.18) drop-shadow(0 0 6px var(--accent))}
+.indicator output{font-size:.8em;min-height:1em}
+.control[data-hardware-artwork=switch] > output{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.control[data-hardware-artwork=switch] button{display:grid;justify-items:center;align-content:center;gap:3px;width:100%;min-height:68px;
+color:var(--text);background:var(--background);border-color:#ffffff43}
+.control[data-hardware-artwork=switch] button::before{content:"";width:min(100%,70px);height:38px;background:var(--hardware-image) center/contain no-repeat}
+.control[data-hardware-artwork=switch] button[aria-pressed=true]{border-color:var(--accent)}
+.control[data-hardware-artwork=switch] button[aria-pressed=true]::before{filter:brightness(1.28) drop-shadow(0 0 3px var(--accent))}
+.control[data-hardware-artwork=switch] button:is(:active,[data-held])::before{transform:translateY(1px) scale(.94)}
+
+.knob[data-hardware-artwork] .face[data-detent-labels] .dial{width:clamp(28px,calc(100% - 116px),92px)}
+.knob[data-hardware-artwork] .face[data-staggered-labels] .dial{width:clamp(28px,calc(100% - 186px),92px)}
+.control.fader[data-hardware-artwork=cap] .face{background:none}
+.control.fader[data-hardware-artwork=cap] .face::before{content:"";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+width:min(100%,110px);height:min(100%,232px);background:repeating-linear-gradient(to bottom,transparent 0 11px,#a9b5bc68 11px 12px);
+mask-image:linear-gradient(to right,#000 0 28%,transparent 28% 72%,#000 72%);pointer-events:none}
+.control.fader[data-hardware-artwork=cap] input{position:relative;max-height:232px;appearance:none;background:transparent;cursor:ns-resize}
+.control.fader[data-hardware-artwork=cap] input::-webkit-slider-runnable-track{width:6px;height:100%;border-radius:3px;background:#0e1317;box-shadow:inset 1px 0 2px #000}
+.control.fader[data-hardware-artwork=cap] input::-webkit-slider-thumb{appearance:none;width:38px;height:22px;margin-left:-16px;border:0;border-radius:0;box-shadow:none;background:var(--hardware-image) center/contain no-repeat}
+.control.fader[data-hardware-artwork=cap] input::-moz-range-track{width:6px;height:100%;border-radius:3px;background:#0e1317;box-shadow:inset 1px 0 2px #000}
+.control.fader[data-hardware-artwork=cap] input::-moz-range-thumb{width:38px;height:22px;border:0;border-radius:0;box-shadow:none;background:var(--hardware-image) center/contain no-repeat}
+.control[data-hardware-artwork=display]:is(.readout,.led,.stepper) output{background:var(--hardware-image) center/100% 100% no-repeat}
+.control[data-hardware-artwork=display]:is(.readout,.stepper) output:not(.led-window){min-height:36px;text-align:center;align-content:center;padding:5px 12px;color:var(--accent);font-family:ui-monospace,monospace;text-shadow:0 0 7px currentColor}
+.control[data-hardware-artwork=display].readout output{width:min(100%,236px);align-self:center}
+.control[data-hardware-artwork=display].led output{width:min(100%,140px)}
+.control[data-hardware-artwork=display] .led-window{gap:7%;padding:7px min(12%,13px);box-shadow:none}
+.control[data-hardware-artwork=display] .led-segment[data-lit]{filter:drop-shadow(0 0 2px currentColor)}
+.control.meter[data-hardware-artwork=display] .meter-face{flex:0 1 auto;width:min(100%,218px);min-height:102px;aspect-ratio:5/3;align-self:center;
+margin-block:auto;padding:10px 11%;border:0;border-radius:4px;background:var(--hardware-image) center/100% 100% no-repeat}
+.control.meter[data-hardware-artwork=display] .meter-face::before,.control.meter[data-hardware-artwork=display] .meter-face::after{content:none}
+.control.meter[data-hardware-artwork=display] .meter-scale{margin:0;padding:0}
+.control.meter[data-hardware-artwork=display] meter{position:static;width:100%;height:18px;clip-path:none}
 .text{justify-content:center;background:transparent}
 main[data-layout=phone]{grid-template-columns:repeat(var(--phone-columns),minmax(0,1fr));grid-template-rows:none;grid-auto-rows:minmax(52px,auto);align-content:start}
 main[data-layout=phone] .fader .face{min-height:125px}
@@ -1240,7 +1313,7 @@ main[data-layout=phone] .meter-face{min-height:62px}
     const json = value => JSON.stringify(value).replace(/</g, "\\u003c");
 
     function html(controls, theme, preview) {
-        const {phoneGrid, phonePlacements, readingOrder, layerOrder, layerPriority, stepCount, maxDetentLabels, isPanelArt, isProgramControl,
+        const {phoneGrid, phonePlacements, readingOrder, layerOrder, layerPriority, stepCount, maxDetentLabels, isPanelArt, isProgramControl, hasDisplayArtwork, hasSwitchArtwork, isMeterBinding,
             readPrograms, defaultTheme, ledGlyphs, displayCode, numericLedCode, actionBindings,
             conditionRules, compareValue, parameterKeys, typographyFamilies} = CellDesignerModel;
         const phone = phonePlacements(controls);
@@ -1252,7 +1325,7 @@ main[data-layout=phone] .meter-face{min-height:62px}
             layer: ranks?.get(control) ?? layerPriority(control),
             visibleRules: conditionRules(control.visibleWhen), enabledRules: conditionRules(control.enabledWhen)})).sort(readingOrder);
         const simulation = preview
-            ? `(${simulate.toString()})(controls,${json(preview.catalog)},${json(preview.programs ?? null)},${json(preview.values)},${preview.generation},isProgramControl,isPanelArt,${json(actionBindings(controls))},${json(parameterKeys(controls))});` : "";
+            ? `(${simulate.toString()})(controls,${json(preview.catalog)},${json(preview.programs ?? null)},${json(preview.values)},${preview.generation},isProgramControl,isPanelArt,${isMeterBinding.toString()},${json(actionBindings(controls))},${json(parameterKeys(controls))});` : "";
         const colors = Object.keys(defaultTheme).map(name => `--${name}:${theme[name]}`).join(";");
         const background = {artwork: theme.backgroundArtwork, fit: theme.backgroundFit ?? "cover"};
         const rows = Math.ceil(sorted.reduce((maximum, control) => Math.max(maximum, control.y + control.height), 1));
@@ -1264,7 +1337,7 @@ main[data-layout=phone] .meter-face{min-height:62px}
 :root{${colors};--rows:${rows};--phone-columns:${phoneGrid.columns}}${css}${typographyCss}</style></head>
 <body><main></main><script>const controls = ${json(sorted)};
 const isProgramControl = ${isProgramControl.toString()}, isPanelArt = ${isPanelArt.toString()};
-${simulation}(${mount.toString()})(controls,${json(background)},${phoneGrid.breakpoint},${stepCount.toString()},${maxDetentLabels},isPanelArt,isProgramControl,${readPrograms.toString()},
+${simulation}(${mount.toString()})(controls,${json(background)},${phoneGrid.breakpoint},${stepCount.toString()},${maxDetentLabels},isPanelArt,isProgramControl,${hasDisplayArtwork.toString()},${hasSwitchArtwork.toString()},${isMeterBinding.toString()},${readPrograms.toString()},
 {glyphs:${json(ledGlyphs)},codeForValue:${displayCode.toString()},numericCode:${numericLedCode.toString()}},${compareValue.toString()},
 ${paintTypography.toString()},${json(typographyFamilies)});</script></body></html>`;
     }

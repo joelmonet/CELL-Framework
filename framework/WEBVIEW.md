@@ -165,6 +165,29 @@ Resize controls, set editor colors, or embed SVG, PNG, JPEG or WebP artwork on a
 knob or fader. Face artwork can use up to 256 KiB per control and raster
 dimensions up to 2048 × 2048 pixels.
 
+The **Hardware style** menu offers studio, British broadcast, Soviet-era
+laboratory, German precision, and field communications finishes. Choose
+**Hardware showcase** to load that style as a playable layout. The original
+artwork takes cues from vintage hardware. Use **Panel background** to choose
+an individual metal or enamel finish. Select a
+control to choose its **Hardware artwork** in the inspector. The collection
+includes classic console caps, amplifier chicken-head knobs and rockers, pedal
+knobs and footswitches, and outboard attenuators and lever toggles. Use switch
+artwork on toggles, momentary controls, and action buttons. Knob pointers, fader
+caps, displays, meters, and switch states follow the control in preview and
+export. The artwork is embedded in the layout and WebView HTML.
+
+**Field indicators** loads an olive panel with pilot and warning lamps, a red
+annunciator, and momentary **LAUNCH** and **DETONATE** buttons bound to preview
+audio controls. Add an **Indicator** and set its **Lamp source** to a parameter
+or meter. The lamp turns on when the source reaches the threshold, using the
+source's native units. Its status is available to assistive technology. The
+hardware library includes four lamp faces and four pushbutton faces.
+
+Use **Artwork placement** to use an imported knob or fader image as a cap.
+A **Directional knob cap** rotates the silhouette with the parameter. Use an
+image whose pointer faces up and whose pivot is centered.
+
 ### Design the panel
 
 Drag **Image**, **Rectangle**, and **Line** onto the grid. Use **Image** for

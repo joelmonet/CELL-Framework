@@ -34,7 +34,7 @@ async function download(page, id, directory) {
         page.on("dialog", dialog => dialog.accept());
         const serveDesigner = async route => {
             const name = new URL(route.request().url()).pathname.slice(1);
-            if (!["index.html", "model.js", "fonts.js", "runtime.js", "designer.js"].includes(name)) return route.abort();
+            if (!["index.html", "model.js", "fonts.js", "artwork.js", "runtime.js", "designer.js"].includes(name)) return route.abort();
             await route.fulfill({body: await fs.readFile(path.join(source, name)),
                 contentType: name.endsWith(".js") ? "text/javascript" : "text/html; charset=utf-8"});
         };
@@ -1480,8 +1480,148 @@ async function download(page, id, directory) {
         await layerDesigner.getByText("2 controls pasted.", {exact: true}).waitFor();
         assert.deepEqual(await layerLabels(), [...customLayers.slice(0, 2), "Text · Text", ...customLayers]);
         await fs.writeFile(path.join(temp, "layer-order-layout.json"), savedLayers);
+        const hardware = await context.newPage();
+        hardware.on("pageerror", error => errors.push(error));
+        await hardware.route(origin + "/**", serveDesigner);
+        await hardware.goto(origin + "/index.html");
+        await hardware.getByRole("button", {name: "Hardware showcase", exact: true}).click();
+        const hardwarePreview = hardware.frameLocator("#preview-panel iframe");
+        const dial = hardwarePreview.locator(".knob[data-hardware-artwork=cap] .dial");
+        await dial.waitFor();
+        assert.match(await dial.evaluate(element => getComputedStyle(element).backgroundImage), /^url\("data:image\/webp/);
+        await hardwarePreview.getByRole("slider", {name: "Output level"}).press("ArrowUp");
+        assert.equal(await hardwarePreview.getByRole("slider", {name: "Output level"}).getAttribute("aria-valuetext"), "-11.99 dB");
+        const display = hardwarePreview.locator('.stepper[data-hardware-artwork=display] output');
+        assert.match(await display.evaluate(element => getComputedStyle(element).backgroundImage), /^url\("data:image\/webp/);
+        assert.equal(await display.locator(".led-code").textContent(), "A1");
+        await hardwarePreview.locator(".stepper button").last().press("Space");
+        assert.equal(await display.locator(".led-code").textContent(), "br");
+        assert.ok(Number(await hardwarePreview.getByRole("meter", {name: "Output peak"}).getAttribute("value")) > -60);
+        await hardwarePreview.locator("main").screenshot({path: path.join(temp, "hardware-preview-wide.png")});
+
+        await hardware.locator("#control-artwork-library summary").click();
+        const knobArt = hardware.getByRole("button", {name: "Knurled graphite knob"});
+        await knobArt.click();
+        assert.equal(await knobArt.getAttribute("aria-pressed"), "true");
+        await hardware.locator("#undo").click();
+        assert.equal(await hardware.getByRole("button", {name: "Brushed nickel knob"}).getAttribute("aria-pressed"), "true");
+        await hardware.getByLabel("Artwork placement").selectOption("");
+        await hardwarePreview.locator(".knob img.artwork").waitFor();
+        await hardware.locator("#undo").click();
+        await dial.waitFor();
+        await hardware.locator("#panel-artwork-options").locator("..").locator("summary").click();
+        await hardware.getByRole("button", {name: "Slate powder coat"}).click();
+        const savedHardware = JSON.parse(await download(hardware, "#save", temp));
+        assert.match(savedHardware.theme.backgroundArtwork, /^data:image\/webp;base64,/);
+        assert.equal(savedHardware.controls[0].artworkMode, "cap");
+        assert.equal(savedHardware.controls[2].artworkMode, "cap");
+        await hardware.locator("#layout-file").setInputFiles({name: "hardware.json", mimeType: "application/json",
+            buffer: Buffer.from(JSON.stringify(savedHardware))});
+        await hardware.getByText("Layout opened.", {exact: true}).waitFor();
+        assert.equal(await hardware.getByRole("button", {name: "Slate powder coat"}).getAttribute("aria-pressed"), "true");
+
+        const hardwareHtml = await download(hardware, "#export", temp);
+        const hardwareExport = await browser.newPage({viewport: {width: 390, height: 600}});
+        hardwareExport.on("pageerror", error => errors.push(error));
+        await hardwareExport.addInitScript(() => {
+            window.cell = {onMessage(callback) { window.receive = callback; }, postMessage() {}};
+        });
+        await hardwareExport.route(origin + "/**", route => {
+            assert.equal(new URL(route.request().url()).pathname, "/hardware.html");
+            return route.fulfill({body: hardwareHtml, contentType: "text/html; charset=utf-8"});
+        });
+        await hardwareExport.goto(origin + "/hardware.html");
+        await hardwareExport.evaluate(parameters => window.receive({type: "parameters", parameters}), savedHardware.catalog);
+        await hardwareExport.locator('main[data-layout="phone"] .fader[data-hardware-artwork=cap]').waitFor();
+        assert.equal(await hardwareExport.locator("main > .panel-background").getAttribute("src"), savedHardware.theme.backgroundArtwork);
+        assert.equal(await hardwareExport.locator(".stepper .led-code").textContent(), "A1");
+        await hardwareExport.screenshot({path: path.join(temp, "hardware-export-phone.png"), fullPage: true});
+        await fs.writeFile(path.join(temp, "hardware-editor.html"), hardwareHtml);
+
+        for (const [family, label] of [["british", "British broadcast"], ["soviet", "Soviet-era laboratory"],
+            ["german", "German precision"], ["field", "Field communications"]]) {
+            await hardware.getByLabel("Hardware style").selectOption(family);
+            await hardware.getByRole("button", {name: "Hardware showcase", exact: true}).click();
+            await hardware.getByText(label + " showcase loaded.", {exact: true}).waitFor();
+            await hardwarePreview.locator(".stepper[data-hardware-artwork=display] output").waitFor();
+            const artwork = await hardware.evaluate(family => Object.fromEntries(["panel", "knob", "fader", "display"]
+                .map(group => [group, CellDesignerArtwork[group].find(asset => asset.family === family).artwork])), family);
+            const background = hardwarePreview.locator(".panel-background");
+            assert.equal(await background.getAttribute("src"), artwork.panel);
+            await background.evaluate(image => image.decode());
+            for (const [kind, group] of [["knob", "knob"], ["fader", "fader"], ["stepper", "display"]]) {
+                const control = hardwarePreview.locator(".control." + kind);
+                assert.ok((await control.evaluate(element => element.style.getPropertyValue("--hardware-image"))).includes(artwork[group]));
+            }
+        }
+
+        const bypassSwitch = hardwarePreview.locator(".toggle[data-hardware-artwork=switch] button");
+        await bypassSwitch.click();
+        assert.equal(await bypassSwitch.getAttribute("aria-pressed"), "true");
+        await bypassSwitch.press("Space");
+        assert.equal(await bypassSwitch.getAttribute("aria-pressed"), "false");
+        await hardware.getByRole("button", {name: "Input trim · knob", exact: true}).click();
+        const library = hardware.locator("#control-artwork-library");
+        if (!(await library.evaluate(panel => panel.open))) await library.locator("summary").click();
+        await hardware.getByRole("button", {name: "Amp chicken-head knob"}).click();
+        const pointerDial = hardwarePreview.locator(".knob[data-hardware-artwork=pointer-cap] .dial");
+        await pointerDial.waitFor();
+        const pointerAngle = () => pointerDial.evaluate(element => getComputedStyle(element, "::after").transform);
+        const before = await pointerAngle();
+        await hardwarePreview.getByRole("slider", {name: "Input trim"}).press("ArrowUp");
+        assert.notEqual(await pointerAngle(), before);
+
+        await hardware.getByLabel("Hardware style").selectOption("field-indicators");
+        await hardware.getByRole("button", {name: "Hardware showcase", exact: true}).click();
+        await hardware.getByText("Field indicators showcase loaded.", {exact: true}).waitFor();
+        const lampStatus = (view, name) => view.getByRole("status", {name: name + " status", exact: true});
+        assert.equal(await lampStatus(hardwarePreview, "READY").textContent(), "On");
+        const effectLamp = hardwarePreview.locator(".indicator").filter({hasText: "EFFECT ACTIVE"});
+        await effectLamp.locator('output').filter({hasText: "Off"}).waitFor();
+        const detonate = hardwarePreview.getByRole("button", {name: "DETONATE", exact: true});
+        await detonate.focus();
+        await hardware.keyboard.down("Space");
+        await effectLamp.locator('output').filter({hasText: "On"}).waitFor();
+        assert.equal(await effectLamp.getAttribute("data-lamp"), "on");
+        await hardware.keyboard.up("Space");
+        await effectLamp.locator('output').filter({hasText: "Off"}).waitFor();
+
+        await hardware.getByRole("button", {name: "CAUTION · indicator", exact: true}).click();
+        assert.equal(await hardware.getByLabel("Lamp source").inputValue(), "meter");
+        await hardware.getByLabel("Light at or above").fill("-21");
+        await hardware.getByRole("button", {name: "Apply", exact: true}).click();
+        const fieldLayout = JSON.parse(await download(hardware, "#save", temp));
+        assert.equal(fieldLayout.controls.find(control => control.label === "CAUTION").threshold, -21);
+        const fieldHtml = await download(hardware, "#export", temp);
+        const fieldEditor = await browser.newPage({viewport: {width: 840, height: 380}});
+        fieldEditor.on("pageerror", error => errors.push(error));
+        await fieldEditor.addInitScript(() => {
+            window.sent = [];
+            window.cell = {onMessage(callback) { window.receive = callback; }, postMessage(message) { window.sent.push(message); }};
+        });
+        await fieldEditor.route(origin + "/field-indicators.html", route => route.fulfill({body: fieldHtml, contentType: "text/html"}));
+        await fieldEditor.goto(origin + "/field-indicators.html");
+        assert.equal(await lampStatus(fieldEditor, "READY").textContent(), "Unavailable");
+        await fieldEditor.evaluate(parameters => window.receive({type: "parameters", momentary: true, parameters}),
+            fieldLayout.catalog);
+        const sendPeak = value => fieldEditor.evaluate(value => window.receive({type: "meters",
+            meters: [{key: "output-peak", value, minimum: -60, maximum: 0, unit: "dBFS"}]}), value);
+        await sendPeak(-22);
+        assert.equal(await lampStatus(fieldEditor, "CAUTION").textContent(), "Off");
+        await sendPeak(-21);
+        assert.equal(await lampStatus(fieldEditor, "CAUTION").textContent(), "On");
+        assert.equal(await lampStatus(fieldEditor, "PEAK WARNING").textContent(), "Off");
+        await sendPeak(-15);
+        assert.equal(await lampStatus(fieldEditor, "PEAK WARNING").textContent(), "On");
+        await fieldEditor.getByRole("button", {name: "LAUNCH", exact: true}).press("Space");
+        assert.deepEqual(await fieldEditor.evaluate(() => window.sent),
+            ["momentary-press", "momentary-release"].map(type => ({type, key: "audition"})));
+        await fieldEditor.screenshot({path: path.join(temp, "field-indicators.png"), fullPage: true});
+        await fieldEditor.evaluate(() => window.receive({type: "parameters", parameters: []}));
+        assert.equal(await lampStatus(fieldEditor, "READY").textContent(), "Unavailable");
+
         assert.deepEqual(errors, []);
-        console.log("Designer passed layout editing, program recall, displays, actions, conditional panels, typography, detent placement, and layer-order exports.");
+        console.log("Designer passed layout editing, program recall, displays, actions, conditional panels, typography, detent placement, layer-order exports, hardware artwork, and indicator lamps.");
     } finally {
         await browser.close();
         if (!process.env.CELL_UI_DESIGNER_TEST_OUTPUT) await fs.rm(temp, {recursive: true, force: true});

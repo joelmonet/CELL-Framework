@@ -28,6 +28,7 @@ const CellDesignerModel = (() => {
         action: {width: 3, height: 1, title: "Action"},
         "action-pair": {width: 4, height: 1, title: "Action Pair"},
         meter: {width: 4, height: 2, title: "Meter"},
+        indicator: {width: 3, height: 1, title: "Indicator"},
         readout: {width: 3, height: 1, title: "Readout"},
         led: {width: 3, height: 1, title: "LED Display"},
         text: {width: 4, height: 1, title: "Text"},
@@ -62,10 +63,16 @@ const CellDesignerModel = (() => {
     const layerOrder = controls => [...controls].sort((a, b) => layerPriority(a) - layerPriority(b));
     const isProgramControl = kind => ["bank", "program", "patch-name", "program-grid"].includes(kind);
     const hasDisplayCodes = kind => ["led", "stepper", "readout", "choice"].includes(kind);
-    const hasArtwork = kind => kind === "knob" || kind === "fader" || kind === "image";
+    const hasDisplayArtwork = kind => ["led", "readout", "stepper", "meter"].includes(kind);
+    const hasCapArtwork = kind => kind === "knob" || kind === "fader";
+    const hasSwitchArtwork = kind => ["toggle", "momentary", "action"].includes(kind);
+    const validArtworkMode = (kind, mode) => mode === "cap" ? hasCapArtwork(kind) : mode === "pointer-cap" && kind === "knob";
+    const hasArtwork = kind => hasCapArtwork(kind) || kind === "image" || hasDisplayArtwork(kind) || hasSwitchArtwork(kind) || kind === "indicator";
     const hasBinding = kind => !["text", "action", "action-pair"].includes(kind) && !isPanelArt(kind) && !isProgramControl(kind);
     const hasParameter = kind => hasBinding(kind) && kind !== "meter";
-    const hasParameterBinding = control => hasParameter(control.kind) && (control.kind !== "led" || Boolean(control.key));
+    const isMeterBinding = control => control.kind === "meter" || (control.kind === "indicator" && control.indicatorSource === "meter");
+    const hasParameterBinding = control => hasParameter(control.kind) && !isMeterBinding(control) &&
+        (control.kind !== "led" || Boolean(control.key));
     const validText = value => typeof value === "string" && value.trim() && value.length <= 80 && !/[\x00-\x1f\x7f]/.test(value);
     const plainNumber = "[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?";
     const validAction = key => typeof key === "string" && /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(key);
@@ -449,11 +456,24 @@ const CellDesignerModel = (() => {
                 ? null : readCatalog({type: "parameters", parameters: value.catalog})};
     }
 
+    function indicatorSettings(control) {
+        const {kind, indicatorSource, threshold} = control;
+        if (kind !== "indicator") {
+            if (indicatorSource !== undefined || threshold !== undefined) throw new Error("Only indicators can have a lamp source and threshold.");
+            return;
+        }
+        const source = indicatorSource === undefined ? "parameter" : indicatorSource;
+        const level = threshold === undefined ? (source === "meter" ? -18 : 1) : threshold;
+        if (!["parameter", "meter"].includes(source) || !Number.isFinite(level))
+            throw new Error("Choose a lamp source and a finite threshold.");
+        return {indicatorSource: source, threshold: level};
+    }
+
     function readControl(control, index, hasPhone) {
         if (Object.hasOwn(control ?? {}, "cells"))
             throw new Error(`Control ${index + 1} has an unsupported "cells" field. Segmented displays use exactly two cells.`);
         const {kind, label, key = "", x, y, width = kinds[kind]?.width, height = 1,
-            accent = "", artwork = "", skin = "modern", phone, fit = "contain",
+            accent = "", artwork = "", artworkMode, skin = "modern", phone, fit = "contain",
             direction = "horizontal", thickness = 2, displayCodes, segmented, detentLabels, rotation = 0, layer} = control ?? {};
         const normalizedLabel = readLabel(label);
         if (typeof kind !== "string" || !Object.hasOwn(kinds, kind) || !normalizedLabel ||
@@ -463,6 +483,7 @@ const CellDesignerModel = (() => {
             (detentLabels !== undefined && kind !== "knob") ||
             typeof accent !== "string" || (accent && !color.test(accent)) ||
             (artwork !== "" && (!hasArtwork(kind) || !validArtwork(artwork, kind === "image" ? maxPanelAssetBytes : maxAssetBytes))) ||
+            (artworkMode !== undefined && (!artwork || !validArtworkMode(kind, artworkMode))) ||
             (kind === "image" && !imageFits.includes(fit)) ||
             (segmented !== undefined && (kind !== "stepper" || typeof segmented !== "boolean")) ||
             (displayCodes !== undefined && (!hasDisplayCodes(kind) || (kind === "led" && !key))) ||
@@ -470,6 +491,7 @@ const CellDesignerModel = (() => {
                 !Number.isInteger(thickness) || thickness < 1 || thickness > 16)))
             throw new Error(`Invalid settings for control ${index + 1}.`);
         const result = {kind, label: normalizedLabel, key: hasBinding(kind) ? key : "", x, y, width, height, accent, artwork, skin};
+        if (artworkMode) result.artworkMode = artworkMode;
         if (layer !== undefined) {
             if (!Number.isInteger(layer) || layer < 1 || layer > maxControls)
                 throw new Error(`Invalid layer for control ${index + 1}. Use an integer from 1 to ${maxControls}.`);
@@ -481,6 +503,7 @@ const CellDesignerModel = (() => {
         Object.assign(result, buttonSettings(kind, control));
         Object.assign(result, ruleSettings(control));
         Object.assign(result, ledSettings(control));
+        Object.assign(result, indicatorSettings(control));
         if (kind === "image") result.fit = fit;
         if (kind === "line") Object.assign(result, {direction, thickness});
         if (displayCodes !== undefined) result.displayCodes = readDisplayCodes(displayCodes);
@@ -691,7 +714,7 @@ const CellDesignerModel = (() => {
     }
 
     function meterKeys(controls) {
-        return [...new Set(controls.filter(control => control.kind === "meter").map(control => control.key))];
+        return [...new Set(controls.filter(isMeterBinding).map(control => control.key))];
     }
 
     function actionBindings(controls) {
@@ -765,7 +788,7 @@ const CellDesignerModel = (() => {
         };
         const entries = controls.filter(hasParameterBinding);
         const keys = parameterKeys(controls);
-        const edited = new Set(entries.map(control => control.key));
+        const edited = new Set(entries.filter(control => control.kind !== "indicator").map(control => control.key));
         const readOnly = keys.filter(key => !edited.has(key));
         const actions = actionBindings(controls);
         return `// Generated by Cell UI Designer.
@@ -775,7 +798,7 @@ const CellDesignerModel = (() => {
 #include <cell/web_parameter_bridge.hpp>
 
 ${actions.length ? "#define CELL_DESIGNER_HAS_ACTIONS 1\n\n" : ""}${readOnly.length ? "#define CELL_DESIGNER_HAS_RULE_SOURCES 1\n\n" : ""}namespace cell::designer {
-enum class ControlKind { slider, knob, fader, choice, toggle, readout, stepper, led, momentary };
+enum class ControlKind { slider, knob, fader, choice, toggle, readout, stepper, led, momentary, indicator };
 struct Binding {
     ControlKind kind;
     std::string_view key;
@@ -803,8 +826,8 @@ inline cell::web::ParameterBridge bind(cell::Engine& engine) {
     }
 
     return {wideGrid, phoneGrid, kinds, skins, defaultTheme, showcase, maxControls, maxAssetBytes, maxPanelAssetBytes,
-        maxProjectBytes, imageType, validArtwork, isPanelArt, isProgramControl, clamp, validText, hasArtwork, hasParameter,
-        hasDisplayCodes, ledGlyphs, ledSettings, parseDisplayCodes, displayCode, numericLedCode, hasParameterBinding,
+        maxProjectBytes, imageType, validArtwork, isPanelArt, isProgramControl, clamp, validText, hasArtwork, hasDisplayArtwork, hasCapArtwork, hasSwitchArtwork, hasParameter,
+        hasDisplayCodes, isMeterBinding, indicatorSettings, ledGlyphs, ledSettings, parseDisplayCodes, displayCode, numericLedCode, hasParameterBinding,
         maxDetentLabels, readDetentLabels, readRotation,
         buttonDefaults, buttonSettings, actionBindings,
         readLabel, typographyFamilies, typographySettings, silkscreen,

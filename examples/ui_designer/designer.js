@@ -24,6 +24,14 @@ const editArt = query("#edit-art");
 const artworkElement = query("#artwork-element");
 const backgroundFit = query("#background-fit");
 const clearBackground = query("#clear-background");
+const panelArtwork = artworkPicker(query("#panel-artwork-options"),
+    asset => applyArtwork(() => setBackgroundArtwork(asset.artwork, asset.name + " applied.")));
+const controlArtwork = artworkPicker(query("#control-artwork-options"), (asset, group) => {
+    if (selected && artworkGroup(selected.kind) === group)
+        applyArtwork(() => setControlArtwork(selected, asset.artwork, model.hasCapArtwork(selected.kind) ? asset.mode ?? "cap" : undefined,
+            asset.name + " applied."));
+});
+
 const selectionTools = query("#selection-tools");
 const layerElement = query("#layer-element");
 const layerButtons = [...document.querySelectorAll("[data-layer-move]")];
@@ -101,6 +109,55 @@ function paintImage(image, artwork, fit) {
     image.style.objectFit = fit;
 }
 
+function artworkGroup(kind) {
+    if (model.hasCapArtwork(kind)) return kind;
+    if (model.hasDisplayArtwork(kind)) return "display";
+    if (model.hasSwitchArtwork(kind)) return "switch";
+    if (kind === "indicator") return "indicator";
+    return kind === "image" ? "panel" : "";
+}
+
+function artworkPicker(element, choose) {
+    let previous;
+    return (group, current) => {
+        const assets = CellDesignerArtwork[group] ?? [];
+        if (group !== previous) {
+            previous = group;
+            element.dataset.group = group;
+            element.replaceChildren(...assets.map(asset => {
+                const button = document.createElement("button");
+                button.type = "button";
+                const image = document.createElement("img");
+                image.src = asset.artwork;
+                image.alt = "";
+                const label = document.createElement("span");
+                label.textContent = asset.name;
+                button.append(image, label);
+                button.onclick = () => choose(asset, group);
+                return button;
+            }));
+        }
+        for (const [index, button] of Array.from(element.children).entries())
+            button.setAttribute("aria-pressed", String(assets[index].artwork === current));
+    };
+}
+
+function refreshControlArtwork(control) {
+    const group = artworkGroup(control.kind);
+    query("#control-artwork-library").hidden = !group;
+    controlArtwork(group, control.artwork);
+    query("#clear-artwork").disabled = !control.artwork;
+    query("#artwork-placement-option").hidden = !control.artwork || !model.hasCapArtwork(control.kind);
+    const mode = query("#artwork-placement");
+    mode.querySelector('[value="pointer-cap"]').hidden = control.kind !== "knob";
+    mode.value = control.artworkMode ?? "";
+}
+
+function applyArtwork(action) {
+    try { action(); }
+    catch (error) { status.textContent = error.message; }
+}
+
 function refreshProject() {
     undoButton.disabled = !undoStack.length;
     redoButton.disabled = !redoStack.length;
@@ -114,6 +171,7 @@ function refreshProject() {
     backgroundFit.value = theme.backgroundFit ?? "cover";
     clearBackground.disabled = !theme.backgroundArtwork;
     paintImage(backgroundImage, theme.backgroundArtwork, backgroundFit.value);
+    panelArtwork("panel", theme.backgroundArtwork);
     query("#parameter-keys").replaceChildren(...(catalog ?? []).map(({key, name}) => new Option(name, key)));
     refreshDisplayChoices();
     query("#catalog-status").textContent = catalog ? `${catalog.length} parameters loaded` : "No parameter snapshot loaded";
@@ -134,6 +192,12 @@ function record(before) {
     if (undoStack.length > historyLimit) undoStack.shift();
     redoStack.length = 0;
     refreshProject();
+}
+
+function refreshBindingSource(control) {
+    const meter = model.isMeterBinding(control);
+    query("#binding-label").textContent = meter ? "Meter source" : "Parameter key";
+    field("key").setAttribute("list", meter ? "meter-keys" : "parameter-keys");
 }
 
 function select(items) {
@@ -165,8 +229,10 @@ function select(items) {
     field("detent-label-mode").value = Array.isArray(control.detentLabels) ? "custom" : control.detentLabels ?? "none";
     field("detent-labels").value = Array.isArray(control.detentLabels) ? control.detentLabels.join("\n") : "";
     refreshDetentFields();
-    query("#binding-label").textContent = control.kind === "meter" ? "Meter source" : "Parameter key";
-    field("key").setAttribute("list", control.kind === "meter" ? "meter-keys" : "parameter-keys");
+    query("#indicator-settings").hidden = control.kind !== "indicator";
+    field("indicator-source").value = control.indicatorSource ?? "parameter";
+    field("indicator-threshold").value = control.threshold ?? 1;
+    refreshBindingSource(control);
     field("use-accent").checked = Boolean(control.accent);
     field("accent").value = control.accent || theme.accent;
     field("accent").disabled = !control.accent;
@@ -203,7 +269,7 @@ function select(items) {
     field("thickness").value = control.thickness ?? 2;
     field("thickness").disabled = control.kind !== "line";
     query("#artwork").hidden = !model.hasArtwork(control.kind);
-    query("#clear-artwork").disabled = !control.artwork;
+    refreshControlArtwork(control);
 }
 
 function refreshRulePicker() {
@@ -399,7 +465,9 @@ function paint(control) {
     tile.setAttribute("aria-label", `${label} · ${kind}`);
     tile.querySelector(".tile-label").textContent = label;
     runtime.paintTypography(tile, control.typography, model.typographyFamilies);
-    paintImage(tile.querySelector("img"), artwork, kind === "image" ? control.fit ?? "contain" : "cover");
+    const hardware = Boolean(artwork && (control.artworkMode || model.hasDisplayArtwork(kind) || model.hasSwitchArtwork(kind) || kind === "indicator"));
+    tile.toggleAttribute("data-hardware-artwork", hardware);
+    paintImage(tile.querySelector("img"), artwork, kind === "image" ? control.fit ?? "contain" : hardware ? "contain" : "cover");
 }
 
 function cellAt(event) {
@@ -540,19 +608,20 @@ function starter(kind) {
     if (kind === "choice") parameter = choices.find(entry => entry.choices.length > 2) ?? choices.find(entry => entry.choices.length);
     if (kind === "led") parameter = choices.find(entry => entry.choices.length) ??
         choices.find(entry => Number.isInteger(entry.minimum) && Number.isInteger(entry.step) && model.stepCount(entry));
-    if (kind === "toggle" || kind === "momentary") parameter = choices.find(model.twoState);
+    if (["toggle", "momentary", "indicator"].includes(kind)) parameter = choices.find(model.twoState);
     if (kind === "stepper") parameter = choices.find(entry => entry.choices.length && model.stepCount(entry)) ??
         choices.find(entry => Number.isInteger(entry.minimum) && Number.isInteger(entry.step) && model.stepCount(entry)) ??
         choices.find(entry => model.stepCount(entry));
     if (!parameter && kind !== "stepper") parameter = choices.find(entry => entry.key === "gain") ?? choices[0];
-    const key = model.hasParameter(kind) ? (parameter?.key ?? ({toggle: "bypass", momentary: "gate", stepper: "code", led: "code"}[kind] ?? "gain"))
+    const key = model.hasParameter(kind) ? (parameter?.key ?? ({toggle: "bypass", indicator: "bypass", momentary: "gate", stepper: "code", led: "code"}[kind] ?? "gain"))
         : kind === "meter" ? "output-peak" : "";
     const label = model.hasParameter(kind) ? ((parameter?.name || ({bypass: "Bypass", gate: "Gate", code: "Code"}[key] ?? "Gain")).slice(0, 80))
         : kind === "meter" ? "Output Peak" : title;
     const skin = {knob: "field", fader: "studio", meter: "broadcast"}[kind] ?? "modern";
     const defaults = kind === "action" ? {action: "factory-recall", trigger: "tap"} :
         kind === "action-pair" ? {minusAction: "previous-patch", plusAction: "next-patch"} : {};
-    return {kind, key, label, width, height, skin, accent: "", artwork: "", ...defaults};
+    const indicator = kind === "indicator" ? model.indicatorSettings({kind, threshold: parameter?.maximum}) : undefined;
+    return {kind, key, label, width, height, skin, accent: "", artwork: "", ...defaults, ...indicator};
 }
 
 function placeNew(data, point, phoneSize) {
@@ -774,6 +843,16 @@ for (const button of selectionTools.querySelectorAll("[data-distribute]")) butto
     setPlacements(selection, boxes);
     record(before);
 };
+field("indicator-source").onchange = () => {
+    if (selected?.kind !== "indicator") return;
+    const source = field("indicator-source").value;
+    const parameter = source === "parameter" ? catalog?.find(model.twoState) : undefined;
+    field("key").value = source === "meter" ? "output-peak" : (parameter?.key ?? "bypass");
+    field("indicator-threshold").value = model.indicatorSettings({
+        kind: "indicator", indicatorSource: source, threshold: parameter?.maximum
+    }).threshold;
+    refreshBindingSource({kind: "indicator", indicatorSource: source});
+};
 field("use-accent").onchange = () => { field("accent").disabled = !field("use-accent").checked; };
 field("key").oninput = refreshDisplayChoices;
 field("detent-label-mode").onchange = refreshDetentFields;
@@ -800,6 +879,7 @@ form.onsubmit = event => {
     let button;
     let rules;
     let typography;
+    let indicator;
     let led;
     let detentLabels;
     let rotation;
@@ -830,6 +910,8 @@ form.onsubmit = event => {
         const labelFrom = labelKey ? {key: labelKey, source,
             labels: source === "map" ? model.parseLabelMap(field("label-map").value) : undefined} : undefined;
         rules = model.ruleSettings({visibleWhen: field("visible-when").value, enabledWhen: field("enabled-when").value, labelFrom});
+        if (kind === "indicator") indicator = model.indicatorSettings({kind, indicatorSource: field("indicator-source").value,
+            threshold: field("indicator-threshold").valueAsNumber});
         typography = inspectTypography();
     } catch (error) {
         status.textContent = error.message;
@@ -848,7 +930,7 @@ form.onsubmit = event => {
     for (const name of ["action", "trigger", "holdMs", "repeatDelay", "repeatMs", "minusAction", "plusAction", "chordAction", "chordMs"])
         delete selected[name];
     for (const name of ["visibleWhen", "enabledWhen", "labelFrom", "ledText", "hideHeading"]) delete selected[name];
-    Object.assign(selected, button, rules, led);
+    Object.assign(selected, button, rules, led, indicator);
     if (typography) selected.typography = typography;
     else delete selected.typography;
     if (selected.kind === "image") selected.fit = field("fit").value;
@@ -910,14 +992,90 @@ query("#reset-phone-layout").onclick = () => {
     record(before);
     status.textContent = "Phone layout reset to automatic placement.";
 };
-query("#showcase").onclick = () => {
+function loadShowcase(layout, colors, parameters, selection, message) {
     const before = snapshot();
-    const project = model.readProject(model.serialize(model.showcase, model.defaultTheme, null));
+    const project = model.readProject(model.serialize(layout, colors, parameters));
     previewValues.clear();
-    restore({layout: project.controls, theme: project.theme, catalog: null, programs: null, selection: [1]});
+    restore({layout: project.controls, theme: project.theme, catalog: project.catalog, programs: null, selection});
     record(before);
     togglePreview(true);
-    status.textContent = "Historical controls showcase loaded.";
+    status.textContent = message;
+}
+query("#showcase").onclick = () => loadShowcase(model.showcase, model.defaultTheme, null, [1],
+    "Historical controls showcase loaded.");
+const hardwareStyles = {
+    studio: {label: "Studio hardware", background: "#1d272e", surface: "#263039", ink: "#eef4ef", lamp: "#ffd38a"},
+    british: {label: "British broadcast", background: "#182733", surface: "#243b4a", ink: "#eff6fa", lamp: "#f5dbad"},
+    soviet: {label: "Soviet-era laboratory", background: "#282d24", surface: "#414638", ink: "#f1edd2", lamp: "#ffbf79"},
+    german: {label: "German precision", background: "#252b2e", surface: "#363f44", ink: "#f1f4f4", lamp: "#a8e6f3"},
+    field: {label: "Field communications", background: "#252b20", surface: "#363e2e", ink: "#f1e8ce", lamp: "#fae49e"}
+};
+const hardwareStyle = query("#hardware-style");
+for (const [key, {label}] of Object.entries(hardwareStyles)) hardwareStyle.add(new Option(label, key));
+hardwareStyle.add(new Option("Field indicators", "field-indicators"));
+
+function loadFieldIndicators() {
+    const switches = CellDesignerArtwork.switch;
+    const [ruby, amber, green, red] = CellDesignerArtwork.indicator;
+    const backgroundArtwork = CellDesignerArtwork.panel.find(asset => asset.family === "field").artwork;
+    const parameters = model.readCatalog({type: "parameters", parameters: [
+        {key: "monitor", name: "Monitor", minimum: 0, maximum: 1, step: 1, value: 1, unit: ""},
+        {key: "audition", name: "Audition", minimum: 0, maximum: 1, step: 1, value: 0, unit: ""},
+        {key: "effect-trigger", name: "Effect trigger", minimum: 0, maximum: 1, step: 1, value: 0, unit: ""}
+    ]});
+    const lamp = (label, key, x, asset, accent, indicatorSource, threshold) =>
+        ({kind: "indicator", label, key, x, y: 0, width: 3, height: 2, artwork: asset.artwork,
+            accent, indicatorSource, threshold});
+    const button = (kind, label, key, x, name, accent) =>
+        ({kind, label, key, x, y: 2, width: 4, height: 2, accent,
+            artwork: switches.find(asset => asset.name === name).artwork});
+    loadShowcase([
+        lamp("READY", "monitor", 0, green, "#b6e56a", "parameter", 1),
+        lamp("CAUTION", "output-peak", 3, amber, "#ffbd56", "meter", -23),
+        lamp("PEAK WARNING", "output-peak", 6, ruby, "#ff6651", "meter", -15),
+        lamp("EFFECT ACTIVE", "effect-trigger", 9, red, "#ff795b", "parameter", 1),
+        button("toggle", "MONITOR", "monitor", 0, "Ivory console pushbutton", "#e8d7af"),
+        button("momentary", "LAUNCH", "audition", 4, "Guarded crimson pushbutton", "#ff8765"),
+        button("momentary", "DETONATE", "effect-trigger", 8, "Red rectangular pushbutton", "#ff735b")
+    ], {...model.defaultTheme, background: "#252b20", surface: "#303627", text: "#f1e8ce", backgroundArtwork},
+    parameters, [0], "Field indicators showcase loaded.");
+}
+
+query("#hardware-showcase").onclick = () => {
+    const family = hardwareStyle.value;
+    if (family === "field-indicators") {
+        loadFieldIndicators();
+        return;
+    }
+    const {label, background, surface, ink, lamp} = hardwareStyles[family];
+    const pick = (group, fallback = 0) =>
+        CellDesignerArtwork[group].find(asset => asset.family === family) ?? CellDesignerArtwork[group][fallback];
+    const panel = pick("panel");
+    const knob = pick("knob", 1);
+    const fader = pick("fader", 1);
+    const display = pick("display");
+    const parameters = model.readCatalog({type: "parameters", parameters: [
+        {key: "gain", name: "Input trim", minimum: -60, maximum: 12, step: 0.01, value: -6, unit: "dB"},
+        {key: "level", name: "Output level", minimum: -60, maximum: 12, step: 0.01, value: -12, unit: "dB"},
+        {key: "mode", name: "Mode", minimum: 0, maximum: 2, step: 1, value: 1, unit: "",
+            choices: ["Clean", "Warm", "Bright"]},
+        {key: "bypass", name: "Bypass", minimum: 0, maximum: 1, step: 1, value: 0, unit: ""}
+    ]});
+    const control = (kind, label, key, [x, y, width, height], asset, options) => ({
+        kind, label, key, x, y, width, height, artwork: asset.artwork, ...options
+    });
+    const green = "#a0f5bb";
+    loadShowcase([
+        control("knob", "Input trim", "gain", [0, 0, 4, 3], knob, {artworkMode: "cap", accent: lamp}),
+        control("readout", "Gain", "gain", [0, 3, 2, 1], display, {accent: lamp}),
+        control("fader", "Output level", "level", [4, 0, 4, 4], fader, {artworkMode: "cap", accent: lamp}),
+        control("stepper", "Mode", "mode", [8, 0, 4, 2], family === "studio" ? pick("display", 2) : display,
+            {segmented: true, accent: green, displayCodes: [{value: 0, code: "CL"}, {value: 1, code: "A1"}, {value: 2, code: "br"}]}),
+        control("meter", "Output peak", "output-peak", [8, 2, 4, 2], family === "studio" ? pick("display", 1) : display,
+            {accent: green}),
+        control("toggle", "Bypass", "bypass", [2, 3, 2, 1], pick("switch"), {accent: lamp})
+    ], {...model.defaultTheme, background, surface, text: ink, backgroundArtwork: panel.artwork},
+    parameters, [0], label + " showcase loaded.");
 };
 function stepHistory(source, destination) {
     if (!source.length) return;
@@ -1025,56 +1183,59 @@ async function readArtwork(file, panel) {
     return artwork;
 }
 
-bindFile(query("#load-artwork"), query("#artwork-file"), async file => {
-    const control = selected;
-    if (!control || !model.hasArtwork(control.kind)) return;
-    const artwork = await readArtwork(file, control.kind === "image");
-    if (!controls.includes(control)) return;
+function setControlArtwork(control, artwork, artworkMode, message) {
     const before = snapshot();
     const priorArtwork = control.artwork;
-    control.artwork = artwork;
+    const priorMode = control.artworkMode;
+    Object.assign(control, {artwork, artworkMode});
     if (encoder.encode(documentText()).length > model.maxProjectBytes) {
-        control.artwork = priorArtwork;
+        Object.assign(control, {artwork: priorArtwork, artworkMode: priorMode});
         throw new Error("This artwork would take the layout over 2 MiB.");
     }
     paint(control);
-    if (selected === control) select([control]);
+    if (selected === control) refreshControlArtwork(control);
     record(before);
-    status.textContent = "Artwork embedded in the layout.";
-});
-query("#clear-artwork").onclick = () => {
-    if (!selected) return;
-    const before = snapshot();
-    selected.artwork = "";
-    paint(selected);
-    select([selected]);
-    record(before);
-};
+    status.textContent = message;
+}
 
-bindFile(query("#load-background"), query("#background-file"), async file => {
-    const version = layoutVersion;
-    const backgroundArtwork = await readArtwork(file, true);
-    if (version !== layoutVersion) return;
-    const next = {...theme, backgroundArtwork};
+function setBackgroundArtwork(backgroundArtwork, message) {
+    const next = {...theme};
+    if (backgroundArtwork) next.backgroundArtwork = backgroundArtwork;
+    else delete next.backgroundArtwork;
     if (encoder.encode(model.serialize(controlsOnly(), next, catalog, programs)).length > model.maxProjectBytes)
         throw new Error("This artwork would take the layout over 2 MiB.");
     const before = snapshot();
     theme = next;
     record(before);
-    status.textContent = "Background embedded in the layout.";
+    status.textContent = message;
+}
+
+bindFile(query("#load-artwork"), query("#artwork-file"), async file => {
+    const control = selected;
+    if (!control || !model.hasArtwork(control.kind)) return;
+    const artwork = await readArtwork(file, control.kind === "image");
+    if (!controls.includes(control)) return;
+    setControlArtwork(control, artwork, control.artworkMode, "Artwork embedded in the layout.");
+});
+query("#artwork-placement").onchange = event => {
+    if (selected?.artwork && model.hasCapArtwork(selected.kind))
+        applyArtwork(() => setControlArtwork(selected, selected.artwork, event.target.value || undefined, "Artwork placement updated."));
+};
+query("#clear-artwork").onclick = () => {
+    if (selected) setControlArtwork(selected, "", undefined, "Artwork removed.");
+};
+
+bindFile(query("#load-background"), query("#background-file"), async file => {
+    const version = layoutVersion;
+    const artwork = await readArtwork(file, true);
+    if (version === layoutVersion) setBackgroundArtwork(artwork, "Background embedded in the layout.");
 });
 backgroundFit.onchange = () => {
     const before = snapshot();
     theme = {...theme, backgroundFit: backgroundFit.value};
     record(before);
 };
-clearBackground.onclick = () => {
-    const before = snapshot();
-    const {backgroundArtwork, ...remaining} = theme;
-    theme = remaining;
-    record(before);
-    status.textContent = "Background removed.";
-};
+clearBackground.onclick = () => setBackgroundArtwork("", "Background removed.");
 
 function renderPreview() {
     previewFrame.srcdoc = CellDesignerRuntime.html(controlsOnly(), theme,
