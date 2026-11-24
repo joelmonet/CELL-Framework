@@ -3,6 +3,7 @@
 #include "allocation_watch.hpp"
 #include <cell/json.hpp>
 #include <array>
+#include <cmath>
 #include <iostream>
 
 namespace {
@@ -240,7 +241,9 @@ void parallelGraph() {
                 lowpass.coefficients(dsp::BiquadCoefficients::lowpass(48000, 8000));
             const auto input = c == 0 ? float(i + 1) / 32 : -float(i + 1) / 64;
             const auto expected = input + (input * dbToGain(-6) + lowpass.process(input)) * dbToGain(-3);
-            check(block.channel(c)[i] == expected, "Parallel merge or automation produced the wrong sample");
+            // The scalar reference may contract multiply-adds that the graph executes in separate stages.
+            check(std::abs(block.channel(c)[i] - expected) <= 1e-7f,
+                  "Parallel merge or automation produced the wrong sample");
         }
     }
     check(left.front() == 0 && left.back() == 10.f / 32, "Parallel graph wrote outside its block");

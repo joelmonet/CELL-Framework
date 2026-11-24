@@ -164,9 +164,14 @@ jobs:
             pluginkit -m -v -i com.example.cell.auv3.gain.midiprobe
             pluginkit -m -v -i com.example.cell.auv3.gain.instrumentprobe
           } 2>&1 | tee "$RUNNER_TEMP/cell-results/auv3-registration.txt"
-          "$app/Contents/MacOS/CellAUv3Host" 2>&1 |
-            tee "$RUNNER_TEMP/cell-results/auv3-render.txt"
-          grep -qx PASS "$RUNNER_TEMP/cell-results/auv3-render.txt"
+          result="$RUNNER_TEMP/cell-results/auv3-render.txt"
+          diagnostics="$RUNNER_TEMP/cell-results/auv3-host.stderr"
+          touch "$result" "$diagnostics"
+          launch=0
+          open -W -n -a "$app" --stdout "$result" --stderr "$diagnostics" || launch=$?
+          cat "$diagnostics" "$result"
+          test "$launch" -eq 0
+          grep -qx PASS "$result"
       - name: Discover and render the installed AUv3 extensions on iOS Simulator
         if: matrix.sdk == 'iphonesimulator'
         timeout-minutes: 12

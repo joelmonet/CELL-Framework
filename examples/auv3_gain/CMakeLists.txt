@@ -43,6 +43,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set_target_properties(CellAUv3Host PROPERTIES MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in")
     target_link_libraries(CellAUv3Host PRIVATE "-framework UIKit")
 else()
+    target_link_libraries(CellAUv3Host PRIVATE "-framework AppKit")
     set_target_properties(CellAUv3Host PROPERTIES XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS
         "${CELL_FRAMEWORK_SOURCE_ROOT}/framework/cmake/CellAUv3MacSandbox.entitlements")
 endif()

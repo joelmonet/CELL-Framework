@@ -486,7 +486,15 @@ bool receiveSession(UdpSocket& socket, StereoReceiver& receiver, std::uint64_t f
             continue;
         }
         if (now - lastAccepted >= idleTimeout) {
-            if (!continuous) throw std::runtime_error("UDP stream timed out before the capture completed");
+            if (!continuous) {
+                if (writer) {
+                    writer.reset();
+                    if (!temporary.deleteFile())
+                        throw std::runtime_error("UDP stream timed out and the partial WAV could not be removed");
+                    cleanup.active = false;
+                }
+                throw std::runtime_error("UDP stream timed out before the capture completed");
+            }
             senderIdle = true;
             break;
         }

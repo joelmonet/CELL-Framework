@@ -67,13 +67,16 @@ def check_idle_timeout(binary, output):
     )
     try:
         destination = listening_endpoint(receiver)
+        partial_files = list(output.parent.glob(".cell-network-*"))
+        assert len(partial_files) == 1, partial_files
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
             sender.sendto(struct.pack("<4sIIIQff", b"CNA1", 48000, 2, 1, 0, 0.5, -0.5),
                           destination)
             log, _ = receiver.communicate(timeout=5)
-        assert receiver.returncode != 0 and "UDP stream timed out" in log, log
+        assert receiver.returncode != 0 and "UDP stream timed out before the capture completed" in log, log
         assert not output.exists()
-        assert not list(output.parent.glob(".cell-network-*"))
+        leftovers = list(output.parent.glob(".cell-network-*"))
+        assert not leftovers, leftovers
     finally:
         if receiver.poll() is None:
             receiver.kill()

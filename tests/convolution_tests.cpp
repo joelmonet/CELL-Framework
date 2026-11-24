@@ -1,4 +1,5 @@
 #include <cell/convolution.hpp>
+#include <bit>
 #include <fstream>
 #include <iostream>
 #include <random>

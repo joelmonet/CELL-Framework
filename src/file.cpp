@@ -124,6 +124,13 @@ bool File::setLastModificationTime(FileTime value)const{
     const auto handle=CreateFileW(path_.c_str(),FILE_WRITE_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,nullptr);
     if(handle==INVALID_HANDLE_VALUE)return false;const bool okay=SetFileTime(handle,nullptr,nullptr,&stamp)!=FALSE;CloseHandle(handle);return okay;
 #else
+#ifdef __APPLE__
+    // APFS stores signed Unix nanoseconds even when libc++ uses wider file-clock ticks.
+    using namespace std::chrono;
+    constexpr auto first = duration_cast<milliseconds>(nanoseconds::min()).count();
+    constexpr auto last = duration_cast<milliseconds>(nanoseconds::max()).count();
+    if (value.milliseconds < first || value.milliseconds > last) return false;
+#endif
     using Duration=std::filesystem::file_time_type::duration;using Floating=std::chrono::duration<long double,std::milli>;
     const auto target=std::chrono::file_clock::from_sys(std::chrono::sys_time<Floating>{Floating(value.milliseconds)});
     const auto ticks=std::chrono::duration<long double,Duration::period>(target.time_since_epoch()).count();

@@ -6,6 +6,7 @@
 #if TARGET_OS_IOS
 #import <UIKit/UIKit.h>
 #else
+#import <AppKit/AppKit.h>
 #include <cstdio>
 #include <cstdlib>
 #endif
@@ -132,6 +133,20 @@ NSString* verifyRecalledUnit(AUAudioUnit* unit, NSDictionary<NSString*, id>* sta
     return failure;
 }
 
+void instantiate(AudioComponentDescription component, NSString* name, void (^complete)(AUAudioUnit*, NSString*)) {
+    NSLog(@"Instantiating %@", name);
+    [AUAudioUnit instantiateWithComponentDescription:component options:instantiationOptions
+        completionHandler:^(AUAudioUnit* unit, NSError* error) {
+            // Core Audio controls the callback queue. Release it before making further AU calls.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSString* failure = unit ? nil :
+                    (error.localizedDescription ?: [NSString stringWithFormat:@"Could not load %@", name]);
+                NSLog(@"%@ %@", unit ? @"Instantiated" : @"Failed to instantiate", name);
+                complete(unit, failure);
+            });
+        }];
+}
+
 void discover(AudioComponentDescription component, NSString* name, void (^complete)(AUAudioUnit*, NSString*),
               unsigned discoveryAttempts = 20) {
     if (!AudioComponentFindNext(nullptr, &component)) {
@@ -143,11 +158,7 @@ void discover(AudioComponentDescription component, NSString* name, void (^comple
         }
         return;
     }
-    [AUAudioUnit instantiateWithComponentDescription:component options:instantiationOptions
-        completionHandler:^(AUAudioUnit* unit, NSError* error) {
-            NSString* failure = unit ? nil : (error.localizedDescription ?: [NSString stringWithFormat:@"Could not load %@", name]);
-            complete(unit, failure);
-        }];
+    instantiate(component, name, complete);
 }
 
 void runGainCheck(void (^complete)(NSString*)) {
@@ -163,23 +174,24 @@ void runGainCheck(void (^complete)(NSString*)) {
         parameter.value = -6;
         NSDictionary<NSString*, id>* state = unit.fullState;
         if (!state[@"Cell.EngineState"]) { complete(@"The effect did not save state"); return; }
-        [AUAudioUnit instantiateWithComponentDescription:effect options:instantiationOptions
-            completionHandler:^(AUAudioUnit* reopened, NSError* error) {
-                if (!reopened) { complete(error.localizedDescription ?: @"Could not reopen the AUv3 effect"); return; }
-                if (NSString* failure = verifyRecalledUnit(reopened, state)) { complete(failure); return; }
+        instantiate(effect, @"second AUv3 effect instance", ^(AUAudioUnit* reopened, NSString* failure) {
+            if (!reopened) { complete(failure); return; }
+            if (NSString* failure = verifyRecalledUnit(reopened, state)) { complete(failure); return; }
+            NSLog(@"Rendered the recalled AUv3 effect");
 #if !defined(CELL_AUV3_PROJECT) || defined(CELL_AUV3_PROJECT_EDITOR)
-                if (!reopened.providesUserInterface) { complete(@"The effect did not advertise an AUv3 editor"); return; }
-                [reopened requestViewControllerWithCompletionHandler:^(AUViewControllerBase* editor) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        // Keep the audio unit alive until the view has loaded.
-                        (void)reopened;
-                        complete(editor.view ? nil : @"Core Audio could not open the bundled editor");
-                    });
-                }];
-#else
-                complete(nil);
-#endif
+            if (!reopened.providesUserInterface) { complete(@"The effect did not advertise an AUv3 editor"); return; }
+            NSLog(@"Requesting the AUv3 editor");
+            [reopened requestViewControllerWithCompletionHandler:^(AUViewControllerBase* editor) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    // Keep the audio unit alive until the view has loaded.
+                    (void)reopened;
+                    complete(editor.view ? nil : @"Core Audio could not open the bundled editor");
+                });
             }];
+#else
+            complete(nil);
+#endif
+        });
     });
 }
 
@@ -259,15 +271,19 @@ int main() {
                 std::fputs("FAIL\nTimed out waiting for the AUv3 checks.\n", stderr);
                 std::exit(EXIT_FAILURE);
             });
-        runCheck(^(NSString* failure) {
-            if (failure) {
-                std::fprintf(stderr, "FAIL\n%s\n", failure.UTF8String);
-                std::exit(EXIT_FAILURE);
-            }
-            std::puts(success);
-            std::exit(EXIT_SUCCESS);
+        [NSApplication sharedApplication];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            runCheck(^(NSString* failure) {
+                if (failure) {
+                    std::fprintf(stderr, "FAIL\n%s\n", failure.UTF8String);
+                    std::exit(EXIT_FAILURE);
+                }
+                std::puts(success);
+                std::exit(EXIT_SUCCESS);
+            });
         });
+        [NSApp run];
     }
-    dispatch_main();
+    return EXIT_FAILURE;
 }
 #endif
