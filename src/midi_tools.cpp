@@ -125,8 +125,9 @@ bool Tools::process(std::uint32_t frames,std::span<const MidiEvent> input,Output
     std::uint32_t previous{};
     SysExBudget sysEx;
     bool accepted = true;
-    for(const auto& event:input){++stats_.input;if(event.frame>=frames||event.frame<previous||!(event.isSysEx()?sysEx.admit(event.sysEx):valid(event))){++stats_.rejected;continue;}previous=event.frame;
-        if(event.isSysEx()){
+    for(const auto& event:input){++stats_.input;if(event.frame>=frames||event.frame<previous||
+        !(event.isUmp()?validUmp(event):event.isSysEx()?sysEx.admit(event.sysEx):valid(event))){++stats_.rejected;continue;}previous=event.frame;
+        if(event.isSysEx() || event.isUmp()){
             if(output.push(event))++stats_.output;
             else{++stats_.overflows;accepted=false;}
             continue;

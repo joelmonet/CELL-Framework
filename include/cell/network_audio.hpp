@@ -25,6 +25,7 @@ public:
 
     // Producer only. The consumer can only increase this budget.
     std::size_t writableFrames() const noexcept { return frames_.freeCapacity(); }
+    int correctionPpm() const noexcept { return correctionPpm_.load(std::memory_order_relaxed); }
 
     // Producer only. Reject the entire batch when there is insufficient room.
     [[nodiscard]] bool enqueue(std::span<const Frame<Channels>> frames) noexcept {
@@ -80,6 +81,7 @@ private:
             phase_ += 1.0 + correction_;
         }
         std::ranges::fill(output.subspan(count), Frame<Channels>{});
+        correctionPpm_.store(static_cast<int>(correction_ * 1'000'000.0), std::memory_order_relaxed);
         return count;
     }
 
@@ -88,6 +90,8 @@ private:
     const double maxCorrection_;
     Frame<Channels> current_{}, next_{};
     double phase_{}, correction_{};
+    static_assert(std::atomic<int>::is_always_lock_free);
+    std::atomic<int> correctionPpm_{};
     bool playing_ = false;
 };
 

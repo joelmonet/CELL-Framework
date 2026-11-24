@@ -91,8 +91,19 @@ public:
         return true;
     }
 
+    bool reply(std::span<const std::byte> packet, const sockaddr_in& peer) const {
+        const auto* address = reinterpret_cast<const sockaddr*>(&peer);
+#ifdef _WIN32
+        const auto count = ::sendto(socket_, reinterpret_cast<const char*>(packet.data()),
+                                    static_cast<int>(packet.size()), 0, address, sizeof(peer));
+#else
+        const auto count = ::sendto(socket_, packet.data(), packet.size(), MSG_DONTWAIT, address, sizeof(peer));
+#endif
+        return count >= 0 && static_cast<std::size_t>(count) == packet.size();
+    }
+
     std::optional<std::size_t> receive(std::span<std::byte> buffer, sockaddr_in& peer,
-                                       int timeoutMilliseconds) const {
+                                       int timeoutMilliseconds, bool bestEffort = false) const {
 #ifdef _WIN32
         WSAPOLLFD event{socket_, POLLRDNORM, 0};
         const auto ready = WSAPoll(&event, 1, timeoutMilliseconds);
@@ -101,8 +112,9 @@ public:
         const auto ready = poll(&event, 1, timeoutMilliseconds);
 #endif
         if (ready == 0 || (ready < 0 && transientError())) return std::nullopt;
+        if (ready < 0 && bestEffort && recoverableSendError()) return std::nullopt;
         if (ready < 0) throw std::runtime_error("UDP poll failed");
-        if (!(event.revents & event.events)) throw std::runtime_error("UDP socket error");
+        if (!(event.revents & event.events) && !bestEffort) throw std::runtime_error("UDP socket error");
         AddressSize size = sizeof(peer);
         auto* address = reinterpret_cast<sockaddr*>(&peer);
 #ifdef _WIN32
@@ -112,7 +124,7 @@ public:
 #else
         const auto count = recvfrom(socket_, buffer.data(), buffer.size(), MSG_DONTWAIT, address, &size);
 #endif
-        if (count < 0 && transientError()) return std::nullopt;
+        if (count < 0 && (transientError() || (bestEffort && recoverableSendError()))) return std::nullopt;
         if (count < 0) throw std::runtime_error("UDP receive failed");
         return static_cast<std::size_t>(count);
     }

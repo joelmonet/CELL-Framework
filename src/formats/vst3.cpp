@@ -106,11 +106,80 @@ bool writeState(IBStream* stream,const cell::Engine& engine) {
     return true;
 }
 
+constexpr double midi2Maximum = 4294967295.0;
+constexpr NoteExpressionTypeID assignableStart = 201000, registeredStart = 202000;
+constexpr int controllersPerKind = 128;
+
+cell::MidiEvent notePacket(std::uint32_t frame, unsigned channel, unsigned note, int32 noteId,
+                            unsigned status, float velocity) noexcept {
+    const std::array words{
+        std::uint32_t(0x40000000u | (status << 20) | (channel << 16) | (note << 8)),
+        static_cast<std::uint32_t>(std::lround(std::clamp(velocity, 0.f, 1.f) * 65535.f)) << 16};
+    auto result = cell::MidiEvent::universalPacket(frame, words);
+    result.noteId = noteId;
+    return result;
+}
+
+cell::MidiEvent expressionPacket(std::uint32_t frame, unsigned channel, unsigned note, int32 noteId,
+                                  unsigned status, unsigned controller, double value) noexcept {
+    const std::array words{
+        std::uint32_t(0x40000000u | (status << 20) | (channel << 16) | (note << 8) | controller),
+        static_cast<std::uint32_t>(std::round(std::clamp(value, 0.0, 1.0) * midi2Maximum))};
+    auto result = cell::MidiEvent::universalPacket(frame, words);
+    result.noteId = noteId;
+    return result;
+}
+
+class InputNotes {
+public:
+    struct Voice { int32 id{-1}; int16 channel{}, pitch{}; };
+
+    const Voice* find(int32 id) const noexcept {
+        if (id == -1) return nullptr;
+        const auto entry = std::ranges::find(voices_, id, &Voice::id);
+        return entry == voices_.end() ? nullptr : &*entry;
+    }
+    void on(int32 id, int16 channel, int16 pitch) noexcept {
+        if (id == -1) return;
+        auto entry = std::ranges::find(voices_, id, &Voice::id);
+        if (entry == voices_.end()) entry = std::ranges::find(voices_, -1, &Voice::id);
+        if (entry != voices_.end()) *entry = {id, channel, pitch};
+    }
+    void off(int32 id, int16 channel, int16 pitch) noexcept {
+        // An ID-less release cannot identify which overlapping instance ended.
+        for (auto& voice : voices_)
+            if ((id != -1 && voice.id == id) || (id == -1 && voice.channel == channel && voice.pitch == pitch))
+                voice.id = -1;
+    }
+    void clear() noexcept { voices_.fill({}); }
+private:
+    std::array<Voice, 256> voices_{};
+};
+
+std::optional<cell::MidiEvent> noteExpression(const InputNotes& notes, std::uint32_t frame,
+                                               const NoteExpressionValueEvent& event) noexcept {
+    const auto* note = notes.find(event.noteId);
+    if (!note || !std::isfinite(event.value) || event.value < 0 || event.value > 1) return {};
+    const auto type = event.typeId;
+    unsigned status{}, controller{};
+    if (type >= registeredStart && type < registeredStart + controllersPerKind) {
+        controller = type - registeredStart;
+    } else if (type >= assignableStart && type < assignableStart + controllersPerKind) {
+        status = 1;
+        controller = type - assignableStart;
+    } else if (type == kTuningTypeID) {
+        status = 6;
+    } else return {};
+    return expressionPacket(frame, note->channel, note->pitch, note->id, status, controller, event.value);
+}
+
 // VST3 event lists may copy the DataEvent pointer without copying its bytes.
 struct MidiOutput final:cell::midi::Output {
     IEventList* destination{};
     cell::midi::SysExStorage* sysEx{};
+    bool supportsUmp{};
     bool push(cell::MidiEvent message)noexcept override{
+        if (message.isUmp()) return supportsUmp && destination && pushUmp(message);
         if (message.isSysEx()) {
             if (!destination || !sysEx) return false;
             const auto bytes = sysEx->copy(message.sysEx);
@@ -124,9 +193,9 @@ struct MidiOutput final:cell::midi::Output {
         }
         if(!destination||!cell::midi::valid(message))return false;
         Event e{};e.busIndex=0;e.sampleOffset=int32(message.frame);const auto kind=message.data[0]&0xf0;const auto channel=message.data[0]&15;
-        if(kind==0x90&&message.data[2]){e.type=Event::kNoteOnEvent;e.noteOn.channel=int16(channel);e.noteOn.pitch=message.data[1];e.noteOn.velocity=message.data[2]/127.f;e.noteOn.noteId=-1;}
-        else if(kind==0x80||kind==0x90){e.type=Event::kNoteOffEvent;e.noteOff.channel=int16(channel);e.noteOff.pitch=message.data[1];e.noteOff.velocity=message.data[2]/127.f;e.noteOff.noteId=-1;}
-        else if(kind==0xa0){e.type=Event::kPolyPressureEvent;e.polyPressure.channel=int16(channel);e.polyPressure.pitch=message.data[1];e.polyPressure.pressure=message.data[2]/127.f;e.polyPressure.noteId=-1;}
+        if(kind==0x90&&message.data[2]){e.type=Event::kNoteOnEvent;e.noteOn.channel=int16(channel);e.noteOn.pitch=message.data[1];e.noteOn.velocity=message.data[2]/127.f;e.noteOn.noteId=message.noteId;}
+        else if(kind==0x80||kind==0x90){e.type=Event::kNoteOffEvent;e.noteOff.channel=int16(channel);e.noteOff.pitch=message.data[1];e.noteOff.velocity=message.data[2]/127.f;e.noteOff.noteId=message.noteId;}
+        else if(kind==0xa0){e.type=Event::kPolyPressureEvent;e.polyPressure.channel=int16(channel);e.polyPressure.pitch=message.data[1];e.polyPressure.pressure=message.data[2]/127.f;e.polyPressure.noteId=message.noteId;}
         else {e.type=Event::kLegacyMIDICCOutEvent;e.midiCCOut.channel=int8(channel);
             if(kind==0xb0){e.midiCCOut.controlNumber=message.data[1];e.midiCCOut.value=message.data[2];}
             else if(kind==0xc0){e.midiCCOut.controlNumber=kCtrlProgramChange;e.midiCCOut.value=message.data[1];}
@@ -135,6 +204,53 @@ struct MidiOutput final:cell::midi::Output {
             else return false;
         }
         return destination->addEvent(e)==kResultOk;
+    }
+
+    bool pushUmp(cell::MidiEvent message) noexcept {
+        if (!cell::midi::validUmp(message)) return false;
+        const auto word = message.ump[0], type = word >> 28;
+        // VST3's event bus carries one 16-channel MIDI group.
+        if ((word >> 24) & 15) return false;
+        const auto status = static_cast<std::uint8_t>(word >> 16);
+        const int16 channel = status & 15;
+        const int16 pitch = (word >> 8) & 255;
+        if (pitch > 127) return false;
+        const auto noteId = message.noteId != -1 ? message.noteId :
+            kNoteIDUserRangeLowerBound + channel * 128 + pitch;
+        if (type == 2) {
+            return push({message.frame, {status, static_cast<std::uint8_t>(word >> 8), static_cast<std::uint8_t>(word)},
+                static_cast<std::uint8_t>((status & 0xe0) == 0xc0 ? 2 : 3)});
+        }
+        if (type != 4) return false;
+        Event output{};
+        output.sampleOffset = int32(message.frame);
+        const auto kind = status >> 4;
+        const auto velocity = float(message.ump[1] >> 16) / 65535.f;
+        if (kind == 8) {
+            output.type = Event::kNoteOffEvent;
+            output.noteOff = {channel, pitch, velocity, noteId, 0};
+        } else if (kind == 9) {
+            output.type = Event::kNoteOnEvent;
+            output.noteOn = {channel, pitch, 0, velocity, 0, noteId};
+        } else if (kind == 0xb) {
+            const auto scaled = static_cast<std::uint8_t>(std::round(message.ump[1] / midi2Maximum * 127.0));
+            return push({message.frame, {status, static_cast<std::uint8_t>(pitch), scaled}});
+        } else {
+            const auto expression = cell::midi::perNoteExpression(message);
+            if (!expression) return false;
+            const auto normalized = expression->value / midi2Maximum;
+            using Kind = cell::midi::PerNoteExpression::Kind;
+            if (expression->kind == Kind::pressure) {
+                output.type = Event::kPolyPressureEvent;
+                output.polyPressure = {channel, pitch, static_cast<float>(normalized), noteId};
+            } else {
+                output.type = Event::kNoteExpressionValueEvent;
+                const auto id = expression->kind == Kind::registeredController ? registeredStart + expression->controller :
+                    expression->kind == Kind::assignableController ? assignableStart + expression->controller : kTuningTypeID;
+                output.noteExpressionValue = {id, noteId, normalized};
+            }
+        }
+        return destination->addEvent(output) == kResultOk;
     }
 };
 
@@ -179,7 +295,7 @@ public:
             // again. Rebuild stopped resources so old filter and delay history
             // cannot leak into a new render. Activation is a control operation.
             if(!activationPrepared_)try{engine_.prepare(sampleRate_,maximumFrames_,channels_);}catch(...){return kResultFalse;}
-            engine_.reset();openAnalysisQueue();
+            engine_.reset(); inputNotes_.clear(); openAnalysisQueue();
         }
         const auto result=AudioEffect::setActive(active);
         if(result==kResultOk){active_=active;if(active)activationPrepared_=false;}
@@ -326,29 +442,54 @@ public:
                 if (data.inputEvents->getEvent(i, event) != kResultOk || event.busIndex != 0 ||
                     event.sampleOffset < 0 || event.sampleOffset >= data.numSamples) continue;
                 cell::MidiEvent midi;
+                if (midiCount == midi_.size()) {
+                    engine_.reset();
+                    inputNotes_.clear();
+                    midiDelivery_.reset();
+                    return kResultFalse;
+                }
                 midi.frame = std::uint32_t(event.sampleOffset);
                 if (event.type == Event::kNoteOnEvent) {
                     const auto& e = event.noteOn;
                     if (e.channel < 0 || e.channel > 15 || e.pitch < 0 || e.pitch > 127 || !std::isfinite(e.velocity)) continue;
                     midi.data = {std::uint8_t(0x90 | e.channel), std::uint8_t(e.pitch), std::uint8_t(std::lround(std::clamp(e.velocity, 0.f, 1.f) * 127))};
+                    if (descriptor.supportsUmp) {
+                        midi = notePacket(midi.frame, e.channel, e.pitch, e.noteId, 9, e.velocity);
+                        inputNotes_.on(e.noteId, e.channel, e.pitch);
+                    }
                 } else if (event.type == Event::kNoteOffEvent) {
                     const auto& e = event.noteOff;
                     if (e.channel < 0 || e.channel > 15 || e.pitch < 0 || e.pitch > 127) continue;
                     midi.data = {std::uint8_t(0x80 | e.channel), std::uint8_t(e.pitch), 0};
+                    if (descriptor.supportsUmp) {
+                        midi = notePacket(midi.frame, e.channel, e.pitch, e.noteId, 8,
+                                          std::isfinite(e.velocity) ? e.velocity : 0.f);
+                        inputNotes_.off(e.noteId, e.channel, e.pitch);
+                    }
                 } else if (event.type == Event::kPolyPressureEvent) {
                     const auto& e = event.polyPressure;
                     if (e.channel < 0 || e.channel > 15 || e.pitch < 0 || e.pitch > 127 || !std::isfinite(e.pressure)) continue;
                     midi.data = {std::uint8_t(0xa0 | e.channel), std::uint8_t(e.pitch), std::uint8_t(std::lround(std::clamp(e.pressure, 0.f, 1.f) * 127))};
+                    if (descriptor.supportsUmp)
+                        midi = expressionPacket(midi.frame, e.channel, e.pitch, e.noteId, 0xa, 0, e.pressure);
+                } else if (event.type == Event::kNoteExpressionValueEvent && descriptor.supportsUmp) {
+                    const auto mapped = noteExpression(inputNotes_, midi.frame, event.noteExpressionValue);
+                    if (!mapped) continue;
+                    midi = *mapped;
                 } else if (event.type == Event::kDataEvent && descriptor.supportsSysEx) {
                     const auto& e = event.data;
                     if (e.type != DataEvent::kMidiSysEx || !e.bytes || !sysEx.admit({e.bytes, e.size})) continue;
                     midi = cell::MidiEvent::systemExclusive(midi.frame, {e.bytes, e.size});
                 } else continue;
-                if (midiCount == midi_.size()) return kResultFalse;
                 midi_[midiCount++] = midi;
             }
         cell::stableFrameSort<cell::MidiEvent>({midi_.data(),midiCount},midiScratch_);
-        MidiOutput midiOutput;const auto* midiBus=getEventOutput(0);midiOutput.destination=midiBus&&midiBus->isActive()?data.outputEvents:nullptr;const bool sends=descriptor.producesMidi;if(sends)midiDelivery_.begin(midiOutput.destination?&midiOutput:nullptr,std::uint32_t(data.numSamples));
+        MidiOutput midiOutput;
+        const auto* midiBus = getEventOutput(0);
+        midiOutput.destination = midiBus && midiBus->isActive() ? data.outputEvents : nullptr;
+        midiOutput.supportsUmp = descriptor.supportsUmp;
+        const bool sends = descriptor.producesMidi;
+        if (sends) midiDelivery_.begin(midiOutput.destination ? &midiOutput : nullptr, std::uint32_t(data.numSamples));
         if (descriptor.supportsSysEx && midiOutput.destination) {
             sysExOutput_.clear();
             midiOutput.sysEx = &sysExOutput_;
@@ -460,6 +601,7 @@ private:
     };
 #endif
     std::array<cell::ParameterEvent,4096> events_{},eventScratch_{};std::array<cell::MidiEvent,2048> midi_{},midiScratch_{};
+    InputNotes inputNotes_;
     std::uint32_t channels_=cell::plugin::descriptor().channels;
     std::uint32_t inputChannels_=cell::plugin::descriptor().channels;
     cell::CallbackGate callbacks_;
@@ -483,7 +625,7 @@ public:
 private:const cell::Parameter& parameter_;cell::Parameter display_;cell::ParameterPresentationSource* source_{};
 };
 
-class Controller final : public EditController,public IDataExchangeReceiver,public IMidiMapping {
+class Controller final : public EditController,public IDataExchangeReceiver,public IMidiMapping,public INoteExpressionController {
 public:
     Controller(){if(auto* source=analysis())source->setAnalysisConnection(cell::AnalysisConnection::waiting);}
     static FUnknown* create(void*){
@@ -717,10 +859,61 @@ public:
         }
     }
     tresult PLUGIN_API getMidiControllerAssignment(int32 bus,int16 channel,CtrlNumber cc,ParamID& id)override{if(!cell::plugin::descriptor().acceptsMidi||bus!=0||channel<0||channel>=16||cc<0||cc>=130)return kResultFalse;id=0x7f700000u|(unsigned(channel)<<8)|unsigned(cc);return kResultOk;}
+    int32 PLUGIN_API getNoteExpressionCount(int32 bus, int16 channel) override {
+        const auto& descriptor = cell::plugin::descriptor();
+        return descriptor.acceptsMidi && descriptor.supportsUmp && bus == 0 && channel >= 0 && channel < 16
+            ? 1 + controllersPerKind * 2 : 0;
+    }
+    tresult PLUGIN_API getNoteExpressionInfo(int32 bus, int16 channel, int32 index,
+                                           NoteExpressionTypeInfo& info) override {
+        if (index < 0 || index >= getNoteExpressionCount(bus, channel)) return kResultFalse;
+        info = {};
+        info.unitId = kRootUnitId;
+        if (index == 0) {
+            info.typeId = kTuningTypeID;
+            UString(info.title, 128).fromAscii("Tuning");
+            UString(info.shortTitle, 128).fromAscii("Tuning");
+            UString(info.units, 128).fromAscii("semitones");
+            info.valueDesc = {.5, 0, 1, 0};
+            info.flags = NoteExpressionTypeInfo::kIsBipolar;
+        } else {
+            const bool registered = index <= controllersPerKind;
+            const auto number = (index - 1) % controllersPerKind;
+            info.typeId = (registered ? registeredStart : assignableStart) + number;
+            const auto title = std::string(registered ? "Registered " : "Assignable ") + std::to_string(number);
+            UString(info.title, 128).fromAscii(title.c_str());
+            UString(info.shortTitle, 128).fromAscii(title.c_str());
+            info.valueDesc = {0, 0, 1, 0};
+        }
+        return kResultOk;
+    }
+    tresult PLUGIN_API getNoteExpressionStringByValue(int32 bus, int16 channel, NoteExpressionTypeID id,
+                                                    NoteExpressionValue value, String128 text) override {
+        if (!hasNoteExpression(bus, channel, id) || !std::isfinite(value) || value < 0 || value > 1)
+            return kResultFalse;
+        UString(text, 128).printFloat(id == kTuningTypeID ? 240 * (value - .5) : value, 4);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getNoteExpressionValueByString(int32 bus, int16 channel, NoteExpressionTypeID id,
+                                                    const TChar* text, NoteExpressionValue& value) override {
+        double plain{};
+        if (!hasNoteExpression(bus, channel, id) || !text ||
+            !UString(const_cast<TChar*>(text), 128).scanFloat(plain)) return kResultFalse;
+        const auto normalized = id == kTuningTypeID ? plain / 240 + .5 : plain;
+        if (!std::isfinite(normalized) || normalized < 0 || normalized > 1) return kResultFalse;
+        value = normalized;
+        return kResultOk;
+    }
+    bool hasNoteExpression(int32 bus, int16 channel, NoteExpressionTypeID id) {
+        return getNoteExpressionCount(bus, channel) && (id == kTuningTypeID ||
+            (id >= registeredStart && id < registeredStart + controllersPerKind) ||
+            (id >= assignableStart && id < assignableStart + controllersPerKind));
+    }
     OBJ_METHODS(Controller,EditController)
     DEFINE_INTERFACES
         DEF_INTERFACE(IDataExchangeReceiver)
         DEF_INTERFACE(IMidiMapping)
+        DEF_INTERFACE(INoteExpressionController)
     END_DEFINE_INTERFACES(EditController)
     REFCOUNT_METHODS(EditController)
     IPlugView* PLUGIN_API createView(FIDString type)override;

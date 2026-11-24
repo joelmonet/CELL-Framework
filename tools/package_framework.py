@@ -31,6 +31,8 @@ FILES = {
     "tests/convolution_tests.cpp",
     "framework/ANALYSIS-LEASE.md", "tests/analysis_lease_tests.cpp", "framework/RESONANCE-MASK.md", "framework/SYNTHESIS.md", "tests/resonance_mask_tests.cpp", "tests/physical_percussion_tests.cpp", "tests/wavetable_synthesis_tests.cpp",
     "src/graph_project.cpp", "tests/graph_project_tests.cpp",
+    "src/network_audio_session.cpp", "examples/network_audio/paired_link.hpp", "src/android_ump.cpp",
+    "tests/network_audio_session_tests.cpp",
     "examples/portable_graph/parallel.json", "examples/portable_graph/compensated.json", "examples/portable_graph/intent.json", "examples/portable_graph/saturation.json", "examples/portable_graph/surround.json", "examples/portable_graph/position.json",
     "examples/portable_graph/surround-position.json", "examples/portable_graph/tremolo.json",
     "tests/sdk_aax_link_consumer/CMakeLists.txt", "tests/sdk_aax_link_consumer/host.cpp",

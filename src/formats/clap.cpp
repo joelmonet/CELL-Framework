@@ -350,6 +350,13 @@ AudioBlock<float> sidechainInput(Instance& instance,const clap_process_t& block,
 struct MidiOutput final:midi::Output {
     const clap_output_events_t* destination{};
     bool push(MidiEvent message) noexcept override {
+        if (message.isUmp()) {
+            if (!cell::plugin::descriptor().supportsUmp || !midi::validUmp(message)) return false;
+            clap_event_midi2_t event{};
+            event.header = {sizeof(event), message.frame, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI2, 0};
+            std::copy_n(message.ump.begin(), message.umpCount, event.data);
+            return destination->try_push(destination, &event.header);
+        }
         if (message.isSysEx()) {
             if (!cell::plugin::descriptor().supportsSysEx) return false;
             clap_event_midi_sysex_t event{};
@@ -401,6 +408,14 @@ clap_process_status CLAP_ABI process(const clap_plugin_t* p,const clap_process_t
             if (event.port_index != 0 || !event.buffer || !sysEx.admit({event.buffer, event.size})) continue;
             if (midiCount == i.midi.size()) return CLAP_PROCESS_ERROR;
             i.midi[midiCount++] = MidiEvent::systemExclusive(h->time, {event.buffer, event.size});
+        }
+        else if (descriptor.acceptsMidi && descriptor.supportsUmp && h->space_id == CLAP_CORE_EVENT_SPACE_ID &&
+                 h->type == CLAP_EVENT_MIDI2 && h->size >= sizeof(clap_event_midi2_t) && h->time < block->frames_count) {
+            const auto& event = *reinterpret_cast<const clap_event_midi2_t*>(h);
+            const auto words = umpWordCount(event.data[0]);
+            if (event.port_index != 0 || !words) continue;
+            if (midiCount == i.midi.size()) return CLAP_PROCESS_ERROR;
+            i.midi[midiCount++] = MidiEvent::universalPacket(h->time, {event.data, words});
         }
     }
     stableEventSort({i.events.data(),eventCount},i.eventScratch);stableFrameSort<MidiEvent>({i.midi.data(),midiCount},i.midiScratch);
@@ -485,6 +500,10 @@ const clap_plugin_note_ports_t notePorts{
         *info={};
         info->id=0;
         info->supported_dialects=info->preferred_dialect=CLAP_NOTE_DIALECT_MIDI;
+        if (cell::plugin::descriptor().supportsUmp) {
+            info->supported_dialects |= CLAP_NOTE_DIALECT_MIDI2;
+            info->preferred_dialect = CLAP_NOTE_DIALECT_MIDI2;
+        }
         copy(info->name,sizeof(info->name),input?"MIDI Input":"MIDI Output");
         return true;
     }

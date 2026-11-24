@@ -2,6 +2,7 @@
 #import <AudioToolbox/AudioToolbox.h>
 #import <AudioToolbox/AUAudioUnitImplementation.h>
 #import <AVFoundation/AVFoundation.h>
+#import <CoreMIDI/CoreMIDI.h>
 
 #include <cell/callback_gate.hpp>
 #include <cell/midi_delivery.hpp>
@@ -147,25 +148,36 @@ std::uint8_t midiMessageSize(std::uint8_t status) noexcept {
 
 class HostMidiOutput final : public cell::midi::Output {
 public:
-    HostMidiOutput(__unsafe_unretained AUMIDIOutputEventBlock block, AUEventSampleTime start) noexcept
-        : block_(block), start_(start) {}
+    HostMidiOutput(__unsafe_unretained AUMIDIOutputEventBlock block,
+                   __unsafe_unretained AUMIDIEventListBlock listBlock, AUEventSampleTime start) noexcept
+        : block_(block), listBlock_(listBlock), start_(start) {}
 
     bool push(cell::MidiEvent event) noexcept override {
         if (sent_ == cell::midi::eventCapacity) return false;
-        if (event.isSysEx()) {
-            if (!cell::plugin::descriptor().supportsSysEx || event.sysEx.size() > UINT16_MAX ||
-                block_(start_ + event.frame, 0, event.sysEx.size(), event.sysEx.data()) != noErr) return false;
-            ++sent_;
-            return true;
+        const auto time = start_ + event.frame;
+        if (event.isUmp()) {
+            if (!cell::plugin::descriptor().supportsUmp || !listBlock_ || !cell::midi::validUmp(event))
+                return false;
+            if (@available(macOS 12.0, iOS 15.0, *)) {
+                MIDIEventList list{};
+                const auto type = event.ump[0] >> 28;
+                auto* packet = MIDIEventListInit(&list, type == 2 ? kMIDIProtocol_1_0 : kMIDIProtocol_2_0);
+                if (!MIDIEventListAdd(&list, sizeof(list), packet, 0, event.umpCount, event.ump.data()) ||
+                    listBlock_(time, 0, &list) != noErr) return false;
+            } else return false;
+        } else if (event.isSysEx()) {
+            if (!block_ || !cell::plugin::descriptor().supportsSysEx || event.sysEx.size() > UINT16_MAX ||
+                block_(time, 0, event.sysEx.size(), event.sysEx.data()) != noErr) return false;
+        } else if (!block_ || block_(time, 0, midiMessageSize(event.data[0]), event.data.data()) != noErr) {
+            return false;
         }
-        const auto length = midiMessageSize(event.data[0]);
-        if (block_(start_ + event.frame, 0, length, event.data.data()) != noErr) return false;
         ++sent_;
         return true;
     }
 
 private:
     __unsafe_unretained AUMIDIOutputEventBlock block_;
+    __unsafe_unretained AUMIDIEventListBlock listBlock_;
     AUEventSampleTime start_;
     std::size_t sent_{};
 };
@@ -244,11 +256,13 @@ public:
     }
 
     void cacheHostContext(AUHostMusicalContextBlock musical, AUHostTransportStateBlock transport,
-                          bool offline, AUMIDIOutputEventBlock midiOutput) noexcept {
+                          bool offline, AUMIDIOutputEventBlock midiOutput,
+                          AUMIDIEventListBlock midiListOutput = nil) noexcept {
         musicalContext_ = musical;
         transportState_ = transport;
         offline_ = offline;
         midiOutput_ = midiOutput;
+        midiListOutput_ = midiListOutput;
     }
 
     void reset() noexcept {
@@ -416,14 +430,10 @@ private:
         const bool acceptsMidi = engine.descriptor().acceptsMidi;
         const bool producesMidi = engine.descriptor().producesMidi;
         const bool acceptsSysEx = acceptsMidi && engine.descriptor().supportsSysEx;
+        const bool acceptsUmp = acceptsMidi && engine.descriptor().supportsUmp;
         std::size_t eventCount{};
         for (auto* item = event; item; item = item->head.next) {
-            if (++eventCount > maxScheduled) {
-                // The block is rejected, including any note-offs it carried.
-                if (acceptsMidi || producesMidi) engine.reset();
-                midiDelivery_.reset();
-                return kAudioUnitErr_CannotDoInCurrentContext;
-            }
+            if (++eventCount > maxScheduled) return rejectEventBlock();
         }
         events_.clear();
         midi_.clear();
@@ -432,6 +442,7 @@ private:
             if (std::isfinite(pending)) events_.push_back({0, i, pending, 0});
         }
         cell::midi::SysExBudget sysEx;
+        std::size_t umpWords = maxScheduled * 4;
         for (; event; event = event->head.next) {
             const auto type = event->head.eventType;
             if (acceptsSysEx && type == AURenderEventMIDISysEx) {
@@ -441,13 +452,21 @@ private:
                 // Core Audio places the variable-length payload after the fixed event header.
                 const auto* data = reinterpret_cast<const std::uint8_t*>(&event->MIDI) + offsetof(AUMIDIEvent, data);
                 const std::span<const std::uint8_t> bytes{data, event->MIDI.length};
-                if (sysEx.admit(bytes)) midi_.push_back(cell::MidiEvent::systemExclusive(frame, bytes));
+                if (sysEx.admit(bytes)) {
+                    if (midi_.size() == maxScheduled) return rejectEventBlock();
+                    midi_.push_back(cell::MidiEvent::systemExclusive(frame, bytes));
+                }
                 continue;
             }
-            if (acceptsMidi && type == AURenderEventMIDI) {
+            if (acceptsMidi && (type == AURenderEventMIDI || (acceptsUmp && type == AURenderEventMIDIEventList))) {
                 const auto frame = eventOffset(event->head.eventSampleTime, time);
-                if (frame < audio.frames && (midi_.empty() || frame >= midi_.back().frame))
+                if (frame >= audio.frames || (!midi_.empty() && frame < midi_.back().frame)) continue;
+                if (type == AURenderEventMIDI) {
+                    if (midi_.size() == maxScheduled) return rejectEventBlock();
                     appendMidi(event->MIDI, frame);
+                } else if (@available(macOS 12.0, iOS 15.0, *)) {
+                    if (!appendUmp(event->MIDIEventsList, frame, umpWords)) return rejectEventBlock();
+                }
                 continue;
             }
             if (type != AURenderEventParameter && type != AURenderEventParameterRamp) continue;
@@ -467,6 +486,13 @@ private:
         return noErr;
     }
 
+    AUAudioUnitStatus rejectEventBlock() noexcept {
+        // The rejected block may have contained a note-off.
+        if (engine.descriptor().acceptsMidi || engine.descriptor().producesMidi) engine.reset();
+        midiDelivery_.reset();
+        return kAudioUnitErr_CannotDoInCurrentContext;
+    }
+
     void renderWithMidiOutput(cell::AudioBlock<float> audio, const cell::Transport& transport,
                               cell::AudioBlock<float> sidechain, const AudioTimeStamp& time, bool dry) noexcept {
         if (dry != midiBypassed_) {
@@ -475,8 +501,8 @@ private:
         }
         const auto start = time.mFlags & kAudioTimeStampSampleTimeValid
             ? samplePosition(time.mSampleTime, audio.frames) : std::nullopt;
-        HostMidiOutput host(midiOutput_, start.value_or(0));
-        midiDelivery_.begin(midiOutput_ && start ? &host : nullptr, audio.frames);
+        HostMidiOutput host(midiOutput_, midiListOutput_, start.value_or(0));
+        midiDelivery_.begin((midiOutput_ || midiListOutput_) && start ? &host : nullptr, audio.frames);
         DiscardMidiOutput discard;
         auto* output = dry ? static_cast<cell::midi::Output*>(&discard) : &midiDelivery_;
         automation_.process(engine, audio, events_, transport, sidechain, midi_, output);
@@ -489,6 +515,31 @@ private:
         if (event.cable != 0 || event.length != size) return;
         const cell::MidiEvent midi{frame, {event.data[0], event.data[1], size == 3 ? event.data[2] : std::uint8_t{}}, size};
         if (cell::midi::valid(midi)) midi_.push_back(midi);
+    }
+
+    bool appendUmp(const AUMIDIEventList& event, UInt32 frame, std::size_t& budget) noexcept
+        API_AVAILABLE(macos(12.0), ios(15.0)) {
+        if (event.cable != 0) return true;
+        const auto& list = event.eventList;
+        if (list.numPackets > budget) return false;
+        auto* packet = &list.packet[0];
+        for (UInt32 index = 0; index < list.numPackets; ++index) {
+            // AU schedules the list at the render event's sample time.
+            if (!packet->wordCount || packet->wordCount > budget) return false;
+            budget -= packet->wordCount;
+            const auto* words = reinterpret_cast<const UInt32*>(
+                reinterpret_cast<const std::byte*>(packet) + offsetof(MIDIEventPacket, words));
+            auto remaining = std::span(words, packet->wordCount);
+            while (!remaining.empty()) {
+                const auto count = cell::umpWordCount(remaining.front());
+                if (!count || count > remaining.size()) break;
+                if (midi_.size() == maxScheduled) return false;
+                midi_.push_back(cell::MidiEvent::universalPacket(frame, remaining.first(count)));
+                remaining = remaining.subspan(count);
+            }
+            if (index + 1 < list.numPackets) packet = MIDIEventPacketNext(packet);
+        }
+        return true;
     }
 
     static AUAudioUnitStatus pullBus(AURenderPullInputBlock pullInput, AudioUnitRenderActionFlags flags,
@@ -594,6 +645,7 @@ private:
     AUHostMusicalContextBlock musicalContext_ = nil;
     AUHostTransportStateBlock transportState_ = nil;
     AUMIDIOutputEventBlock midiOutput_ = nil;
+    AUMIDIEventListBlock midiListOutput_ = nil;
     bool offline_{};
     bool midiBypassed_{};
 };
@@ -739,6 +791,10 @@ private:
 - (NSArray<NSString*>*)MIDIOutputNames {
     return _state && _state->engine.descriptor().producesMidi ? @[@"MIDI Output"] : @[];
 }
+- (MIDIProtocolID)AudioUnitMIDIProtocol API_AVAILABLE(macos(12.0), ios(15.0)) {
+    if (_state && _state->engine.descriptor().supportsUmp) return kMIDIProtocol_2_0;
+    return [super AudioUnitMIDIProtocol];
+}
 - (NSArray<NSNumber*>*)channelCapabilities {
     if (!_state) return [super channelCapabilities];
     const auto& descriptor = _state->engine.descriptor();
@@ -783,8 +839,15 @@ private:
         _state->prepare(_output.format.sampleRate, self.maximumFramesToRender, _output.format.channelCount,
                         sidechainFormat.channelCount, *inputOrder, *outputOrder);
         AUMIDIOutputEventBlock midiOutput = nil;
-        if (_state->engine.descriptor().producesMidi) midiOutput = self.MIDIOutputEventBlock;
-        _state->cacheHostContext(self.musicalContextBlock, self.transportStateBlock, self.isRenderingOffline, midiOutput);
+        AUMIDIEventListBlock midiListOutput = nil;
+        if (descriptor.producesMidi) {
+            midiOutput = self.MIDIOutputEventBlock;
+            if (@available(macOS 12.0, iOS 15.0, *)) {
+                if (descriptor.supportsUmp) midiListOutput = self.MIDIOutputEventListBlock;
+            }
+        }
+        _state->cacheHostContext(self.musicalContextBlock, self.transportStateBlock, self.isRenderingOffline,
+                                 midiOutput, midiListOutput);
     } catch (...) {
         [super deallocateRenderResources];
         reportError(error, kAudioUnitErr_FailedInitialization);

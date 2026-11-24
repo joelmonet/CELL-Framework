@@ -71,16 +71,38 @@ struct Transport {
     bool beatPositionValid{};
 };
 
+constexpr std::uint8_t umpWordCount(std::uint32_t firstWord) noexcept {
+    switch (firstWord >> 28) {
+    case 0: case 1: case 2: return 1;
+    case 3: case 4: return 2;
+    case 5: case 0xd: case 0xf: return 4;
+    default: return 0;
+    }
+}
+
 struct MidiEvent {
     std::uint32_t frame{};
     std::array<std::uint8_t, 3> data{};
     std::uint8_t size = 3;
     // Complete MIDI 1.0 wire message, borrowed for the current process call.
     std::span<const std::uint8_t> sysEx{};
+    // Host-order Universal MIDI Packet words. Inline storage survives block slicing and queues.
+    std::array<std::uint32_t, 4> ump{};
+    std::uint8_t umpCount{};
+    // Optional host voice identity. MIDI wire transports address notes by group, channel and pitch.
+    std::int32_t noteId{-1};
 
-    bool isSysEx() const noexcept { return data[0] == 0xf0 || !sysEx.empty(); }
+    bool isUmp() const noexcept { return umpCount != 0; }
+    bool isSysEx() const noexcept { return !isUmp() && (data[0] == 0xf0 || !sysEx.empty()); }
     static MidiEvent systemExclusive(std::uint32_t frame, std::span<const std::uint8_t> bytes) noexcept {
         return {frame, {0xf0, 0, 0}, 0, bytes};
+    }
+    static MidiEvent universalPacket(std::uint32_t frame, std::span<const std::uint32_t> words) noexcept {
+        MidiEvent event{frame, {}, 0};
+        if (words.empty() || words.size() != umpWordCount(words.front())) return event;
+        event.umpCount = static_cast<std::uint8_t>(words.size());
+        for (std::size_t i = 0; i < words.size(); ++i) event.ump[i] = words[i];
+        return event;
     }
 };
 

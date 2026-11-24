@@ -3,11 +3,51 @@
 #include <cell/audio.hpp>
 #include <algorithm>
 #include <cstring>
+#include <optional>
 #include <stdexcept>
 
 namespace cell::midi {
 inline constexpr std::size_t eventCapacity=4096;
 inline constexpr std::size_t sysExByteCapacity = 256u * 1024;
+
+inline bool validUmp(const MidiEvent& event) noexcept {
+    return event.isUmp() && event.umpCount == umpWordCount(event.ump[0]) &&
+        event.size == 0 && event.sysEx.empty();
+}
+
+inline MidiEvent umpAllNotesControl(unsigned dialect, unsigned group, unsigned channel, unsigned control) noexcept {
+    // Dialect 0 is MIDI 1.0 Channel Voice UMP, dialect 1 is MIDI 2.0 Channel Voice.
+    const std::array words{std::uint32_t(((dialect ? 4u : 2u) << 28) | (group << 24) |
+                                       (0xbu << 20) | (channel << 16) | (control << 8)), 0u};
+    return MidiEvent::universalPacket(0, std::span(words).first(dialect ? 2 : 1));
+}
+
+struct PerNoteExpression {
+    enum class Kind { registeredController, assignableController, pitchBend, pressure };
+    Kind kind;
+    std::uint8_t group, channel, note, controller;
+    std::uint32_t value; // Full MIDI 2.0 resolution. Pitch bend is centered at 0x80000000.
+};
+
+inline std::optional<PerNoteExpression> perNoteExpression(const MidiEvent& event) noexcept {
+    if (!validUmp(event) || event.ump[0] >> 28 != 4) return {};
+    const auto word = event.ump[0];
+    const auto note = static_cast<std::uint8_t>(word >> 8);
+    if (note > 127) return {};
+    using Kind = PerNoteExpression::Kind;
+    Kind kind;
+    switch ((word >> 20) & 15) {
+    case 0: kind = Kind::registeredController; break;
+    case 1: kind = Kind::assignableController; break;
+    case 6: kind = Kind::pitchBend; break;
+    case 0xa: kind = Kind::pressure; break;
+    default: return {};
+    }
+    const auto controller = static_cast<std::uint8_t>(word);
+    if (controller > 127 || ((kind == Kind::pressure || kind == Kind::pitchBend) && controller)) return {};
+    return PerNoteExpression{kind, static_cast<std::uint8_t>((word >> 24) & 15),
+        static_cast<std::uint8_t>((word >> 16) & 15), note, controller, event.ump[1]};
+}
 
 inline bool validSysEx(std::span<const std::uint8_t> bytes) noexcept {
     return bytes.size() >= 2 && bytes.size() <= sysExByteCapacity &&
@@ -59,7 +99,7 @@ public:
 inline void forward(std::span<const MidiEvent> input, Output& output,
                     std::uint32_t frames = UINT32_MAX) noexcept {
     for (const auto& event : input)
-        if (event.frame < frames && !output.push(event) && !event.isSysEx()) break;
+        if (event.frame < frames && !output.push(event) && !event.isSysEx() && !event.isUmp()) break;
 }
 // Allocate on preparation only. An overflow is visible and can be replaced by
 // a complete panic batch, rather than forwarding a partly admitted chord.
@@ -80,6 +120,7 @@ public:
     void clear()noexcept{size_=0;overflow_=false;sysEx_.clear();}
     bool push(MidiEvent event)noexcept override {
         if(size_==storage_.size()){overflow_=true;return false;}
+        if (event.isUmp() && !validUmp(event)) { overflow_=true; return false; }
         if(event.isSysEx()){
             if(!validSysEx(event.sysEx)){overflow_=true;return false;}
             event.sysEx=sysEx_.copy(event.sysEx);
@@ -106,7 +147,7 @@ private:
 };
 inline bool valid(const MidiEvent& e)noexcept {
     const unsigned status=e.data[0],kind=status&0xf0;
-    if(e.isSysEx()||status<0x80||status>=0xf0||e.data[1]>127)return false;
+    if(e.isSysEx()||e.isUmp()||status<0x80||status>=0xf0||e.data[1]>127)return false;
     if(kind==0xc0||kind==0xd0)return e.size==2||e.size==3;
     return e.size==3&&e.data[2]<128;
 }

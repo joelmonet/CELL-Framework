@@ -151,6 +151,11 @@ Result Runtime::process(const Block& block) noexcept {
     if (!block.midi.empty() && !engine_.descriptor().acceptsMidi) return reject(block, Result::invalidEvent, false);
     midi::SysExBudget sysEx;
     for (const auto& event : block.midi) {
+        if (event.isUmp()) {
+            if (event.frame >= block.frames || !engine_.descriptor().supportsUmp || !midi::validUmp(event))
+                return reject(block, Result::invalidEvent, true);
+            continue;
+        }
         if (event.isSysEx()) {
             if (event.frame >= block.frames || !engine_.descriptor().supportsSysEx || !sysEx.admit(event.sysEx))
                 return reject(block, Result::invalidEvent, true);

@@ -1,4 +1,5 @@
 #include "udp_socket.hpp"
+#include "paired_link.hpp"
 #include "latency_measure.hpp"
 
 #include <cell/audio_file.hpp>
@@ -20,6 +21,9 @@ namespace {
 using namespace cell;
 using namespace cell::network_audio;
 using cell::network_audio::example::UdpSocket;
+using cell::network_audio::example::SenderLink;
+using cell::network_audio::example::ReceiverLink;
+using cell::network_audio::example::readPairingKey;
 using namespace std::chrono_literals;
 using Clock = std::chrono::steady_clock;
 constexpr unsigned defaultRate = 48000;
@@ -41,6 +45,7 @@ using StereoReceiver = Receiver<2, 16384, bufferedFrames>;
 struct LiveOptions {
     audio::DeviceConfig device;
     std::optional<sockaddr_in> peer;
+    std::optional<PairingKey> pairing;
     std::chrono::milliseconds statsInterval{};
 };
 
@@ -260,12 +265,14 @@ LiveOptions deviceOptions(int argc, char** argv, int first, bool capture) {
             i += 3;
             continue;
         }
-        if (flag != "--backend" && flag != "--output" && flag != "--stats-ms" && flag != "--rate" &&
+        if (flag != "--backend" && flag != "--output" && flag != "--stats-ms" && flag != "--rate" && flag != "--pair-key" &&
             !(capture && flag == "--input"))
             throw std::invalid_argument("Unknown audio device option: " + std::string(flag));
         if (i + 1 >= argc || !*argv[i + 1] || std::string_view(argv[i + 1]).starts_with("--"))
             throw std::invalid_argument("Missing value for " + std::string(flag));
-        if (flag == "--backend") config.backend = selectBackend(argv[i + 1]);
+        if (flag == "--pair-key" && !options.pairing) options.pairing = readPairingKey(argv[i + 1]);
+        else if (flag == "--pair-key") throw std::invalid_argument("Specify --pair-key once");
+        else if (flag == "--backend") config.backend = selectBackend(argv[i + 1]);
         else if (flag == "--input") config.input = argv[i + 1];
         else if (flag == "--rate") config.sampleRate = streamRate(argv[i + 1]);
         else if (flag == "--stats-ms") options.statsInterval =
@@ -284,6 +291,8 @@ void sendInput(const sockaddr_in& address, std::uint64_t frames, const std::opti
     UdpSocket socket;
     connectSender(socket, address, local);
     Capture capture(frames, options.device.inputChannels, options.device.sampleRate);
+    SenderLink link(socket, options.pairing, options.device.sampleRate);
+    if (frames) link.waitForPairing();
     audio::Device device;
     const auto format = device.open(options.device, Capture::callback, &capture);
     if (!device.isOpen() || format.sampleRate != options.device.sampleRate ||
@@ -295,22 +304,24 @@ void sendInput(const sockaddr_in& address, std::uint64_t frames, const std::opti
     StatsTicker ticker(options.statsInterval);
     std::uint64_t sentPackets = 0, droppedPackets = 0;
     const auto transmit = [&](std::span<const std::byte> packet) {
-        if (socket.send(packet, frames == 0)) ++sentPackets;
+        if (link.send(packet, frames == 0)) ++sentPackets;
         else ++droppedPackets;
     };
     auto lastProgress = Clock::now();
     std::uint64_t lastCallbacks = 0;
     while (!stopRequested.load(std::memory_order_relaxed)) {
+        link.poll();
         if (ticker.due()) {
             const auto stats = device.stats();
             std::cout << "Stats {\"mode\":\"send-input\",\"sample_rate_hz\":" << options.device.sampleRate
                       << ",\"sent_packets\":" << sentPackets
                       << ",\"udp_send_drops\":" << droppedPackets
+                      << ",\"authenticated\":" << (link.confirmed() ? "true" : "false")
                       << ",\"missing_input_callbacks\":" << stats.missingInputCallbacks;
             appendDeviceStats(std::cout, stats);
             std::cout << "}\n" << std::flush;
         }
-        const auto packet = capture.sender.takePacket();
+        const auto packet = capture.sender.takePacket(link.payloadBudget());
         if (!packet.empty()) {
             transmit(packet);
             continue;
@@ -329,7 +340,8 @@ void sendInput(const sockaddr_in& address, std::uint64_t frames, const std::opti
         std::this_thread::sleep_for(1ms);
     }
     device.stop();
-    for (auto packet = capture.sender.takePacket(); !packet.empty(); packet = capture.sender.takePacket())
+    for (auto packet = capture.sender.takePacket(link.payloadBudget()); !packet.empty();
+         packet = capture.sender.takePacket(link.payloadBudget()))
         transmit(packet);
     std::cout << "Captured " << capture.progress.processed << " input frames. Missing input: " << capture.missingFrames
               << " frames. Sender queue dropped: " << capture.droppedFrames << " frames.\n";
@@ -337,7 +349,8 @@ void sendInput(const sockaddr_in& address, std::uint64_t frames, const std::opti
 }
 #endif
 
-void sendWave(const sockaddr_in& address, const File& source, const std::optional<sockaddr_in>& local) {
+void sendWave(const sockaddr_in& address, const File& source, const std::optional<sockaddr_in>& local,
+              const std::optional<PairingKey>& pairing) {
     auto reader = audio::openWaveStream(source.createInputStream());
     if (!reader || reader->info().channels != 2 || reader->info().frames <= 0)
         throw std::runtime_error("Choose a nonempty stereo WAV");
@@ -349,6 +362,8 @@ void sendWave(const sockaddr_in& address, const File& source, const std::optiona
         throw std::runtime_error("Choose a stereo WAV up to 24 hours long");
     UdpSocket socket;
     connectSender(socket, address, local);
+    SenderLink link(socket, pairing, sampleRate);
+    link.waitForPairing();
     Sender<2, blockFrames> sender(sampleRate, 0);
     std::array<float, blockFrames> left{}, right{};
     float* channels[]{left.data(), right.data()};
@@ -359,10 +374,11 @@ void sendWave(const sockaddr_in& address, const File& source, const std::optiona
         if (!reader->read(channels, 2, offset, count)) throw std::runtime_error("WAV read failed");
         for (int i = 0; i < count; ++i) frames[i] = {left[i], right[i]};
         if (!sender.capture(std::span(frames).first(count))) throw std::runtime_error("Sender queue full");
-        const auto packet = sender.takePacket();
+        const auto packet = sender.takePacket(link.payloadBudget());
         std::this_thread::sleep_until(anchor + frameTime(offset, sampleRate));
         if (packet.empty()) throw std::runtime_error("Could not encode WAV packet");
-        socket.send(packet);
+        link.poll();
+        if (!link.send(packet, false)) throw std::runtime_error("Authenticated WAV stream was interrupted");
         offset += count;
     }
     std::cout << "Sent " << reader->info().frames << " frames.\n";
@@ -379,7 +395,7 @@ struct StreamTotals {
 };
 
 // Returns true after an idle continuous session so the socket and output can be reused.
-bool receiveSession(UdpSocket& socket, StereoReceiver& receiver, std::uint64_t frames,
+bool receiveSession(UdpSocket& socket, ReceiverLink& link, StereoReceiver& receiver, std::uint64_t frames,
                     const File& destination, unsigned sampleRate,
                     std::chrono::milliseconds budget, const std::optional<sockaddr_in>& expectedPeer,
                     Monitor* monitor, StreamTotals& totals) {
@@ -428,19 +444,20 @@ bool receiveSession(UdpSocket& socket, StereoReceiver& receiver, std::uint64_t f
         // Bound the batch so a busy peer cannot starve playout or stop handling.
         for (int index = 0; index < maxReceiveBatch; ++index) {
             sockaddr_in peer{};
-            const auto size = socket.receive(packet, peer, index == 0 ? 1 : 0);
+            const auto size = socket.receive(packet, peer, index == 0 ? 1 : 0, link.enabled());
             if (!size) break;
             if (selectedPeer && (peer.sin_addr.s_addr != selectedPeer->sin_addr.s_addr ||
                                  peer.sin_port != selectedPeer->sin_port)) {
                 ++unexpectedPackets;
                 continue;
             }
-            if (receiver.receive(std::span(packet).first(*size)) != PacketAdmission::accepted) continue;
+            const auto pcm = link.receive(socket, std::span(packet).first(*size), peer, !anchor);
+            if (pcm.empty() || receiver.receive(pcm) != PacketAdmission::accepted) continue;
             lastAccepted = Clock::now();
             if (!anchor) {
                 // A continuous monitor filters peers in software so it can
                 // accept a new source on this socket after the session ends.
-                if (!continuous) socket.connect(peer);
+                if (!continuous && !link.enabled()) socket.connect(peer);
                 selectedPeer = peer;
                 anchor = lastAccepted;
                 std::cout << "Sender connected.\n" << std::flush;
@@ -465,6 +482,7 @@ bool receiveSession(UdpSocket& socket, StereoReceiver& receiver, std::uint64_t f
             if (anchor) std::cout << packetAge.count();
             else std::cout << "null";
             std::cout << ",\"sample_rate_hz\":" << sampleRate
+                      << ",\"authenticated\":" << (link.enabled() && anchor ? "true" : "false")
                       << ",\"arrival_budget_ms\":" << budget.count()
                       << ",\"accepted_packets\":" << stats.acceptedPackets
                       << ",\"invalid_packets\":" << stats.invalidPackets
@@ -475,6 +493,7 @@ bool receiveSession(UdpSocket& socket, StereoReceiver& receiver, std::uint64_t f
                       << ",\"concealed_source_frames\":" << stats.concealedSourceFrames
                       << ",\"unfilled_output_frames\":" << stats.unfilledOutputFrames
                       << ",\"queued_playback_frames\":" << queuedFrames
+                      << ",\"playback_correction_ppm\":" << stats.playbackCorrectionPpm
                       << ",\"queued_playback_ms\":" << queuedFrames * 1000 / sampleRate;
             appendDeviceStats(std::cout, monitor->device.stats());
             std::cout << "}\n" << std::flush;
@@ -554,6 +573,7 @@ bool receiveSession(UdpSocket& socket, StereoReceiver& receiver, std::uint64_t f
 
 void receiveWave(const sockaddr_in& address, std::uint64_t frames, const File& destination, unsigned sampleRate,
                  std::chrono::milliseconds budget, const std::optional<sockaddr_in>& expectedPeer,
+                 const std::optional<PairingKey>& pairing,
                  const LiveOptions* monitorOptions = nullptr) {
     const bool live = monitorOptions != nullptr;
 #ifdef CELL_NETWORK_AUDIO_DEVICE
@@ -563,6 +583,7 @@ void receiveWave(const sockaddr_in& address, std::uint64_t frames, const File& d
     if (!live && destination.exists()) throw std::runtime_error("Choose a new output path");
     UdpSocket socket;
     socket.bind(address);
+    ReceiverLink link(pairing, sampleRate);
 
     // The output must stop before its callback's receiver is replaced or destroyed.
     std::optional<StereoReceiver> receiver;
@@ -575,9 +596,11 @@ void receiveWave(const sockaddr_in& address, std::uint64_t frames, const File& d
     const auto prefill = live ? static_cast<std::size_t>(2 * sampleRate * budget.count() / 1000) : 1;
     const ReceiverConfig config{0, sampleRate, budget, prefill, live ? 800u : 0u, live && !frames};
     StreamTotals totals;
-    while (receiveSession(socket, receiver.emplace(config), frames, destination, sampleRate, budget, expectedPeer,
-                          monitor, totals))
+    while (receiveSession(socket, link, receiver.emplace(config), frames, destination, sampleRate, budget,
+                          expectedPeer, monitor, totals)) {
+        link.retire();
         std::cout << "Sender idle. Waiting for a new stream.\n" << std::flush;
+    }
 
     std::cout << (live ? "Monitored " : "Captured ") << totals.outputFrames << " frames from "
               << totals.acceptedPackets << " packets. Concealed " << totals.concealedFrames
@@ -643,7 +666,7 @@ int main(int argc, char** argv) {
                 budget = std::chrono::milliseconds(number(argv[option++], maxBudget.count(), minBudget.count()));
             const auto options = deviceOptions(argc, argv, option, false);
             receiveWave(endpoint(argv[2], argv[3], true), liveFrameLimit(argv[4], options.device.sampleRate),
-                        {}, options.device.sampleRate, budget, options.peer, &options);
+                        {}, options.device.sampleRate, budget, options.peer, options.pairing, &options);
             return 0;
         }
 #endif
@@ -675,9 +698,18 @@ int main(int argc, char** argv) {
                       << std::setprecision(3) << 1000.0 * measurement.delayFrames / defaultRate << " ms)\n"
                       << "Correlation: " << measurement.correlation << '\n'
                       << "Polarity: " << (measurement.inverted ? "inverted" : "normal") << '\n';
-        } else if (mode == "send" && (argc == 5 || argc == 6)) {
-            const auto local = argc == 6 ? std::optional(endpoint("0.0.0.0", argv[5])) : std::nullopt;
-            sendWave(endpoint(argv[2], argv[3]), cell::File(argv[4]), local);
+        } else if (mode == "send" && argc >= 5) {
+            int option = 5;
+            std::optional<sockaddr_in> local;
+            std::optional<PairingKey> pairing;
+            if (option < argc && !std::string_view(argv[option]).starts_with("--"))
+                local = endpoint("0.0.0.0", argv[option++]);
+            if (argc - option == 2 && std::string_view(argv[option]) == "--pair-key") {
+                pairing = readPairingKey(argv[option + 1]);
+                option += 2;
+            }
+            if (option != argc) throw std::invalid_argument("Expected [SOURCE_PORT] [--pair-key FILE]");
+            sendWave(endpoint(argv[2], argv[3]), cell::File(argv[4]), local, pairing);
         } else if (mode == "receive" && argc >= 6) {
             auto budget = defaultBudget;
             auto sampleRate = defaultRate;
@@ -685,6 +717,7 @@ int main(int argc, char** argv) {
             if (option < argc && !std::string_view(argv[option]).starts_with("--"))
                 budget = std::chrono::milliseconds(number(argv[option++], maxBudget.count(), minBudget.count()));
             std::optional<sockaddr_in> peer;
+            std::optional<PairingKey> pairing;
             while (option < argc) {
                 const std::string_view flag = argv[option];
                 if (flag == "--peer" && !peer) {
@@ -693,26 +726,29 @@ int main(int argc, char** argv) {
                 } else if (flag == "--rate" && option + 1 < argc) {
                     sampleRate = streamRate(argv[option + 1]);
                     option += 2;
+                } else if (flag == "--pair-key" && !pairing && option + 1 < argc) {
+                    pairing = readPairingKey(argv[option + 1]);
+                    option += 2;
                 } else {
-                    throw std::invalid_argument("Expected --peer IPV4 PORT or --rate HZ");
+                    throw std::invalid_argument("Expected --peer IPV4 PORT, --rate HZ, or --pair-key FILE");
                 }
             }
             receiveWave(endpoint(argv[2], argv[3], true), number(argv[4], maxStreamFrames(sampleRate)),
-                        cell::File(argv[5]), sampleRate, budget, peer);
+                        cell::File(argv[5]), sampleRate, budget, peer, pairing);
         } else {
             throw std::invalid_argument(
 #ifdef CELL_NETWORK_AUDIO_DEVICE
                 "Usage: cell_network_audio_wave devices [BACKEND]\n"
                 "       cell_network_audio_wave monitor BIND_IPV4 PORT FRAMES|continuous [ARRIVAL_BUDGET_MS]"
-                " [--backend BACKEND] [--output ID] [--peer IPV4 PORT] [--rate HZ] [--stats-ms MS]\n"
+                " [--backend BACKEND] [--output ID] [--peer IPV4 PORT] [--rate HZ] [--stats-ms MS] [--pair-key FILE]\n"
                 "       cell_network_audio_wave send-input DEST_IPV4 PORT FRAMES|continuous [SOURCE_PORT]"
-                " [--backend BACKEND] [--input ID] [--mono] [--capture-only|--output ID] [--rate HZ] [--stats-ms MS]\n"
-                "       cell_network_audio_wave send DEST_IPV4 PORT INPUT.wav [SOURCE_PORT]\n"
+                " [--backend BACKEND] [--input ID] [--mono] [--capture-only|--output ID] [--rate HZ] [--stats-ms MS] [--pair-key FILE]\n"
+                "       cell_network_audio_wave send DEST_IPV4 PORT INPUT.wav [SOURCE_PORT] [--pair-key FILE]\n"
 #else
-                "Usage: cell_network_audio_wave send DEST_IPV4 PORT INPUT.wav [SOURCE_PORT]\n"
+                "Usage: cell_network_audio_wave send DEST_IPV4 PORT INPUT.wav [SOURCE_PORT] [--pair-key FILE]\n"
 #endif
                 "       cell_network_audio_wave receive BIND_IPV4 PORT FRAMES OUTPUT.wav "
-                "[ARRIVAL_BUDGET_MS] [--peer IPV4 PORT] [--rate HZ]\n"
+                "[ARRIVAL_BUDGET_MS] [--peer IPV4 PORT] [--rate HZ] [--pair-key FILE]\n"
                 "       cell_network_audio_wave make-latency-probe OUTPUT.wav [COUNT]\n"
                 "       cell_network_audio_wave measure-latency CAPTURE.wav REFERENCE_FRAME|auto MAX_DELAY_MS\n"
                 "       cell_network_audio_wave measure-latency-series CAPTURE.wav MAX_DELAY_MS FRAME FRAME [FRAME ...]");

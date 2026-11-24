@@ -25,6 +25,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_sources(cell_transport_auv3_instrument_host PRIVATE
         "${auv3_example}/instrument_processor.cpp" "${auv3_example}/instrument_check.mm")
     add_test(NAME transport_auv3 COMMAND cell_transport_auv3_host)
+    add_test(NAME transport_auv3_ump COMMAND cell_transport_auv3_host --ump)
     add_test(NAME midi_effect_auv3 COMMAND cell_transport_auv3_midi_fx_host)
     add_test(NAME instrument_auv3 COMMAND cell_transport_auv3_instrument_host)
 endif()

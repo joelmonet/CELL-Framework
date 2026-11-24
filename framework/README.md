@@ -124,6 +124,7 @@ target_link_libraries(my_processor PUBLIC Cell::Core Cell::DSP)
 | `CELL_SDK_UI` | OFF | Separately installed Blend2D; platform window libraries; Python 3 at build time for font embedding |
 | `CELL_SDK_WEBVIEW` | OFF | System browser runtime; Windows additionally needs `CELL_WEBVIEW2_INCLUDE_DIR` |
 | `CELL_SDK_AUDIO_DEVICE` | OFF | Supplied `CELL_MINIAUDIO_INCLUDE_DIR` containing `miniaudio.h` |
+| `CELL_SDK_NETWORK_AUTH` | OFF | OpenSSL Crypto for paired UDP audio sessions in `Cell::NetworkAudio` |
 | `CELL_SDK_ARA_SOURCE` | OFF | Supplied `CELL_ARA_SDK_PATH` containing `ARA_API/ARAInterface.h` |
 | `CELL_SDK_EXAMPLES` | OFF | Gain smoke and portable graph; web bridge when WebView is enabled; control/effects galleries when UI is enabled |
 | `CELL_SDK_TESTS` | OFF | Contract tests and public-header checks; native UI tests need a display |
@@ -131,7 +132,8 @@ target_link_libraries(my_processor PUBLIC Cell::Core Cell::DSP)
 `Cell::Core`, `Cell::DSP`, `Cell::AudioFiles`, `Cell::Wrappers` and
 `Cell::Graphics` are exported by the default SDK. Optional exports are
 `Cell::State`, `Cell::LegacyState`, `Cell::StateMigration`, `Cell::StateTree`,
-`Cell::KSP`, `Cell::UI`, `Cell::WebView`, `Cell::AudioDevice` and
+`Cell::KSP`, `Cell::UI`, `Cell::WebView`, `Cell::AudioDevice`,
+`Cell::NetworkAudio`, `Cell::AndroidMidi` (Android API 33+), and
 `Cell::ARASource`. A missing optional component causes `find_package(...
 REQUIRED COMPONENTS ...)` to fail rather than silently substituting another
 implementation.

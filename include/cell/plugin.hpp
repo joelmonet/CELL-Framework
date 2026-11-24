@@ -34,6 +34,7 @@ struct PluginDescriptor {
     std::span<const MainBusLayout> mainBusLayouts{};
     bool producesMidi{}; // Optional host-facing MIDI output, independent of audio.
     bool supportsSysEx{}; // Opt in on the enabled MIDI input and output ports.
+    bool supportsUmp{};   // Opt in to inline Universal MIDI Packets on supporting adapters.
 };
 
 // Optional non-audio format context. The adapter retains the native context

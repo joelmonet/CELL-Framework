@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cell/network_audio_packet.hpp>
+#include <stdexcept>
 
 namespace cell::network_audio {
 
@@ -27,7 +28,11 @@ public:
     }
 
     // Transport thread only. Empty means no queued audio. The transport owns the returned packet.
-    [[nodiscard]] std::vector<std::byte> takePacket() {
+    [[nodiscard]] std::vector<std::byte> takePacket(std::size_t datagramBudget = maxPacketBytes) {
+        if (datagramBudget > maxPacketBytes ||
+            datagramBudget < detail::headerBytes + sizeof(Frame<Channels>))
+            throw std::invalid_argument("Invalid sender datagram budget");
+        const auto limit = (datagramBudget - detail::headerBytes) / sizeof(Frame<Channels>);
         if (!pending_) {
             StampedFrame first;
             if (!frames_.pop(first)) return {};
@@ -43,7 +48,7 @@ public:
             for (auto& value : frame)
                 if (!std::isfinite(value)) value = 0.0f;
             pending_.reset();
-            if (count == audio.size()) break;
+            if (count == limit) break;
             StampedFrame next;
             if (frames_.pop(next)) pending_ = next;
         } while (pending_ && pending_->sample == firstSample + count);

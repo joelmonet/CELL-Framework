@@ -42,9 +42,12 @@ public:
                    AudioBlock<float> sidechain, midi::Output &output) noexcept override {
     processSidechain(audio, bank, transport, input, sidechain);
     // Make receipt observable independently of the adapter's output routing.
-    for (const auto &event : input)
+    for (const auto &event : input) {
       if (event.isSysEx() && event.frame < audio.frames)
         audio.channel(1)[event.frame] = static_cast<float>(event.sysEx.size());
+      if (const auto expression = midi::perNoteExpression(event); expression && event.frame < audio.frames)
+        audio.channel(1)[event.frame] = 128.f + expression->note;
+    }
     midi::forward(input, output, audio.frames);
   }
 private:
@@ -63,7 +66,7 @@ const PluginDescriptor &descriptor() {
                                   "Cell",
                                   "0.1.0",
                                   2,
-                                  fields, false, 1000, 620, true, true, layouts, true, true};
+                                  fields, false, 1000, 620, true, true, layouts, true, true, true};
   return d;
 }
 std::unique_ptr<Processor> createProcessor() {

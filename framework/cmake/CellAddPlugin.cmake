@@ -232,7 +232,7 @@ function(cell_add_auv3_plugin target)
     target_compile_options(${target} PRIVATE -fobjc-arc -fapplication-extension)
     target_link_options(${target} PRIVATE "LINKER:-e,_NSExtensionMain" "LINKER:-application_extension")
     target_link_libraries(${target} PRIVATE "${P_PROCESSOR}" Cell::Core
-        "-framework Foundation" "-framework AudioToolbox" "-framework AVFoundation")
+        "-framework Foundation" "-framework AudioToolbox" "-framework AVFoundation" "-framework CoreMIDI")
 endfunction()
 
 function(cell_embed_auv3_extensions app)

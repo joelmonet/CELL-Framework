@@ -23,6 +23,7 @@ struct ReceiverStats {
     std::size_t overlappingPackets{};
     std::size_t concealedSourceFrames{};
     std::size_t unfilledOutputFrames{};
+    int playbackCorrectionPpm{};
 };
 
 // One negotiated stream. Construct before starting the transport and audio threads.
@@ -85,7 +86,7 @@ public:
     ReceiverStats stats() const noexcept {
         return {acceptedPackets_.get(), invalidPackets_.get(), latePackets_.get(),
                 outsideWindowPackets_.get(), overlappingPackets_.get(),
-                concealedSourceFrames_.get(), unfilledOutputFrames_.get()};
+                concealedSourceFrames_.get(), unfilledOutputFrames_.get(), playback_.correctionPpm()};
     }
 
 private:

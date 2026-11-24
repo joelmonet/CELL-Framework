@@ -43,6 +43,7 @@ bool midiInRange{};
 unsigned resets{};
 bool generateMidi{};
 bool markChannels{};
+bool verifyUmpOnly{};
 
 class Probe final : public cell::Processor {
 public:
@@ -530,6 +531,44 @@ void verifyNamedLayouts(AUAudioUnit* unit) {
     verifyChannelOrder(unit, sixteen, sixteen, order916, order916);
 }
 
+void verifyUmp(AUAudioUnit* unit) {
+    constexpr std::array<UInt32, 6> sequence{
+        0x40913c00u, 0x92a00000u, // note-on with 16-bit velocity
+        0x40113c4au, 0xb1234567u, // assignable per-note controller
+        0x40613c00u, 0x81234567u, // per-note pitch bend
+    };
+    struct Capture {
+        std::array<UInt32, 6> words{};
+        unsigned count{};
+    } captured;
+    auto* out = &captured;
+    require(unit.AudioUnitMIDIProtocol == kMIDIProtocol_2_0, "AUv3 did not advertise the MIDI 2.0 protocol");
+    unit.hostMIDIProtocol = kMIDIProtocol_2_0;
+    unit.MIDIOutputEventListBlock = ^OSStatus(AUEventSampleTime time, std::uint8_t cable, const MIDIEventList* events) {
+        if (time != renderTime + edit || cable != 0 || events->protocol != kMIDIProtocol_2_0 ||
+            events->numPackets != 1 || events->packet[0].wordCount != 2 || out->count >= 3)
+            return kAudioUnitErr_InvalidPropertyValue;
+        std::copy_n(events->packet[0].words, 2, out->words.begin() + 2 * out->count++);
+        return noErr;
+    };
+    allocate(unit);
+    MIDIEventList list{};
+    auto* packet = MIDIEventListInit(&list, kMIDIProtocol_2_0);
+    require(MIDIEventListAdd(&list, sizeof(list), packet, 0, sequence.size(), sequence.data()) != nullptr,
+        "Could not build the AUv3 expression event list");
+    const auto schedule = unit.scheduleMIDIEventListBlock;
+    require(schedule && schedule(renderTime + edit, 0, &list) == noErr, "AU host could not schedule UMP");
+    render(unit, nullptr, renderTime, nil, noErr, unit.renderBlock);
+    require(observedMidiCount == 3 && midiInRange, "Processor did not receive complete AUv3 UMP messages");
+    for (unsigned i = 0; i < 3; ++i) {
+        const auto& event = observedMidi[i].event;
+        require(event.frame == edit && event.umpCount == 2 && event.ump[0] == sequence[2 * i] &&
+            event.ump[1] == sequence[2 * i + 1], "AUv3 changed UMP data or sample timing");
+    }
+    require(captured.count == 3 && captured.words == sequence, "AUv3 output changed UMP order or precision");
+    [unit deallocateRenderResources];
+}
+
 void run() {
     HostContext host;
     [AUAudioUnit registerSubclass:CellAUv3Effect.class asComponentDescription:description
@@ -541,6 +580,10 @@ void run() {
         [unit.inputBusses[1].name isEqualToString:@"Sidechain"] && !unit.inputBusses[1].isEnabled,
         "Optional sidechain bus was not published correctly");
     unit.maximumFramesToRender = frames;
+    if (verifyUmpOnly) {
+        verifyUmp(unit);
+        return;
+    }
     allocate(unit);
     render(unit);
     requireFallback(false);
@@ -611,17 +654,20 @@ namespace cell::plugin {
 const PluginDescriptor& descriptor() {
     static const PluginDescriptor value{.id = "com.example.cell.transport", .name = "Cell Transport Contract",
         .vendor = "Cell", .version = "0.1.0", .channels = 2, .parameters = fields,
-        .supportsSidechain = true, .acceptsMidi = true, .mainBusLayouts = mainLayouts, .producesMidi = true};
+        .supportsSidechain = true, .acceptsMidi = true, .mainBusLayouts = mainLayouts, .producesMidi = true,
+        .supportsUmp = verifyUmpOnly};
     return value;
 }
 std::unique_ptr<Processor> createProcessor() { return std::make_unique<Probe>(); }
 } // namespace cell::plugin
 
-int main() {
+int main(int argc, char** argv) {
     @autoreleasepool {
         try {
+            verifyUmpOnly = argc == 2 && std::string_view(argv[1]) == "--ump";
             run();
-            std::cout << "AUv3 channel layouts, transport, automation, sidechain and MIDI checks passed.\n";
+            std::cout << (verifyUmpOnly ? "AUv3 MIDI 2.0 round trip passed.\n" :
+                "AUv3 channel layouts, transport, automation, sidechain and MIDI checks passed.\n");
             return 0;
         } catch (const std::exception& error) {
             std::cerr << error.what() << '\n';

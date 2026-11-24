@@ -16,7 +16,7 @@ import time
 from test_network_audio_wave import HOST, listening_endpoint, read_float_pcm, read_receiver_line
 
 
-def send_input(binary, destination, frames, env, *, capture_only=False, mono=False, sample_rate=48000):
+def send_input(binary, destination, frames, env, *, capture_only=False, mono=False, sample_rate=48000, pairing=()):
     host, port = destination
     endpoint_options = ("--capture-only",) if capture_only else ("--output", "cell_silence")
     input_id = "cell_mono_capture" if mono else "cell_capture"
@@ -24,7 +24,7 @@ def send_input(binary, destination, frames, env, *, capture_only=False, mono=Fal
     result = subprocess.run(
         [binary, "send-input", host, str(port), str(frames),
          "--backend", "alsa", "--input", input_id, "--rate", str(sample_rate),
-         *endpoint_options, *channel_options],
+         *endpoint_options, *channel_options, *pairing],
         env=env, capture_output=True, text=True, timeout=5,
     )
     assert result.returncode == 0, result.stderr
@@ -49,7 +49,8 @@ def relay_input(binary, relay, destination, frames, env, sample_rate):
     assert next_sample == frames
 
 
-def stream(binary, receive_args, sender_frames, env, relay=None, *, capture_only=False, mono=False, sample_rate=48000):
+def stream(binary, receive_args, sender_frames, env, relay=None, *, capture_only=False, mono=False,
+           sample_rate=48000, pairing=()):
     with subprocess.Popen(
         [binary, *receive_args],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -58,7 +59,7 @@ def stream(binary, receive_args, sender_frames, env, relay=None, *, capture_only
             destination = listening_endpoint(receiver)
             if relay is None:
                 send_input(binary, destination, sender_frames, env, capture_only=capture_only,
-                           mono=mono, sample_rate=sample_rate)
+                           mono=mono, sample_rate=sample_rate, pairing=pairing)
             else:
                 relay_input(binary, relay, destination, sender_frames, env, sample_rate)
             report, _ = receiver.communicate(timeout=5)
@@ -203,7 +204,74 @@ def check_continuous_monitor(binary, env, output_directory):
                 monitor.kill()
 
 
-def check_devices(binary, root):
+def check_paired_monitor(binary, env, pairing):
+    with subprocess.Popen(
+        [binary, "monitor", HOST, "0", "continuous", "20", "--stats-ms", "100",
+         "--backend", "alsa", "--output", "cell_silence", *pairing],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    ) as monitor:
+        try:
+            destination = listening_endpoint(monitor)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as unrelated:
+                send_test_packets(unrelated, destination, 0, 48000, packets=1)
+            for session in (1, 2):
+                send_input(binary, destination, 4801, env, pairing=pairing)
+                snapshots = []
+                wait_for_status(monitor, "Sender connected.", snapshots)
+                wait_for_status(monitor, "Sender idle. Waiting for a new stream.", snapshots)
+                assert any(stats["session"] == session and stats["authenticated"] and
+                           stats["device_callbacks"] > 0 for stats in snapshots), snapshots
+                assert listening_endpoint(monitor) == destination
+            monitor.send_signal(signal.SIGINT)
+            report, _ = monitor.communicate(timeout=5)
+            assert monitor.returncode == 0, report
+        finally:
+            if monitor.poll() is None:
+                monitor.kill()
+
+
+def check_paired_sender_reconnect(binary, env, pairing):
+    def monitor_at(port):
+        return subprocess.Popen(
+            [binary, "monitor", HOST, str(port), "continuous", "20", "--stats-ms", "100",
+             "--backend", "alsa", "--output", "cell_silence", *pairing],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+
+    first, second, sender = monitor_at(0), None, None
+    try:
+        destination = listening_endpoint(first)
+        sender = subprocess.Popen(
+            [binary, "send-input", *map(str, destination), "continuous", "--stats-ms", "100",
+             "--backend", "alsa", "--input", "cell_capture", "--capture-only", *pairing],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        wait_for_status(first, "Sender connected.", [])
+        for _ in range(20):
+            if read_stats(read_receiver_line(sender))["authenticated"]:
+                break
+        else:
+            raise AssertionError("The sender never received an authenticated heartbeat")
+        first.send_signal(signal.SIGINT)
+        first.communicate(timeout=5)
+        assert first.returncode == 0
+        second = monitor_at(destination[1])
+        assert listening_endpoint(second) == destination
+        wait_for_status(second, "Sender connected.", [])
+        assert sender.poll() is None, "The continuous sender stopped instead of re-pairing"
+        for process in (sender, second):
+            process.send_signal(signal.SIGINT)
+            report, _ = process.communicate(timeout=5)
+            assert process.returncode == 0, report
+    finally:
+        for process in (first, second, sender):
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+
+
+def check_devices(binary, root, authenticated):
     input_pcm = root / "input.raw"
     mono_pcm = root / "mono-input.raw"
     output_pcm = root / "output.raw"
@@ -268,6 +336,16 @@ pcm.!default {{ type null }}
     capture_frames = 4801
     stream(binary, ["receive", HOST, "0", str(capture_frames), wav], capture_frames, env)
     assert read_float_pcm(wav, capture_frames) == samples[:capture_frames * 2]
+    if authenticated:
+        key = root / "pair.secret"
+        key.write_bytes(os.urandom(32))
+        pairing = ("--pair-key", str(key))
+        paired_wav = root / "paired.wav"
+        stream(binary, ["receive", HOST, "0", str(capture_frames), paired_wav, *pairing],
+               capture_frames, env, pairing=pairing)
+        assert read_float_pcm(paired_wav, capture_frames) == samples[:capture_frames * 2]
+        check_paired_monitor(binary, env, pairing)
+        check_paired_sender_reconnect(binary, env, pairing)
 
     capture_config = root / "alsa-capture-only.conf"
     capture_config.write_text(config.read_text(encoding="utf-8").replace(
@@ -326,7 +404,7 @@ def main():
         print("Skipping virtual audio devices: libasound.so.2 is unavailable.")
         return 77
     with tempfile.TemporaryDirectory(prefix="cell-network-devices-") as directory:
-        check_devices(sys.argv[1], pathlib.Path(directory))
+        check_devices(sys.argv[1], pathlib.Path(directory), "--authenticated" in sys.argv[2:])
     return 0
 
 

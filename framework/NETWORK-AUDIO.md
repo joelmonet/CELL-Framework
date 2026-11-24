@@ -17,6 +17,56 @@ deadlines, clock drift, and channel and sample-rate agreement. This
 component provides the PCM handoff for remote monitoring. Direct
 Audiomovers interoperability would require a supported integration path.
 
+## Pair a live sender and monitor
+
+Configure with `-DCELL_SDK_NETWORK_AUTH=ON` and an installed OpenSSL Crypto
+library. SDK consumers can request `find_package(Cell CONFIG REQUIRED
+COMPONENTS NetworkAudio)` and link `Cell::NetworkAudio` for
+`cell/network_audio_session.hpp`. Enable `CELL_SDK_AUDIO_DEVICE` to build
+the live device commands.
+
+Create one 32-byte pairing key per link, keep it private, and copy it securely
+to both machines. For example, on a POSIX shell:
+
+```sh
+(umask 077; openssl rand -out cell-monitor.key 32)
+cell_network_audio_wave monitor 0.0.0.0 40100 continuous 20 --pair-key cell-monitor.key --stats-ms 500
+cell_network_audio_wave send-input 192.168.1.20 40100 continuous --capture-only --pair-key cell-monitor.key --stats-ms 500
+```
+
+Use the monitor's IPv4 address in the second command. For a connection
+over the internet, use a publicly reachable address for the monitor and
+allow or forward the selected UDP port to it. A private VPN address also
+works when the monitor is behind carrier NAT. Both endpoints must agree on
+the sample rate. `send` and `receive` also accept `--pair-key FILE` for paired
+WAV testing. Omitting the flag selects the unpaired, cleartext PCM protocol.
+
+The CAS2 paired protocol authenticates the stream format with fresh challenge
+nonces and HMAC-SHA-256. It derives separate session keys for audio and
+acknowledgments. ChaCha20-Poly1305 encrypts each PCM datagram and authenticates
+its header. The receiver rejects replayed, modified, or wrong-peer audio.
+Both endpoints must run CAS2 for a paired connection. Packet timing, sizes,
+and negotiated format metadata are visible on the wire. Authentication,
+encryption, and UDP run on the transport thread. The audio callback only
+consumes its prepared queue.
+
+The sender re-pairs when acknowledgments stop, discarding capture blocks it
+cannot send. A continuous monitor retires the old playout queue after its
+idle timeout and accepts a fresh authenticated stream on the same socket
+and output device. The monitor adjusts playback for clock drift and reports
+`playback_correction_ppm` alongside packet age, queue depth and underruns.
+
+Build with `CELL_SDK_TESTS=ON` to run `cell_network_audio_session_tests`.
+Its default mode checks pairing, wrong-key and replay rejection, reconnect,
+and scheduled loss and drift. Pass `--wall-clock` for a local UDP loopback
+measurement of median, p95, p99 and maximum capture-to-playout software
+latency. It reports three profiles with the same jitter of up to 9 ms and a
+sender clock about 417 ppm fast. The profiles are a no-loss baseline, a drop
+every nineteenth packet, and a 35 ms one-way delay with every thirty-first
+packet dropped plus eight-packet bursts. The results include concealment
+and underrun frame counts. The impairments are injected on loopback.
+Use the hardware loopback procedure below to include device and converter delay.
+
 ## Timestamped PCM datagrams
 
 Include `<cell/network_audio_packet.hpp>` on the transport thread. Encode one

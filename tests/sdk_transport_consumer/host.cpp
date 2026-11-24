@@ -212,8 +212,9 @@ void run(const char *path, const char *dumpPath) {
   clap_note_port_info_t midiPort{};
   check(notePorts && notePorts->count(plugin, false) == 1 &&
             notePorts->get(plugin, 0, false, &midiPort) &&
-            midiPort.preferred_dialect == CLAP_NOTE_DIALECT_MIDI,
-        "CLAP MIDI output port is missing");
+            midiPort.preferred_dialect == CLAP_NOTE_DIALECT_MIDI2 &&
+            (midiPort.supported_dialects & CLAP_NOTE_DIALECT_MIDI),
+        "CLAP MIDI port didn't advertise MIDI 2.0 and MIDI 1.0");
   clap_event_midi_t note{};
   note.header = {sizeof(note), 31, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, 0};
   note.data[0] = 0x92;
@@ -246,10 +247,17 @@ void run(const char *path, const char *dumpPath) {
     unsigned limit{49};
     std::span<std::uint8_t> sysEx;
     unsigned sysExCount{}, sysExFrame{};
+    clap_event_midi2_t ump{};
+    unsigned umpEvents{};
   } captured;
   const clap_output_events_t midiOutput{&captured,
       [](const clap_output_events_t *list, const clap_event_header_t *header) {
         auto &capture = *static_cast<CapturedMidi *>(list->ctx);
+        if (header->type == CLAP_EVENT_MIDI2) {
+          capture.ump = *reinterpret_cast<const clap_event_midi2_t *>(header);
+          ++capture.umpEvents;
+          return true;
+        }
         if (header->type == CLAP_EVENT_MIDI_SYSEX) {
           const auto& message = *reinterpret_cast<const clap_event_midi_sysex_t *>(header);
           if (message.size != capture.sysEx.size() || message.port_index != 0 || !message.buffer)
@@ -330,6 +338,19 @@ void run(const char *path, const char *dumpPath) {
   check(captured.events[41].header.time == 31 &&
             std::equal(note.data, note.data + 3, captured.events[41].data),
         "CLAP changed the next note or delivered it before cleanup");
+  clap_event_midi2_t expression{};
+  expression.header = {sizeof(expression), 27, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI2, 0};
+  expression.data[0] = 0x43653c00; // Group 3, channel 5, per-note pitch bend for note 60.
+  expression.data[1] = 0xf1234567;
+  auto reserved = expression;
+  reserved.header.time = 28;
+  reserved.data[0] = 0x60000000;
+  incoming = {&event.header, &expression.header, &reserved.header, nullptr};
+  captured = {};
+  check(plugin->process(plugin, &process) != CLAP_PROCESS_ERROR && captured.umpEvents == 1 &&
+        captured.ump.header.time == 27 && captured.ump.port_index == 0 &&
+        std::ranges::equal(captured.ump.data, expression.data) && values[1][27] == 188.f && values[1][28] == 0.f,
+        "CLAP lost per-note expression, precision, or its offset across an automation split");
   process.in_events = &events;
   process.out_events = nullptr;
   process.transport = nullptr;
@@ -709,6 +730,56 @@ void run(const char *path, const char *dumpPath) {
       check(eventOutputs.getEvent(1, forwardedNote) == kResultOk &&
             forwardedNote.type == Event::kNoteOnEvent && forwardedNote.sampleOffset == 31,
             "VST3 reordered SysEx and channel MIDI");
+      eventInputs.clear();
+      eventOutputs.clear();
+      constexpr int overlapping = 68, original = 29;
+      note.noteOn.noteId = original;
+      note.sampleOffset = 2;
+      check(eventInputs.addEvent(note) == kResultOk, "Could not stage first voice");
+      note.noteOn.noteId = overlapping;
+      note.sampleOffset = 3;
+      check(eventInputs.addEvent(note) == kResultOk, "Could not stage overlapping voice");
+      check(processor->process(data) == kResultOk && eventOutputs.getEventCount() == 2,
+            "VST3 did not forward overlapping note-ons");
+      eventInputs.clear();
+      eventOutputs.clear();
+      Event expression{};
+      expression.type = Event::kNoteExpressionValueEvent;
+      expression.sampleOffset = 13;
+      constexpr double exactValue = 0x9ab01234u / 4294967295.0;
+      expression.noteExpressionValue = {201074, overlapping, exactValue};
+      check(eventInputs.addEvent(expression) == kResultOk, "Could not stage assignable per-note control");
+      expression.sampleOffset = 16;
+      expression.noteExpressionValue = {kTuningTypeID, original, .5};
+      check(eventInputs.addEvent(expression) == kResultOk, "Could not stage per-note tuning");
+      expression.sampleOffset = 21;
+      expression.noteExpressionValue.noteId = 1001;
+      check(eventInputs.addEvent(expression) == kResultOk, "Could not stage stale note expression");
+      check(processor->process(data) == kResultOk && eventOutputs.getEventCount() == 2 &&
+            values[1][13] == 188.f && values[1][16] == 188.f && values[1][21] == 0.f,
+            "VST3 lost the expression at the processor or forwarded the unknown voice");
+      Event sent{};
+      check(eventOutputs.getEvent(0, sent) == kResultOk && sent.type == Event::kNoteExpressionValueEvent &&
+            sent.sampleOffset == 13 && sent.noteExpressionValue.noteId == overlapping &&
+            sent.noteExpressionValue.typeId == 201074 && sent.noteExpressionValue.value == exactValue,
+            "VST3 changed the note identity, timing or 32-bit controller value");
+      check(eventOutputs.getEvent(1, sent) == kResultOk && sent.sampleOffset == 16 &&
+            sent.noteExpressionValue.noteId == original && sent.noteExpressionValue.typeId == kTuningTypeID &&
+            std::abs(sent.noteExpressionValue.value - .5) < 1e-9,
+            "VST3 redirected the first voice's tuning to the overlapping note");
+      eventInputs.clear();
+      eventOutputs.clear();
+      Event release{};
+      release.type = Event::kNoteOffEvent;
+      release.sampleOffset = 8;
+      release.noteOff = {0, 60, .25f, original, 0};
+      check(eventInputs.addEvent(release) == kResultOk, "Could not stage a VST3 voice release");
+      expression.noteExpressionValue = {kTuningTypeID, original, .75};
+      check(eventInputs.addEvent(expression) == kResultOk, "Could not stage an expression after voice release");
+      check(processor->process(data) == kResultOk && eventOutputs.getEventCount() == 1 &&
+            eventOutputs.getEvent(0, sent) == kResultOk && sent.type == Event::kNoteOffEvent &&
+            sent.noteOff.noteId == original && values[1][21] == 0.f,
+            "VST3 retained a released voice in its expression mapping");
       processor->setProcessing(false);
       component->setActive(false);
     }

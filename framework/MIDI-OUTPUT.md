@@ -69,6 +69,62 @@ observed it at frame 23 and that the host received the exact bytes back. This
 exercises ABI delivery. Bank decoding and import are product behavior.
 Omit `--dump` to run the built-in transport checks alone.
 
+## MIDI 2.0 UMP and per-note expression
+
+Set `PluginDescriptor::supportsUmp` alongside the required MIDI input or
+output flags. The core carries inline UMP words with the same sample offsets
+as short MIDI 1.0 and byte-stream SysEx events. CLAP advertises MIDI 2.0
+and MIDI 1.0 on opted-in ports. AUv3 uses Core MIDI event lists on macOS 12
+and iOS 15 or later. An AU host selects MIDI 2.0 with `hostMIDIProtocol`
+before installing `MIDIOutputEventListBlock` and allocating render resources.
+Rebuild processors, adapters, and installed SDK consumers together, since
+`MidiEvent` includes inline packet storage and the optional host `noteId`.
+
+```cpp
+if (const auto expression = cell::midi::perNoteExpression(event)) {
+    // Address the voice by group, channel and note.
+    // expression->value preserves the full 32-bit MIDI 2.0 value.
+}
+```
+
+`MidiEvent::universalPacket` constructs a packet from one, two or four
+native-order 32-bit words. Inspect `isUmp()` before reading the short
+MIDI 1.0 fields. `midi::perNoteExpression` recognizes registered and
+assignable per-note controllers, per-note pitch bend, and polyphonic pressure.
+MIDI transforms pass valid UMP through unchanged. Delivery cleanup sends
+channel resets to the UMP groups in which channel-voice messages were sent.
+Processors still own the mapping from note addresses to their voices.
+
+### VST3 note expression
+
+VST3 maps opted-in native notes, polyphonic pressure, tuning, and numeric
+registered and assignable note expressions to MIDI 2.0 channel voice events.
+The event bus maps to group zero. Use `MidiEvent::noteId` to distinguish
+overlapping notes on the same pitch and channel. An expression addressed by
+host note ID follows its note-on and precedes its note-off.
+`kTuningTypeID` uses the VST3 range of ±120 semitones over the UMP bend range.
+The native polyphonic pressure field has float precision. VST3's existing
+MIDI 1.0 controller path remains available. Raw SysEx8 packets, additional UMP
+groups, and textual expression are outside the VST3 mapping.
+
+### Android UMP devices
+
+An Android SDK built for API 33 or later provides `Cell::AndroidMidi`.
+Select a device with `MidiManager.getDevicesForTransport(TRANSPORT_UNIVERSAL_MIDI_PACKETS)`,
+open it with `MidiManager.openDevice`, and pass the Java `MidiDevice` to
+`cell::midi::AndroidUmpPort` through JNI. A source port on the device feeds
+Cell. A destination port receives Cell's output.
+
+Call `poll` with a `cell::midi::UmpDeviceQueue` on a device worker. The audio
+callback uses `read` with its block start in the same monotonic nanosecond
+clock domain as Android MIDI and passes the returned events to the engine.
+Use scratch for at least `UmpDeviceQueue::capacity` events. Reset the engine's
+note state before applying new events when the read reports `reset`. The
+queue carries future events across blocks and puts late events at frame
+zero. Supply each port's timestamps in order. Flush the queue on device
+removal or reconnect. Use `AndroidUmpPort::send` on the device worker for
+outbound packets.
+
 
 ## Clock availability and MPE event lifetimes (r38 source guidance)
 
