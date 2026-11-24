@@ -51,8 +51,9 @@ and every native target pass. After it passes, trusted `main` and `v*` runs
 package the previous and candidate CLAP binaries, independent hosts, original
 sessions and renders, and a report with the two source commits and measured
 errors. The `signed-session-reference-builds` workflow artifact contains
-the five reference ZIPs with GitHub's Sigstore build provenance. The
-attestations cover the ZIP digests and their build workflow. Platform
+the five reference ZIPs and their Sigstore provenance bundle
+(`cell-references.sigstore.jsonl`). The attestations cover the ZIP digests
+and their build workflow. Platform
 signatures such as Developer ID and Authenticode have a separate purpose.
 
 Verify a downloaded ZIP against this repository and workflow:

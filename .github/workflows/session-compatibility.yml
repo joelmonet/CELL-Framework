@@ -144,10 +144,18 @@ jobs:
             test -s "references/session-reference-$platform/cell-session-reference-$platform.zip"
           done
       - uses: actions/attest-build-provenance@v3
+        id: sign
         with:
           subject-path: references/session-reference-*/cell-session-reference-*.zip
+      - name: Collect the signed reference packages
+        env:
+          BUNDLE: ${{ steps.sign.outputs.bundle-path }}
+        run: |
+          mkdir signed-references
+          cp "$BUNDLE" signed-references/cell-references.sigstore.jsonl
+          cp references/session-reference-*/cell-session-reference-*.zip signed-references/
       - uses: actions/upload-artifact@v4
         with:
           name: signed-session-reference-builds
-          path: references/session-reference-*/cell-session-reference-*.zip
+          path: signed-references
           if-no-files-found: error
