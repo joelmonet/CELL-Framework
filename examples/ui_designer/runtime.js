@@ -30,6 +30,7 @@ const CellDesignerRuntime = (() => {
             stage.append(image);
         }
         const format = (parameter, value) => {
+            if (value === parameter.value && typeof parameter.text === "string") return parameter.text;
             const index = value - parameter.minimum;
             const digits = parameter.step > 0 && parameter.step < 0.01 ? 4 : 2;
             return parameter.choices?.[index] ?? `${value.toFixed(digits)}${parameter.unit ? " " + parameter.unit : ""}`;
@@ -218,7 +219,8 @@ const CellDesignerRuntime = (() => {
         }
 
         function write(binding, value) {
-            if (!interactive(binding.control)) return;
+            const parameter = parameters.get(binding.key);
+            if (!interactive(binding.control) || !parameter || parameter.readonly) return;
             const previous = owners.get(binding.key);
             if (previous !== binding) {
                 if (previous) {
@@ -231,14 +233,16 @@ const CellDesignerRuntime = (() => {
             // The active control shows its edit until the host echoes or corrects it.
             binding.deferred = undefined;
             send("parameter", binding.key, value);
-            const parameter = parameters.get(binding.key);
-            if (parameter) display(binding, parameter, value);
+            display(binding, parameter, value);
         }
 
         function display(binding, parameter, value) {
             const {control, output, input, dial, ledDisplay} = binding;
             binding.value = value;
-            const mapped = led.codeForValue(control.displayCodes, value, parameter.step);
+            const index = parameter.step > 0 ? Math.round((value - parameter.minimum) / parameter.step) : -1;
+            const hostCode = parameter.display?.codes?.[index];
+            const mapped = led.codeForValue(control.displayCodes, value, parameter.step) ??
+                (typeof hostCode === "string" && hostCode.length <= 3 ? hostCode : undefined);
             if (control.kind === "led") {
                 showLedValue(binding, value, mapped ?? led.numericCode(value), format(parameter, value));
                 return;
@@ -257,7 +261,7 @@ const CellDesignerRuntime = (() => {
                     output.title = choice ?? "";
                 }
                 for (const [i, button] of binding.buttons.entries()) {
-                    setAvailable(control, button, Boolean(count));
+                    setAvailable(control, button, Boolean(count) && !parameter.readonly);
                     const chord = control.chordAction && permits(control.chordAction, "invoke");
                     button.setAttribute("aria-disabled", String(!chord &&
                         adjacentValue(parameter, value, i === 0 ? -1 : 1, count) === undefined));
@@ -294,7 +298,8 @@ const CellDesignerRuntime = (() => {
             if (!binding.detentMarks) return 0;
             const count = stepCount(parameter);
             const steps = count < maxDetents ? count : 0;
-            const labels = binding.control.detentLabels === "choices" ? parameter?.choices : binding.control.detentLabels;
+            const labels = binding.control.detentLabels === "choices" ? parameter?.choices :
+                binding.control.detentLabels ?? parameter?.display?.detents;
             const captions = steps > 0 && steps < maxDetentLabels && Array.isArray(labels) && labels.length === steps + 1 &&
                 labels.every(label => typeof label === "string") ? labels : [];
             const stagger = captions.length > 8 && captions.some(label => label.length > 4);
@@ -331,7 +336,7 @@ const CellDesignerRuntime = (() => {
             const {input, control} = binding;
             if (input) {
                 if (control.kind === "momentary") {
-                    const available = momentaryAvailable && parameter.minimum < parameter.maximum;
+                    const available = momentaryAvailable && !parameter.readonly && parameter.minimum < parameter.maximum;
                     if (!available) binding.stop();
                     setAvailable(control, input, available);
                 } else if (control.kind === "choice") {
@@ -341,17 +346,17 @@ const CellDesignerRuntime = (() => {
                         input.replaceChildren(...choices.map((label, i) => new Option(label, parameter.minimum + i)));
                         binding.signature = signature;
                     }
-                    setAvailable(control, input, Boolean(choices.length));
+                    setAvailable(control, input, Boolean(choices.length) && !parameter.readonly);
                     input.value = parameter.value;
                 } else if (control.kind === "toggle") {
-                    setAvailable(control, input, twoState(parameter));
+                    setAvailable(control, input, twoState(parameter) && !parameter.readonly);
                 } else {
                     const steps = updateDetents(binding, parameter);
                     input.min = steps ? 0 : parameter.minimum;
                     input.max = steps || parameter.maximum;
                     input.step = steps ? 1 : parameter.step > 0 ? parameter.step : "any";
                     input.value = steps ? stepIndex(parameter, parameter.value, steps) : parameter.value;
-                    setAvailable(control, input, parameter.minimum < parameter.maximum);
+                    setAvailable(control, input, !parameter.readonly && parameter.minimum < parameter.maximum);
                 }
             }
             display(binding, parameter, parameter.value);
@@ -967,7 +972,7 @@ const CellDesignerRuntime = (() => {
         window.addEventListener("blur", cancel);
         window.addEventListener("pagehide", cancel);
         document.addEventListener("visibilitychange", () => { if (document.hidden) cancel(); });
-        let pendingSnapshot, receiving = false;
+        let pendingSnapshot, receivedSnapshot, receiving = false, requestedDeltas = false;
         bridge.onMessage(message => {
             if (message.type === "meters" && Array.isArray(message.meters)) {
                 for (const signal of message.meters) {
@@ -987,7 +992,23 @@ const CellDesignerRuntime = (() => {
                 }
                 return;
             }
-            if (message.type !== "parameters" || !Array.isArray(message.parameters)) return;
+            if (!Array.isArray(message.parameters)) return;
+            if (message.type === "parameter-delta") {
+                if (!receivedSnapshot || message.base !== receivedSnapshot.revision) {
+                    bridge.postMessage({type: "parameter-resync"});
+                    return;
+                }
+                const next = new Map(receivedSnapshot.parameters.map(parameter => [parameter.key, parameter]));
+                for (const key of message.removed ?? []) next.delete(key);
+                for (const parameter of message.parameters) next.set(parameter.key, parameter);
+                message = {...receivedSnapshot, ...message, type: "parameters", parameters: [...next.values()]};
+            }
+            if (message.type !== "parameters") return;
+            receivedSnapshot = message;
+            if (message.supportsDeltas && !requestedDeltas) {
+                requestedDeltas = true;
+                bridge.postMessage({type: "subscribe-parameter-deltas"});
+            }
             pendingSnapshot = message;
             if (receiving) return;
             receiving = true;
@@ -1009,7 +1030,7 @@ const CellDesignerRuntime = (() => {
                     ? [action.key + "/" + action.mode] : []));
             parameters.clear();
             for (const parameter of message.parameters) {
-                if (parameter && [parameter.value, parameter.minimum, parameter.maximum].every(Number.isFinite))
+                if (parameter && !parameter.hidden && [parameter.value, parameter.minimum, parameter.maximum].every(Number.isFinite))
                     parameters.set(parameter.key, parameter);
             }
             const {changed, focusFrom} = updateRules();
@@ -1036,7 +1057,7 @@ const CellDesignerRuntime = (() => {
                         updateDetents(binding, undefined);
                     } else if (owners.get(key) === binding) {
                         binding.deferred = parameter;
-                        if (binding.buttons && !stepCount(parameter)) {
+                        if (parameter.readonly || (binding.buttons && !stepCount(parameter))) {
                             binding.stop?.();
                             end(binding);
                         }

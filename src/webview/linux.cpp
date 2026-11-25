@@ -44,6 +44,20 @@ struct Runtime {
     void (*disconnect)(void*,unsigned long){};
     int (*iterate)(void*,int){};
     void* (*dataEphemeral)(){};void* (*contextNew)(void*){};
+    void (*registerScheme)(void*,const char*,void(*)(void*,void*),void*,void(*)(void*)){};
+    void* (*securityManager)(void*){};
+    void (*schemeCors)(void*,const char*){};
+    const char* (*schemeUri)(void*){};
+    void (*finishScheme)(void*,void*){};
+    void* (*schemeResponse)(void*,std::int64_t){};
+    void (*schemeStatus)(void*,unsigned,const char*){};
+    void (*schemeContentType)(void*,const char*){};
+    void (*schemeHeaders)(void*,void*){};
+    void* (*headersNew)(int){};
+    void (*headersAppend)(void*,const char*,const char*){};
+    void* (*bytesNew)(const void*,std::size_t){};
+    void (*bytesUnref)(void*){};
+    void* (*streamFromBytes)(void*){};
     void* (*viewNew)(void*){};void* (*manager)(void*){};
     void* (*settings)(void*){};void (*developerTools)(void*,int){};
     int (*registerMessage)(void*,const char*){};void (*unregisterMessage)(void*,const char*){};
@@ -84,10 +98,53 @@ struct Runtime {
           bind(registerMessage,"webkit_user_content_manager_register_script_message_handler")&&bind(unregisterMessage,"webkit_user_content_manager_unregister_script_message_handler")&&
           bind(scriptNew,"webkit_user_script_new")&&bind(scriptAdd,"webkit_user_content_manager_add_script")&&bind(scriptUnref,"webkit_user_script_unref")&&
           bind(loadHtml,"webkit_web_view_load_html")&&bind(loadUri,"webkit_web_view_load_uri")&&bind(evaluate,"webkit_web_view_evaluate_javascript")&&
-          bind(jsValue,"webkit_javascript_result_get_js_value")&&bind(jsString,"jsc_value_to_string")&&bind(request,"webkit_navigation_policy_decision_get_request")&&bind(uri,"webkit_uri_request_get_uri")&&bind(ignore,"webkit_policy_decision_ignore");
+          bind(jsValue,"webkit_javascript_result_get_js_value")&&bind(jsString,"jsc_value_to_string")&&bind(request,"webkit_navigation_policy_decision_get_request")&&bind(uri,"webkit_uri_request_get_uri")&&bind(ignore,"webkit_policy_decision_ignore")&&
+          bind(registerScheme,"webkit_web_context_register_uri_scheme")&&bind(securityManager,"webkit_web_context_get_security_manager")&&
+          bind(schemeCors,"webkit_security_manager_register_uri_scheme_as_cors_enabled")&&bind(schemeUri,"webkit_uri_scheme_request_get_uri")&&
+          bind(finishScheme,"webkit_uri_scheme_request_finish_with_response")&&bind(schemeResponse,"webkit_uri_scheme_response_new")&&
+          bind(schemeStatus,"webkit_uri_scheme_response_set_status")&&bind(schemeContentType,"webkit_uri_scheme_response_set_content_type")&&
+          bind(schemeHeaders,"webkit_uri_scheme_response_set_http_headers")&&bind(headersNew,"soup_message_headers_new")&&
+          bind(headersAppend,"soup_message_headers_append")&&bind(bytesNew,"g_bytes_new")&&
+          bind(bytesUnref,"g_bytes_unref")&&bind(streamFromBytes,"g_memory_input_stream_new_from_bytes");
     }
 };
 Runtime& runtime(){static Runtime value;return value;}
+void serveAsset(void* request, void* user) noexcept {
+    const auto& state = *static_cast<std::shared_ptr<State>*>(user);
+    auto& api = runtime();
+    const char* uri = api.schemeUri(request);
+    const std::string_view address = uri ? uri : "";
+    const auto* asset = !state->closed && address.starts_with(assetOrigin)
+        ? findAsset(state->options, address.substr(assetOrigin.size())) : nullptr;
+    const auto size = asset ? asset->bytes.size() : 0;
+    auto* bytes = api.bytesNew(asset ? asset->bytes.data() : nullptr, size);
+    auto* stream = api.streamFromBytes(bytes);
+    api.bytesUnref(bytes);
+    auto* response = api.schemeResponse(stream, static_cast<std::int64_t>(size));
+    api.unref(stream);
+    auto* headers = api.headersNew(1); // SOUP_MESSAGE_HEADERS_RESPONSE
+    api.headersAppend(headers, "Access-Control-Allow-Origin", "*");
+    api.headersAppend(headers, "Cache-Control", "no-store");
+    api.schemeHeaders(response, headers); // WebKit owns the headers after this call.
+    api.schemeStatus(response, asset ? 200 : 404, nullptr);
+    api.schemeContentType(response, asset ? assetMime(asset->name) : "text/plain");
+    api.finishScheme(request, response);
+    api.unref(response);
+}
+
+void registerAssetHandler(void* context, const std::shared_ptr<State>& state) {
+    auto& api = runtime();
+    // WebKit may retire a context asynchronously after its editor closes.
+    // Keep the callback's code mapped for the lifetime of the host process.
+    Dl_info module{};
+    if (dladdr(reinterpret_cast<const void*>(&serveAsset), &module))
+        if (auto* reference = dlopen(module.dli_fname, RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE))
+            dlclose(reference);
+    auto user = std::make_unique<std::shared_ptr<State>>(state);
+    api.schemeCors(api.securityManager(context), "cell-asset");
+    api.registerScheme(context, "cell-asset", serveAsset, user.release(),
+        [](void* owned) { delete static_cast<std::shared_ptr<State>*>(owned); });
+}
 std::atomic<unsigned> views{};
 std::thread::id guiThread;
 class LinuxView final:public NativeView {
@@ -139,6 +196,10 @@ public:
             if (privateDisplay_) api_.setScreen(plug_, api_.defaultScreen(privateDisplay_));
             auto* data=api_.dataEphemeral();if(!data)throw std::runtime_error("Cannot create private WebKit storage");
             auto* context=api_.contextNew(data);api_.unref(data);if(!context)throw std::runtime_error("Cannot create WebKit context");
+            if (!state_->options.assets.empty()) {
+                try { registerAssetHandler(context, state_); }
+                catch (...) { api_.unref(context); throw; }
+            }
             web_=api_.viewNew(context);api_.unref(context);if(!web_)throw std::runtime_error("Cannot create WebKit view");api_.refSink(web_);
             api_.add(plug_,web_);manager_=api_.manager(web_);
             messageSignal_=api_.connect(manager_,"script-message-received::cell",reinterpret_cast<void(*)()>(&message),this,nullptr,0);

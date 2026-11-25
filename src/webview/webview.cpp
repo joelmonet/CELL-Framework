@@ -20,6 +20,44 @@ bool navigationAllowed(std::string_view uri,const Options& options) noexcept {
     if(uri=="about:blank"||uri.starts_with("about:blank#"))return true;
     return options.allowRemoteContent&&(uri.starts_with("https://")||uri.starts_with("http://"));
 }
+const char* assetMime(std::string_view name) noexcept {
+    if (name.ends_with(".png")) return "image/png";
+    if (name.ends_with(".jpeg") || name.ends_with(".jpg")) return "image/jpeg";
+    if (name.ends_with(".gif")) return "image/gif";
+    if (name.ends_with(".webp")) return "image/webp";
+    if (name.ends_with(".svg")) return "image/svg+xml";
+    if (name.ends_with(".woff2")) return "font/woff2";
+    if (name.ends_with(".woff")) return "font/woff";
+    if (name.ends_with(".ttf")) return "font/ttf";
+    if (name.ends_with(".otf")) return "font/otf";
+    return nullptr;
+}
+
+const Asset* findAsset(const Options& options, std::string_view name) noexcept {
+    const auto found = std::ranges::lower_bound(options.assets, name, {}, &Asset::name);
+    return found != options.assets.end() && found->name == name ? &*found : nullptr;
+}
+
+void validateAssets(Options& options) {
+    if (options.assets.size() > 256) throw std::invalid_argument("Too many WebView assets");
+    std::ranges::sort(options.assets, {}, &Asset::name);
+    std::size_t total{};
+    std::string_view previous;
+    for (const auto& asset : options.assets) {
+        const auto name = std::string_view(asset.name);
+        if (name.empty() || name.size() > 160 || name.starts_with('/') || name.ends_with('/') ||
+            name.find("..") != name.npos || name.find("//") != name.npos || name.starts_with("./") ||
+            name.find("/./") != name.npos || name == previous || !assetMime(name) ||
+            !std::ranges::all_of(name, [](char c) {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                    c == '.' || c == '-' || c == '_' || c == '/';
+            }) || asset.bytes.empty() || asset.bytes.size() > 4 * 1024 * 1024)
+            throw std::invalid_argument("Invalid or duplicate WebView asset");
+        total += asset.bytes.size();
+        if (total > 16 * 1024 * 1024) throw std::invalid_argument("WebView assets exceed 16 MiB");
+        previous = name;
+    }
+}
 }
 struct View::Impl {
     std::thread::id owner=std::this_thread::get_id();
@@ -31,7 +69,7 @@ View::View():impl_(std::make_unique<Impl>()){}
 View::~View(){close();}
 Availability View::availability(const Options& options){return detail::platformAvailability(options);}
 bool View::open(Options options){
-    impl_->thread();close();detail::validateBounds(options.bounds);
+    impl_->thread();close();detail::validateBounds(options.bounds);detail::validateAssets(options);
     impl_->state=std::make_shared<detail::State>();impl_->state->options=std::move(options);
     if(!impl_->state->options.parent){impl_->state->push(Event::Kind::error,"Supply a native parent window");return false;}
     try{impl_->native=detail::createNative(impl_->state);return bool(impl_->native);}catch(const std::exception& e){impl_->state->push(Event::Kind::error,e.what());return false;}
@@ -40,7 +78,8 @@ bool View::ready()const{impl_->thread();return impl_->native&&impl_->state->read
 bool View::loadHtml(std::string_view html){
     impl_->thread();if(!impl_->native||html.size()>detail::maxHtmlBytes||html.find('\0')!=html.npos)return false;
     std::string content;
-    if(!impl_->state->options.allowRemoteContent)content=detail::offlineContentPolicy;
+    if(!impl_->state->options.allowRemoteContent)
+        content=impl_->state->options.assets.empty()?detail::offlineContentPolicy:detail::assetContentPolicy;
     content+=html;
     if(!ready()){impl_->state->pendingHtml=std::move(content);return true;}
     return impl_->native->loadHtml(content);

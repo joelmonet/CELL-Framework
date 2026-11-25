@@ -13,6 +13,8 @@ namespace {
 std::atomic<unsigned> callbackObjects{},viewObjects{};
 constexpr char editorUri[] = "https://cell-editor.invalid/editor.html";
 constexpr wchar_t editorUriWide[] = L"https://cell-editor.invalid/editor.html";
+constexpr std::string_view assetPrefix = "https://cell-editor.invalid/assets/";
+constexpr wchar_t assetFilter[] = L"https://cell-editor.invalid/assets/*";
 
 bool isEditorUri(std::string_view uri) {
     constexpr std::string_view page = editorUri;
@@ -89,7 +91,7 @@ public:
     Com<ICoreWebView2Controller> controller;Com<ICoreWebView2> web;
     EventRegistrationToken messageToken{},navigationToken{},loadedToken{},newWindowToken{},resourceToken{};
     bool messageRegistered{},navigationRegistered{},loadedRegistered{},newWindowRegistered{},closed{};
-    bool resourceRegistered{},resourceFilter{},visible{true};
+    bool resourceRegistered{},resourceFilter{},assetsFiltered{},visible{true};
     std::string html;
     std::optional<UINT64> navigationId;
     bool navigationRequested{};
@@ -146,12 +148,15 @@ public:
         // Serve the document from memory. NavigateToString caps HTML at 2 MiB,
         // which is too small for designer exports with embedded artwork.
         resourceFilter = SUCCEEDED(web->AddWebResourceRequestedFilter(editorUriWide, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT));
+        if (!state->options.assets.empty())
+            assetsFiltered = SUCCEEDED(web->AddWebResourceRequestedFilter(assetFilter, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL));
         using Resource = Callback<ICoreWebView2WebResourceRequestedEventHandler, ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs*>;
         Com<Resource> resource(new Resource([weak,life,keepLoader](auto*,auto* args) {
             if (auto self=weak.lock(); self && !self->closed) self->serveEditor(args);
             return S_OK;
         }));
-        resourceRegistered = resourceFilter && SUCCEEDED(web->add_WebResourceRequested(resource.get(), &resourceToken));
+        resourceRegistered = resourceFilter && (state->options.assets.empty() || assetsFiltered) &&
+            SUCCEEDED(web->add_WebResourceRequested(resource.get(), &resourceToken));
         if(!messageRegistered||!navigationRegistered||!loadedRegistered||!newWindowRegistered||!resourceRegistered){failure("WebView2 callback registration failed",E_FAIL);close();return;}
 
         setBounds(state->options.bounds);
@@ -197,16 +202,38 @@ public:
                     success ? std::string{} : "WebView2 navigation failed");
     }
     void serveEditor(ICoreWebView2WebResourceRequestedEventArgs* args) {
+        ICoreWebView2WebResourceRequest* rawRequest{};
+        if (FAILED(args->get_Request(&rawRequest))) return;
+        Com<ICoreWebView2WebResourceRequest> request(rawRequest);
+        LPWSTR rawUri{};
+        if (!request || FAILED(request->get_Uri(&rawUri))) return;
+        const auto uri = utf8(TaskString(rawUri).get());
+        std::string_view content;
+        std::string mime = "text/html; charset=utf-8";
+        int status = 200;
+        if (uri.starts_with(assetPrefix)) {
+            const auto* asset = findAsset(state->options, std::string_view(uri).substr(assetPrefix.size()));
+            if (asset) {
+                mime = assetMime(asset->name);
+                content = {reinterpret_cast<const char*>(asset->bytes.data()), asset->bytes.size()};
+            } else {
+                mime = "text/plain";
+                status = 404;
+            }
+        } else {
+            content = html;
+        }
         IStream* rawStream{};
-        auto result = html.empty() ? E_FAIL : CreateStreamOnHGlobal(nullptr, TRUE, &rawStream);
+        auto result = CreateStreamOnHGlobal(nullptr, TRUE, &rawStream);
         const Com<IStream> stream(rawStream);
         ULONG written{};
-        if (SUCCEEDED(result)) result = stream->Write(html.data(), static_cast<ULONG>(html.size()), &written);
-        if (SUCCEEDED(result) && written != html.size()) result = STG_E_WRITEFAULT;
+        if (SUCCEEDED(result) && !content.empty()) result = stream->Write(content.data(), static_cast<ULONG>(content.size()), &written);
+        if (SUCCEEDED(result) && written != content.size()) result = STG_E_WRITEFAULT;
         if (SUCCEEDED(result)) result = stream->Seek(LARGE_INTEGER{}, STREAM_SEEK_SET, nullptr);
         ICoreWebView2WebResourceResponse* rawResponse{};
-        constexpr auto headers = L"Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store";
-        if (SUCCEEDED(result)) result = environment->CreateWebResourceResponse(stream.get(), 200, L"OK", headers, &rawResponse);
+        const auto headers = wide("Content-Type: " + mime + "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff");
+        if (SUCCEEDED(result)) result = environment->CreateWebResourceResponse(
+            stream.get(), status, status == 200 ? L"OK" : L"Not Found", headers.c_str(), &rawResponse);
         const Com<ICoreWebView2WebResourceResponse> response(rawResponse);
         if (SUCCEEDED(result)) result = args->put_Response(response.get());
         if (FAILED(result)) {
@@ -223,6 +250,9 @@ public:
     }
     bool loadHtml(std::string_view page) {
         html.assign(page);
+        if (!state->options.assets.empty())
+            for (std::size_t offset = 0; (offset = html.find(assetOrigin, offset)) != html.npos; offset += assetPrefix.size())
+                html.replace(offset, assetOrigin.size(), assetPrefix);
         return navigate(editorUriWide);
     }
     void setVisible(bool show) {
@@ -234,6 +264,7 @@ public:
         if(web){if(messageRegistered)web->remove_WebMessageReceived(messageToken);if(navigationRegistered)web->remove_NavigationStarting(navigationToken);if(loadedRegistered)web->remove_NavigationCompleted(loadedToken);if(newWindowRegistered)web->remove_NewWindowRequested(newWindowToken);}
         if (resourceRegistered) web->remove_WebResourceRequested(resourceToken);
         if (resourceFilter) web->RemoveWebResourceRequestedFilter(editorUriWide, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT);
+        if (assetsFiltered) web->RemoveWebResourceRequestedFilter(assetFilter, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
         if(controller)controller->Close();web.reset();controller.reset();environment.reset();
     }
 };

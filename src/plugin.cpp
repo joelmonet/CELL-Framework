@@ -1,9 +1,115 @@
 #include <cell/plugin.hpp>
 #include <cell/realtime.hpp>
 #include <cell/state_transfer.hpp>
+#include <cell/text.hpp>
 #include <set>
 
 namespace cell {
+namespace {
+std::string_view trimParameterText(std::string_view text) noexcept {
+    constexpr std::string_view whitespace = " \t\r\n\f\v";
+    const auto first = text.find_first_not_of(whitespace);
+    if (first == std::string_view::npos) return {};
+    return text.substr(first, text.find_last_not_of(whitespace) - first + 1);
+}
+
+bool equalParameterText(std::string_view left, std::string_view right) {
+    return left == right || Text(left).equalsIgnoreCase(Text(right));
+}
+}
+
+std::optional<double> Parameter::parseText(std::string_view input) const {
+    input = trimParameterText(input);
+    if (input.empty()) return {};
+    auto label = input;
+    if (!unit.empty() && input.size() > unit.size() && equalParameterText(input.substr(input.size() - unit.size()), unit)) {
+        const auto prefix = input.substr(0, input.size() - unit.size());
+        if (trimParameterText(prefix).size() != prefix.size()) label = trimParameterText(prefix);
+    }
+    std::optional<double> match;
+    for (std::size_t i = 0; i < choices.size(); ++i) {
+        const auto choice = trimParameterText(choices[i]);
+        if (!equalParameterText(choice, input) && !equalParameterText(choice, label)) continue;
+        if (match) return {};
+        match = minimum + static_cast<double>(i);
+    }
+    if (match) return match;
+    if (input.front() == '+') input.remove_prefix(1);
+    if (input.empty()) return {};
+    double parsed{};
+    const auto end = input.data() + input.size();
+    const auto result = detail::parseDoubleChars(input.data(), end, parsed);
+    const auto suffix = trimParameterText({result.ptr, static_cast<std::size_t>(end - result.ptr)});
+    if (result.ec != std::errc{} || !std::isfinite(parsed) || (!suffix.empty() && !equalParameterText(suffix, unit)))
+        return {};
+    return clamp(parsed);
+}
+
+ParameterPresentation resolveParameterPresentation(const Parameter& storage, const ParameterPresentationSource* source) {
+    if (source) {
+        if (auto metadata = source->parameterPresentation(storage.id)) {
+            auto& field = metadata->field;
+            if (!field.name.empty() && std::isfinite(field.minimum) && std::isfinite(field.maximum) &&
+                field.minimum < field.maximum && std::isfinite(field.defaultValue) &&
+                field.defaultValue >= field.minimum && field.defaultValue <= field.maximum &&
+                std::isfinite(field.step) && field.step >= 0 && std::isfinite(field.skew) && field.skew > 0 &&
+                (field.choices.empty() || (field.step == 1 && std::floor(field.minimum) == field.minimum &&
+                   field.maximum - field.minimum + 1 == static_cast<double>(field.choices.size())))) {
+                field.id = storage.id;
+                field.key = storage.key;
+                field.bypass = storage.bypass;
+                return std::move(*metadata);
+            }
+        }
+    }
+    return {storage};
+}
+
+bool sameParameterDomain(const Parameter& left, const Parameter& right) noexcept {
+    return left.minimum == right.minimum && left.maximum == right.maximum &&
+        left.step == right.step && left.skew == right.skew;
+}
+
+double mapParameterValue(double value, const Parameter& from, const Parameter& to) noexcept {
+    return sameParameterDomain(from, to) ? value : to.fromNormalized(from.toNormalized(value));
+}
+
+class Engine::QueuedMidi {
+public:
+    bool push(MidiEvent event) noexcept {
+        const auto write = write_.load(std::memory_order_relaxed);
+        const auto next = (write + 1) % slots_.size();
+        if (next == read_.load(std::memory_order_acquire)) return false;
+        auto& slot = slots_[write];
+        event.frame = 0;
+        if (event.isSysEx()) {
+            if (event.sysEx.size() > slot.bytes.size() || !midi::validSysEx(event.sysEx)) return false;
+            std::ranges::copy(event.sysEx, slot.bytes.begin());
+            event.sysEx = std::span(slot.bytes).first(event.sysEx.size());
+        } else if (event.isUmp() ? !midi::validUmp(event) : !midi::valid(event)) return false;
+        slot.event = event;
+        write_.store(next, std::memory_order_release);
+        return true;
+    }
+
+    void drain(midi::Output& output) noexcept {
+        auto read = read_.load(std::memory_order_relaxed);
+        const auto end = write_.load(std::memory_order_acquire);
+        while (read != end && output.push(slots_[read].event)) {
+            read = (read + 1) % slots_.size();
+            read_.store(read, std::memory_order_release);
+        }
+    }
+
+private:
+    struct Slot {
+        MidiEvent event;
+        std::array<std::uint8_t, 65535> bytes;
+    };
+    std::array<Slot, 5> slots_;
+    alignas(64) std::atomic<std::size_t> write_{};
+    alignas(64) std::atomic<std::size_t> read_{};
+};
 
 Engine::Engine(const PluginDescriptor& descriptor, std::unique_ptr<Processor> processor)
     : id_(descriptor.id?descriptor.id:""),name_(descriptor.name?descriptor.name:""),
@@ -20,6 +126,7 @@ Engine::Engine(const PluginDescriptor& descriptor, std::unique_ptr<Processor> pr
     processor_->attachParameterOutput(this);
     processor_->initializeParameters(parameters_);
     if(descriptor_.acceptsMidi){controllerInput_=std::make_unique<midi::ControlInput>();padInput_=std::make_unique<midi::PadInput>();}
+    if (descriptor_.producesMidi) queuedMidi_ = std::make_unique<QueuedMidi>();
 }
 
 Engine::~Engine() { snapshots_.reset(); }
@@ -32,6 +139,10 @@ bool Engine::controllerMidi(const midi::ControlMessage& message)noexcept {
     return controllerInput_&&controllerInput_->submit(message);
 }
 void Engine::releaseControllerMidi()noexcept{if(controllerInput_)controllerInput_->releaseAll();}
+bool Engine::enqueueMidi(const MidiEvent& event) noexcept {
+    return queuedMidi_ && (!event.isSysEx() || descriptor_.supportsSysEx) &&
+        (!event.isUmp() || descriptor_.supportsUmp) && queuedMidi_->push(event);
+}
 std::vector<std::byte> Engine::queryProduct(std::span<const std::byte> bytes) {
     if (state::isTransfer(bytes)) {
         std::lock_guard lock(snapshotsMutex_);
@@ -82,6 +193,19 @@ void Engine::prepare(double sampleRate, std::uint32_t maxFrames, std::uint32_t c
 
 void Engine::reset() noexcept {if(controllerInput_)controllerInput_->releaseAll();if(padInput_)padInput_->resetAudio();processor_->reset();}
 
+void Engine::applyParameterEvent(const ParameterEdit& edit) noexcept {
+    if (edit.type == EditType::value) {
+        if (parameters_.set(edit.id, edit.value))
+            processor_->parameterChanged(edit.id, parameters_.get(edit.id));
+    } else if ((edit.type == EditType::begin || edit.type == EditType::end) && parameters_.find(edit.id)) {
+        processor_->parameterGesture(edit.id, edit.type);
+    }
+}
+
+void Engine::applyParameterEvents(std::span<const ParameterEdit> events) noexcept {
+    for (const auto& event : events) applyParameterEvent(event);
+}
+
 void Engine::process(AudioBlock<float> block, std::span<const ParameterEvent> events,
                      const Transport& transport, std::span<const MidiEvent> midi,AudioBlock<float> sidechain,midi::Output* output) noexcept {
     ScopedNoDenormals denormals;
@@ -107,6 +231,7 @@ void Engine::process(AudioBlock<float> block, std::span<const ParameterEvent> ev
     if(routed&&midi.size()>midi::eventCapacity){
         processor_->reset();if(output){output->reject();for(unsigned ch=0;ch<16;++ch)for(unsigned cc:{64u,120u,123u})output->push({0,{std::uint8_t(0xb0|ch),std::uint8_t(cc),0},3});}return;
     }
+    if (output && queuedMidi_ && block.frames) queuedMidi_->drain(*output);
     if(output&&!routed)midi::forward(midi,*output,block.frames);
     auto render = [&](std::uint32_t begin, std::uint32_t end) noexcept {
         if (begin == end) return;
@@ -141,11 +266,11 @@ void Engine::process(AudioBlock<float> block, std::span<const ParameterEvent> ev
     };
     std::uint32_t cursor{};
     for (const auto& event : events) {
-        if (event.frame < cursor || event.frame > block.frames || !std::isfinite(event.value) ||
+        if (event.frame < cursor || event.frame > block.frames ||
+            (event.type == EditType::value && !std::isfinite(event.value)) ||
             !parameters_.find(event.id)) continue;
         render(cursor, event.frame);
-        parameters_.set(event.id, event.value);
-        processor_->parameterChanged(event.id,parameters_.get(event.id));
+        applyParameterEvent({event.type, event.id, event.value});
         cursor = event.frame;
     }
     render(cursor, block.frames);

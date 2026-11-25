@@ -13,6 +13,7 @@ import zipfile
 FILES = {
     "README.md",
     ".github/workflows/apple-sdk.yml",
+    ".github/workflows/clap-contracts.yml",
     ".github/workflows/windows-sdk.yml",
     ".github/workflows/raspberry-pi-sdk.yml",
     ".github/workflows/session-compatibility.yml",
@@ -100,6 +101,8 @@ FILES = {
     'src/detail/integer_decimal.hpp', 'tests/integer_decimal_tests.cpp',
     'framework/TRANSPORT.md', 'framework/HOST-PROJECTS.md', 'tests/sdk_transport_consumer/CMakeLists.txt',
     'tests/sdk_transport_consumer/processor.cpp', 'tests/sdk_transport_consumer/host.cpp',
+    'tests/sdk_transport_consumer/editor_host.cpp', 'tests/sdk_transport_consumer/editor_bindings.hpp',
+    'tests/sdk_transport_consumer/editor.html', 'tests/sdk_transport_consumer/editor-assets/meter.svg',
     'tests/sdk_transport_consumer/auv3_host.mm', 'tests/sdk_transport_consumer/auv3_midi_fx_host.mm',
     'tests/sdk_transport_consumer/auv3_instrument_host.mm',
     'tests/auv3_automation_tests.cpp',

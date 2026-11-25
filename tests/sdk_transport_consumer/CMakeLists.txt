@@ -38,7 +38,7 @@ if(BUILD_TESTING AND (CELL_TRANSPORT_CLAP_SDK OR CELL_TRANSPORT_VST3_SDK))
 endif()
 if(CELL_TRANSPORT_CLAP_SDK)
     cell_add_clap_plugin(CellTransport_CLAP PROCESSOR cell_transport_fixture
-        ID org.cell.test.transport NAME "Cell Transport Test" CLAP_SDK "${CELL_TRANSPORT_CLAP_SDK}")
+        ID org.cell.test.transport NAME "Cell Transport Test" CLAP_SDK "${CELL_TRANSPORT_CLAP_SDK}" CLAP_EXPOSE_PROGRAMS)
     add_executable(cell_transport_clap_host host.cpp)
     target_compile_definitions(cell_transport_clap_host PRIVATE CELL_TRANSPORT_CLAP=1)
     target_include_directories(cell_transport_clap_host PRIVATE "${CELL_TRANSPORT_CLAP_SDK}/include")
@@ -78,4 +78,24 @@ if(CELL_TRANSPORT_VST3_SDK)
     if(BUILD_TESTING)
         add_test(NAME transport_vst3_dump COMMAND cell_transport_vst3_host "${bundle}" --dump "${transport_dump}")
     endif()
+endif()
+
+option(CELL_TRANSPORT_CLAP_EDITOR_TEST "Build the native X11 CLAP WebView smoke test" OFF)
+if(CELL_TRANSPORT_CLAP_EDITOR_TEST)
+    if(NOT CELL_TRANSPORT_CLAP_SDK OR NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT TARGET Cell::WebView)
+        message(FATAL_ERROR "The native editor smoke test needs Linux, CLAP and Cell::WebView")
+    endif()
+    find_package(X11 REQUIRED)
+    cell_add_clap_plugin(CellTransportEditor_CLAP PROCESSOR cell_transport_fixture
+        ID org.cell.test.editor NAME "Cell Editor Contract" CLAP_SDK "${CELL_TRANSPORT_CLAP_SDK}"
+        CLAP_EDITOR_HTML "${CMAKE_CURRENT_SOURCE_DIR}/editor.html"
+        CLAP_EDITOR_BINDINGS "${CMAKE_CURRENT_SOURCE_DIR}/editor_bindings.hpp"
+        CLAP_EDITOR_FILE_EXTENSIONS ".mstbank;.syx"
+        CLAP_EDITOR_ASSETS "${CMAKE_CURRENT_SOURCE_DIR}/editor-assets")
+    add_executable(cell_clap_editor_host editor_host.cpp)
+    target_compile_features(cell_clap_editor_host PRIVATE cxx_std_20)
+    target_include_directories(cell_clap_editor_host PRIVATE "${CELL_TRANSPORT_CLAP_SDK}/include")
+    target_link_libraries(cell_clap_editor_host PRIVATE X11::X11 ${CMAKE_DL_LIBS})
+    add_test(NAME transport_clap_editor COMMAND cell_clap_editor_host "$<TARGET_FILE:CellTransportEditor_CLAP>")
+    set_tests_properties(transport_clap_editor PROPERTIES TIMEOUT 35 SKIP_RETURN_CODE 77)
 endif()

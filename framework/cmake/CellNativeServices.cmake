@@ -36,16 +36,21 @@ function(cell_add_audio_files source_root)
     target_link_libraries(cell_audio_files PUBLIC cell_core PRIVATE ${CMAKE_DL_LIBS})
 endfunction()
 
+function(cell_add_native_file_dialog target source_root)
+    target_sources(${target} PRIVATE "${source_root}/src/ui/file_dialog.cpp")
+    if(APPLE)
+        target_sources(${target} PRIVATE "${source_root}/src/ui/file_dialog_macos.mm")
+        set_source_files_properties("${source_root}/src/ui/file_dialog_macos.mm" PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    endif()
+endfunction()
+
 function(cell_add_native_ui target source_root)
     target_sources(${target} PRIVATE
         "${source_root}/src/ui/timeline.cpp" "${source_root}/src/ui/widget_drawing.cpp"
         "${source_root}/src/ui/widget_input.cpp" "${source_root}/src/ui/widget_component.cpp"
         "${source_root}/src/ui/widget_controls.cpp" "${source_root}/src/ui/widget_navigation.cpp"
-        "${source_root}/src/ui/widget_services.cpp" "${source_root}/src/ui/file_dialog.cpp")
-    if(APPLE)
-        target_sources(${target} PRIVATE "${source_root}/src/ui/file_dialog_macos.mm")
-        set_source_files_properties("${source_root}/src/ui/file_dialog_macos.mm" PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-    endif()
+        "${source_root}/src/ui/widget_services.cpp")
+    cell_add_native_file_dialog(${target} "${source_root}")
     target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
     foreach(spec IN ITEMS
         "Inter.ttf|cell_font.hpp|font" "Inter-Bold.ttf|cell_font_bold.hpp|fontBold"

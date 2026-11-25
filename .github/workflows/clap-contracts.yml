@@ -1,0 +1,46 @@
+name: Cell CLAP contracts
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  clap-contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: free-audio/clap
+          ref: a47f6badb49d948fd009998f28309cdab78979c9
+          path: ci-clap
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: free-audio/clap-validator
+          # Contains the upstream fix for crawling multi-preset containers.
+          ref: 91ee84082fdb4aeb1d8cdc96a285a886333ca895
+          path: ci-clap-validator
+          persist-credentials: false
+      - name: Install the X11 and WebKit test runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libgtk-3-0t64 libwebkit2gtk-4.1-0 xvfb xauth
+      - name: Build the installed SDK and CLAP fixtures
+        run: |
+          cmake -S framework -B "$RUNNER_TEMP/cell-build" -DCMAKE_BUILD_TYPE=Release -DCELL_SDK_WEBVIEW=ON
+          cmake --build "$RUNNER_TEMP/cell-build" --parallel 3
+          cmake --install "$RUNNER_TEMP/cell-build" --prefix "$RUNNER_TEMP/cell-sdk"
+          cmake -S tests/sdk_transport_consumer -B "$RUNNER_TEMP/cell-host" -DCMAKE_BUILD_TYPE=Release \
+            "-DCell_DIR=$RUNNER_TEMP/cell-sdk/lib/cmake/Cell" \
+            "-DCELL_TRANSPORT_CLAP_SDK=$GITHUB_WORKSPACE/ci-clap" -DCELL_TRANSPORT_CLAP_EDITOR_TEST=ON
+          cmake --build "$RUNNER_TEMP/cell-host" --parallel 3
+          xvfb-run -a ctest --test-dir "$RUNNER_TEMP/cell-host" --output-on-failure --no-tests=error
+      - name: Validate parameter events, conversions and preset discovery
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          cargo +1.95.0 build --locked --release --manifest-path ci-clap-validator/Cargo.toml -p clap-validator
+          ci-clap-validator/target/release/clap-validator validate \
+            --include '^(param-set-events|param-set-no-cookies|param-conversions|preset-discovery-.*)$' \
+            "$RUNNER_TEMP/cell-host/Cell Transport Test.clap"

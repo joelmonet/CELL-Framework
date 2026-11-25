@@ -32,4 +32,6 @@ bool platformReadyToUnload() noexcept;
 bool navigationAllowed(std::string_view,const Options&) noexcept;
 void validateBounds(Bounds);
 bool validJson(std::string_view) noexcept;
+const char* assetMime(std::string_view name) noexcept;
+const Asset* findAsset(const Options&, std::string_view name) noexcept;
 } // namespace cell::web::detail

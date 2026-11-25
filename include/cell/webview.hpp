@@ -12,6 +12,8 @@ struct Availability { Backend backend{}; bool available{}; std::string detail; }
 // Parent coordinates are Cocoa points on macOS and physical pixels elsewhere.
 enum class BoundsUnits { physicalPixels, parentCoordinates };
 struct Bounds { int x{}, y{}, width=640, height=480; }; // top-left parent-client coordinates
+// Images and fonts exposed at cell-asset://editor/<name>. The view owns the bytes.
+struct Asset { std::string name; std::vector<std::uint8_t> bytes; };
 struct Options {
     std::uintptr_t parent{};
     Bounds bounds;
@@ -22,6 +24,7 @@ struct Options {
     std::filesystem::path loaderPath; // optional explicit WebView2Loader.dll
     bool allowRemoteContent=false, developerTools=false;
     BoundsUnits boundsUnits=BoundsUnits::physicalPixels;
+    std::vector<Asset> assets;
 };
 struct Event {
     enum class Kind { ready, loaded, message, error, navigationBlocked };

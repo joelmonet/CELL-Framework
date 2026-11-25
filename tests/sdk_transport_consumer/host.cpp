@@ -14,6 +14,8 @@
 #include <cell/midi.hpp>
 #if CELL_TRANSPORT_CLAP
 #include <clap/clap.h>
+#include <clap/ext/preset-load.h>
+#include <clap/factory/preset-discovery.h>
 #include <cell/realtime.hpp>
 #include <cstring>
 #if defined(_WIN32)
@@ -106,7 +108,8 @@ void run(const char *path, const char *dumpPath) {
     const clap_plugin_t *plugin{};
     const clap_plugin_latency_t *extension{};
     std::uint32_t observed{};
-    unsigned changes{}, restarts{};
+    unsigned changes{}, restarts{}, callbacks{}, rescans{};
+    clap_param_rescan_flags rescanFlags{};
     const clap_plugin_tail_t *tail{};
     std::uint32_t observedTail{};
     unsigned tailChanges{};
@@ -121,6 +124,12 @@ void run(const char *path, const char *dumpPath) {
     ++state.tailChanges;
     state.observedTail = state.tail->get(state.plugin);
   }};
+  static const clap_host_params_t hostParams{
+      [](const clap_host_t *host, clap_param_rescan_flags flags) {
+        auto &probe = *static_cast<TimingObservation *>(host->host_data);
+        ++probe.rescans;
+        probe.rescanFlags = flags;
+      }, nullptr, [](const clap_host_t *) {}};
   const clap_host_t host{
       CLAP_VERSION,
       &latency,
@@ -133,13 +142,15 @@ void run(const char *path, const char *dumpPath) {
           return &hostLatency;
         if (std::strcmp(id, CLAP_EXT_TAIL) == 0)
           return &hostTail;
+        if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)
+          return &hostParams;
         return nullptr;
       },
       [](const clap_host_t *host) {
         ++static_cast<TimingObservation *>(host->host_data)->restarts;
       },
       [](const clap_host_t *) {},
-      [](const clap_host_t *) {}};
+      [](const clap_host_t *host) { ++static_cast<TimingObservation *>(host->host_data)->callbacks; }};
   auto *factory = static_cast<const clap_plugin_factory_t *>(
       entry->get_factory(CLAP_PLUGIN_FACTORY_ID));
   check(factory && factory->get_plugin_count(factory) == 1,
@@ -147,6 +158,48 @@ void run(const char *path, const char *dumpPath) {
   auto *plugin = factory->create_plugin(
       factory, &host, factory->get_plugin_descriptor(factory, 0)->id);
   check(plugin && plugin->init(plugin), "Transport CLAP init failed");
+  const auto* params = static_cast<const clap_plugin_params_t*>(plugin->get_extension(plugin, CLAP_EXT_PARAMS));
+  check(params && params->count(plugin) == 92, "CLAP omitted hidden fixed lanes");
+  unsigned hidden{};
+  for (std::uint32_t index = 0; index < params->count(plugin); ++index) {
+    clap_param_info_t info{};
+    check(params->get_info(plugin, index, &info), "CLAP lost parameter information");
+    hidden += bool(info.flags & CLAP_PARAM_IS_HIDDEN);
+    if (info.id == 20) check((info.flags & CLAP_PARAM_IS_READONLY) && !(info.flags & CLAP_PARAM_IS_AUTOMATABLE),
+                            "CLAP exported a read-only lane as automatable");
+  }
+  check(hidden == 76, "CLAP failed to expose the expected 16 of 92 lanes");
+  char label[64]{};
+  double parsed{}, actual{};
+  for (unsigned index = 0; index < 4; ++index) {
+    check(params->value_to_text(plugin, 18, index, label, sizeof(label)) &&
+          params->text_to_value(plugin, 18, label, &parsed) && parsed == index,
+          "A CLAP choice did not round-trip through text");
+  }
+  check(params->text_to_value(plugin, 18, "  syMPhonic ", &parsed) && parsed == 2,
+        "CLAP rejected a case-insensitive choice");
+  clap_event_param_gesture_t begin{}, end{};
+  begin.header = {sizeof(begin), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, 0};
+  begin.param_id = 18;
+  end = begin;
+  end.header.type = CLAP_EVENT_PARAM_GESTURE_END;
+  clap_event_param_value_t flush{};
+  flush.header = {sizeof(flush), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0};
+  flush.param_id = 18;
+  flush.note_id = flush.port_index = flush.channel = flush.key = -1;
+  flush.value = 2;
+  auto invalidFlush = flush;
+  invalidFlush.note_id = 23;
+  invalidFlush.value = 3;
+  std::vector<const clap_event_header_t*> flushed{&begin.header, &flush.header, &end.header, &invalidFlush.header};
+  clap_input_events_t flushInput{
+      &flushed, [](const clap_input_events_t* input) { return static_cast<std::uint32_t>(
+          static_cast<const std::vector<const clap_event_header_t*>*>(input->ctx)->size()); },
+      [](const clap_input_events_t* input, std::uint32_t index) {
+          return (*static_cast<const std::vector<const clap_event_header_t*>*>(input->ctx))[index]; }};
+  params->flush(plugin, &flushInput, nullptr);
+  check(params->get_value(plugin, 18, &actual) && actual == 2,
+        "CLAP flush changed the host value or applied a note-scoped change");
   latency.plugin = plugin;
   latency.extension = static_cast<const clap_plugin_latency_t *>(plugin->get_extension(plugin, CLAP_EXT_LATENCY));
   latency.tail = static_cast<const clap_plugin_tail_t *>(plugin->get_extension(plugin, CLAP_EXT_TAIL));
@@ -184,6 +237,8 @@ void run(const char *path, const char *dumpPath) {
   process.audio_outputs = &out;
   process.audio_inputs_count = process.audio_outputs_count = 1;
   process.in_events = &events;
+  check(plugin->process(plugin, &process) != CLAP_PROCESS_ERROR && values[1][1] == 3.f,
+        "Flushed gesture and value did not reach the processor in order");
   for (bool flag : {false, true})
     for (double bpm : bpms) {
       clap_event_transport_t transport{};
@@ -579,6 +634,95 @@ void run(const char *path, const char *dumpPath) {
   check(!configurable->can_apply_configuration(plugin, requests.data(), 2) &&
             !configurable->apply_configuration(plugin, requests.data(), 2),
         "CLAP accepted a configuration request while active");
+  const auto beforeRestart = latency.restarts;
+  const auto beforeRescan = latency.rescans;
+  flush.param_id = 19;
+  flush.value = 1;
+  flushed = {&flush.header};
+  params->flush(plugin, &flushInput, nullptr);
+  plugin->on_main_thread(plugin);
+  constexpr auto infoFlags = CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT | CLAP_PARAM_RESCAN_INFO;
+  clap_param_info_t revised{};
+  check(latency.restarts == beforeRestart + 1 && latency.rescans == beforeRescan + 1 &&
+        latency.rescanFlags == infoFlags && params->get_info(plugin, 1, &revised) &&
+        std::string_view(revised.name) == "Recalled output" && revised.max_value == 3,
+        "Active CLAP presentation did not rescan text/name or defer the range change");
+  plugin->on_main_thread(plugin);
+  check(latency.rescans == beforeRescan + 1, "Unchanged CLAP presentation caused an idle rescan");
+  plugin->deactivate(plugin);
+  check((latency.rescanFlags & CLAP_PARAM_RESCAN_ALL) && params->get_info(plugin, 1, &revised) &&
+        revised.max_value == 12 && params->get_value(plugin, 18, &actual) && actual == 8,
+        "CLAP did not publish the new range and corresponding value after deactivation");
+  flush.param_id = 33;
+  flush.value = .5;
+  params->flush(plugin, &flushInput, nullptr);
+  check(params->get_value(plugin, 33, &actual) && actual == .5, "A hidden CLAP lane lost automation");
+  const auto* state = static_cast<const clap_plugin_state_t*>(plugin->get_extension(plugin, CLAP_EXT_STATE));
+  std::vector<std::uint8_t> bytes;
+  const clap_ostream_t save{&bytes, [](const clap_ostream_t* stream, const void* source, std::uint64_t count) {
+      auto& bytes = *static_cast<std::vector<std::uint8_t>*>(stream->ctx);
+      const auto* first = static_cast<const std::uint8_t*>(source);
+      bytes.insert(bytes.end(), first, first + count);
+      return static_cast<std::int64_t>(count);
+  }};
+  std::span<const std::uint8_t> pending;
+  const clap_istream_t load{&pending, [](const clap_istream_t* stream, void* dest, std::uint64_t count) {
+      auto& pending = *static_cast<std::span<const std::uint8_t>*>(stream->ctx);
+      const auto used = std::min<std::uint64_t>(count, pending.size());
+      if (used) std::memcpy(dest, pending.data(), used);
+      pending = pending.subspan(used);
+      return static_cast<std::int64_t>(used);
+  }};
+  check(state && state->save(plugin, &save), "Could not save CLAP fixture state");
+  pending = bytes;
+  const auto beforeLoad = latency.rescans;
+  check(state->load(plugin, &load) && latency.rescans == beforeLoad + 1 && latency.rescanFlags == infoFlags,
+        "CLAP state restore did not rescan values, text and metadata");
+  const auto* presets = static_cast<const clap_preset_discovery_factory_t*>(entry->get_factory(CLAP_PRESET_DISCOVERY_FACTORY_ID));
+  clap_preset_discovery_indexer_t indexer{};
+  indexer.clap_version = CLAP_VERSION;
+  indexer.declare_location = [](const clap_preset_discovery_indexer_t*, const clap_preset_discovery_location_t* location) {
+      return location && location->kind == CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN && !location->location;
+  };
+  const auto* provider = presets && presets->count(presets) == 1
+      ? presets->create(presets, &indexer, factory->get_plugin_descriptor(factory, 0)->id) : nullptr;
+  check(provider && provider->init(provider), "Could not index the CLAP program catalog");
+  std::vector<std::pair<std::string, std::string>> indexed;
+  clap_preset_discovery_metadata_receiver_t receiver{};
+  receiver.receiver_data = &indexed;
+  receiver.begin_preset = [](const clap_preset_discovery_metadata_receiver_t* out, const char* name, const char* key) {
+      static_cast<decltype(indexed)*>(out->receiver_data)->emplace_back(name, key);
+      return true;
+  };
+  receiver.add_plugin_id = [](const clap_preset_discovery_metadata_receiver_t*, const clap_universal_plugin_id_t*) {};
+  check(provider->get_metadata(provider, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, &receiver) &&
+        indexed.size() == 198 && indexed[37].first == "P37" && indexed[37].second == "0:37",
+        "CLAP program catalog failed discovery or used unstable keys");
+  provider->destroy(provider);
+  const auto* presetLoad = static_cast<const clap_plugin_preset_load_t*>(plugin->get_extension(plugin, CLAP_EXT_PRESET_LOAD));
+  check(presetLoad && !presetLoad->from_location(plugin, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "0:999") &&
+        presetLoad->from_location(plugin, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "0:37") &&
+        params->get_value(plugin, 18, &actual) && actual == 2, "CLAP failed to recall P37");
+  check(config->select(plugin, 0) && plugin->activate(plugin, 48000, 1, 64) && plugin->start_processing(plugin),
+        "Could not reactivate for the control-thread SysEx probe");
+  in.channel_count = out.channel_count = 2;
+  clap_process_t queued{};
+  queued.frames_count = 64;
+  queued.audio_inputs = &in;
+  queued.audio_outputs = &out;
+  queued.audio_inputs_count = queued.audio_outputs_count = 1;
+  check(plugin->process(plugin, &queued) != CLAP_PROCESS_ERROR,
+        "A missing MIDI output prevented processing");
+  std::array<std::uint8_t,5> fromControl{};
+  captured = {};
+  captured.sysEx = fromControl;
+  queued.out_events = &midiOutput;
+  check(plugin->process(plugin, &queued) != CLAP_PROCESS_ERROR && captured.sysExCount == 1 &&
+        captured.sysExFrame == 0 && fromControl == std::array<std::uint8_t,5>{0xf0,0x7d,37,1,0xf7},
+        "Control-thread SysEx did not arrive byte-exact at frame zero");
+  check(plugin->process(plugin, &queued) != CLAP_PROCESS_ERROR && captured.sysExCount == 1,
+        "A consumed SysEx message was emitted twice");
+  plugin->stop_processing(plugin);
   plugin->deactivate(plugin);
   plugin->destroy(plugin);
   entry->deinit();

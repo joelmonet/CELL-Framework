@@ -6,12 +6,24 @@
 #include <cell/plugin.hpp>
 #include <clap/clap.h>
 #include <clap/ext/context-menu.h>
+#if defined(CELL_CLAP_EXPOSE_PROGRAMS)
+#include <clap/ext/preset-load.h>
+#include <clap/factory/preset-discovery.h>
+#include <cell/web_parameter_bridge.hpp>
+#endif
 #if CELL_HAS_UI
 #include <cell/ui.hpp>
 #endif
 #if defined(CELL_CLAP_WEB_EDITOR)
 #include <cell/webview.hpp>
 #include <cell/web_meter.hpp>
+#include <cell/web_parameter_bridge.hpp>
+#include <condition_variable>
+#include <thread>
+#if defined(CELL_CLAP_EDITOR_FILE_TYPES)
+#include <cell/file_dialog.hpp>
+#include <cell/files.hpp>
+#endif
 #include "cell_clap_web_bindings.hpp"
 #include "cell_clap_web_page.hpp"
 #if defined(_WIN32)
@@ -104,18 +116,77 @@ const clap_plugin_descriptor_t& clapDescriptor() {
 #if defined(CELL_CLAP_WEB_EDITOR)
 struct WebEditor {
 #if defined(CELL_DESIGNER_HAS_ACTIONS) || defined(CELL_DESIGNER_HAS_RULE_SOURCES)
-    explicit WebEditor(Engine& engine) : parameters(cell::designer::bind(engine)) {}
+    explicit WebEditor(Engine& engine) : parameters(cell::designer::bind(engine)) { prepareBridge(); }
 #else
-    explicit WebEditor(Engine& engine) : parameters(engine, cell::designer::parameters) {}
+    explicit WebEditor(Engine& engine) : parameters(engine, cell::designer::parameters) { prepareBridge(); }
 #endif
     web::ParameterBridge parameters;
     web::View view;
     std::uintptr_t parent{};
 #if defined(__APPLE__)
     CFRunLoopTimerRef updateTimer{};
+#else
+    std::jthread fallbackTimer;
+    std::atomic<bool> fallbackTick{};
 #endif
     bool loaded{};
     std::string lastParameters, lastMeters;
+#if defined(CELL_CLAP_EDITOR_FILE_TYPES)
+    ui::FileDialog fileDialog;
+    std::optional<web::EditorFileRequest> fileRequest;
+    void pollFile() {
+        const auto response = fileDialog.poll();
+        if (!response || !fileRequest) return;
+        auto request = std::exchange(fileRequest, std::nullopt);
+        if (response->cancelled) {
+            parameters.finishFile(true, {}, {});
+            return;
+        }
+        if (!response->error.empty()) {
+            parameters.finishFile(false, {}, {}, "The system file chooser did not complete");
+            return;
+        }
+        auto extension = response->path.extension().string();
+        for (auto& c : extension) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+        if (std::ranges::find(request->filters, extension) == request->filters.end()) {
+            parameters.finishFile(false, {}, {}, "Selected file type is unavailable");
+            return;
+        }
+        try {
+            const auto filename = response->path.filename().u8string();
+            const std::string name(reinterpret_cast<const char*>(filename.data()), filename.size());
+            if (request->save) {
+                files::atomicWrite(response->path, request->bytes);
+                parameters.finishFile(false, name, {});
+            } else {
+                std::error_code error;
+                const auto size = std::filesystem::file_size(response->path, error);
+                if (!error && size > web::maxEditorFileBytes)
+                    parameters.finishFile(false, {}, {}, "Selected file exceeds 45 KiB");
+                else parameters.finishFile(false, name, files::readBounded(response->path, web::maxEditorFileBytes));
+            }
+        } catch (...) { parameters.finishFile(false, {}, {}, "The selected file could not be opened or saved"); }
+    }
+#endif
+    void prepareBridge() {
+        parameters.advertiseParameterDeltas();
+#if defined(CELL_CLAP_EDITOR_FILE_TYPES)
+        std::vector<std::string> extensions;
+        auto text = std::string_view(CELL_CLAP_EDITOR_FILE_TYPES);
+        while (!text.empty()) {
+            const auto comma = text.find(',');
+            extensions.emplace_back(text.substr(0, comma));
+            if (comma == text.npos) break;
+            text.remove_prefix(comma + 1);
+        }
+        parameters.setFileEndpoint(std::move(extensions), [this](web::EditorFileRequest request) {
+            if (!fileDialog.open({parent, request.save ? "Save preset file" : "Open preset file",
+                                 {}, request.filters, request.save, false})) return false;
+            fileRequest = std::move(request);
+            return true;
+        });
+#endif
+    }
 };
 #endif
 
@@ -128,6 +199,13 @@ struct Instance {
     const clap_host_tail_t* hostTail{};
     std::atomic<std::uint32_t> reportedTail{};
     Engine engine{cell::plugin::descriptor(),cell::plugin::createProcessor()};
+    const ParameterPresentationSource* presentationSource{};
+    // Audio/flush see a fixed domain while activated. Main-thread metadata may
+    // refresh independently without reallocating or racing the audio reader.
+    std::vector<ParameterPresentation> wirePresentation, editorPresentation;
+    std::optional<std::uint64_t> presentationRevision;
+    std::atomic<bool> presentationCheckPending{};
+    bool presentationRestartPending{};
     bool active{};std::atomic<bool> processing{};
     std::uint32_t channels=portWidths().front();
     std::array<ParameterEvent,4096> events{},eventScratch{};std::array<MidiEvent,2048> midi{},midiScratch{};
@@ -152,9 +230,28 @@ struct Instance {
 #if defined(CELL_CLAP_WEB_EDITOR)
     std::unique_ptr<WebEditor> webEditor;
     const clap_host_log_t* hostLog{};
-    web::OutputMeter editorMeter;
+    web::OutputMeter editorMeter, editorInputMeter;
+    const GainReductionSource* gainReduction{};
+    std::atomic<bool> editorMetersEnabled{};
+    std::atomic<float> reductionDb{};
+    void setEditorMeters(bool enabled) noexcept {
+        editorMeter.setEnabled(enabled);
+        editorInputMeter.setEnabled(enabled);
+        editorMetersEnabled.store(enabled, std::memory_order_relaxed);
+    }
+    void clearEditorMeters() noexcept {
+        editorMeter.clear();
+        editorInputMeter.clear();
+        reductionDb.store(0, std::memory_order_relaxed);
+    }
 #endif
     static Instance& get(const clap_plugin_t* p) noexcept {return *static_cast<Instance*>(p->plugin_data);}
+    double hostValue(ParamId id, double storageValue) const noexcept {
+        if (wirePresentation.empty()) return storageValue;
+        const auto index = engine.parameters().indexOf(id);
+        if (index >= wirePresentation.size()) return storageValue;
+        return mapParameterValue(storageValue, engine.parameters().descriptors()[index], wirePresentation[index].field);
+    }
     void outputEdits(const clap_output_events_t* out) noexcept {
         if(!out||!out->try_push)return;
         ParameterEdit edit;
@@ -163,7 +260,7 @@ struct Instance {
             bool accepted=false;
             if(edit.type==EditType::value) {
                 clap_event_param_value_t event{};event.header={sizeof(event),0,CLAP_CORE_EVENT_SPACE_ID,CLAP_EVENT_PARAM_VALUE,CLAP_EVENT_IS_LIVE};
-                event.param_id=edit.id;event.note_id=-1;event.port_index=event.channel=event.key=-1;event.value=edit.value;
+                event.param_id=edit.id;event.note_id=-1;event.port_index=event.channel=event.key=-1;event.value=hostValue(edit.id,edit.value);
                 accepted=out->try_push(out,&event.header);
             } else {
                 clap_event_param_gesture_t event{};event.header={sizeof(event),0,CLAP_CORE_EVENT_SPACE_ID,
@@ -176,12 +273,80 @@ struct Instance {
     }
 };
 
+void refreshPresentation(Instance& instance, bool restored = false, bool notify = true) {
+    const auto* source = instance.presentationSource;
+    auto flags = restored ? clap_param_rescan_flags(CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT |
+                                                    CLAP_PARAM_RESCAN_INFO) : 0u;
+    if (source) {
+        const auto revision = source->parameterPresentationRevision();
+        if (instance.presentationRevision != revision || (!instance.active && instance.presentationRestartPending)) {
+            std::vector<ParameterPresentation> next;
+            next.reserve(instance.engine.parameters().descriptors().size());
+            for (const auto& field : instance.engine.parameters().descriptors())
+                next.push_back(resolveParameterPresentation(field, source));
+            bool critical = false;
+            for (std::size_t n = 0; n < instance.wirePresentation.size(); ++n) {
+                const auto& wire = instance.wirePresentation[n];
+                auto& current = next[n];
+                const bool changed = !sameParameterDomain(wire.field, current.field) || wire.readOnly != current.readOnly ||
+                    wire.field.automatable != current.field.automatable ||
+                    wire.field.choices.empty() != current.field.choices.empty();
+                critical |= changed;
+                if (changed && instance.active) {
+                    // Keep the old range, choices, step and editability coherent
+                    // until the host reactivates, but publish name and visibility.
+                    auto name = std::move(current.field.name);
+                    const auto hidden = current.hidden;
+                    current = instance.editorPresentation[n];
+                    current.field.name = std::move(name);
+                    current.hidden = hidden;
+                }
+            }
+            flags |= CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT | CLAP_PARAM_RESCAN_INFO;
+            if (!instance.active) {
+                instance.wirePresentation = next;
+                instance.presentationRestartPending = false;
+                if (critical) flags |= CLAP_PARAM_RESCAN_ALL;
+            }
+            instance.editorPresentation = std::move(next);
+            instance.presentationRevision = revision;
+            if (instance.active && critical && !instance.presentationRestartPending) {
+                instance.presentationRestartPending = true;
+                if (instance.host->request_restart) instance.host->request_restart(instance.host);
+            }
+        }
+    }
+    if (notify && flags && instance.hostParams && instance.hostParams->rescan)
+        instance.hostParams->rescan(instance.host, flags);
+}
+
+void requestPresentationCheck(Instance& instance) noexcept {
+    if (instance.presentationSource && instance.host->request_callback &&
+        !instance.presentationCheckPending.exchange(true, std::memory_order_acq_rel))
+        instance.host->request_callback(instance.host);
+}
+
+#if defined(CELL_CLAP_WEB_EDITOR)
+void updateWebEditor(Instance&);
+#endif
+
+void CLAP_ABI onMainThread(const clap_plugin_t* plugin) {
+    auto& instance = Instance::get(plugin);
+    instance.presentationCheckPending.store(false, std::memory_order_release);
+    try { refreshPresentation(instance); } catch (...) {}
+#if defined(CELL_CLAP_WEB_EDITOR) && !defined(__APPLE__)
+    if (instance.webEditor && instance.webEditor->fallbackTimer.joinable() &&
+        instance.webEditor->fallbackTick.exchange(false, std::memory_order_acq_rel))
+        updateWebEditor(instance);
+#endif
+}
+
 #if defined(CELL_CLAP_WEB_EDITOR)
 bool webEditorRunning(const Instance& instance) {
 #if defined(__APPLE__)
     return instance.webEditor && instance.webEditor->updateTimer;
 #else
-    return instance.timer != CLAP_INVALID_ID;
+    return instance.webEditor && (instance.timer != CLAP_INVALID_ID || instance.webEditor->fallbackTimer.joinable());
 #endif
 }
 
@@ -190,13 +355,22 @@ void closeWebView(Instance& instance, bool flush) {
     auto& editor = *instance.webEditor;
     const auto gestures = editor.parameters.activeGestures() + editor.parameters.activeActions();
     editor.parameters.cancel();
-    instance.editorMeter.setEnabled(false);
+#if defined(CELL_CLAP_EDITOR_FILE_TYPES)
+    editor.fileDialog.cancel();
+    editor.fileRequest.reset();
+#endif
+    instance.setEditorMeters(false);
 #if defined(__APPLE__)
     web::cocoa::stopTimer(editor.updateTimer);
 #else
     if (instance.timer != CLAP_INVALID_ID) {
         const auto timer = std::exchange(instance.timer, CLAP_INVALID_ID);
         instance.timers->unregister_timer(instance.host, timer);
+    }
+    if (editor.fallbackTimer.joinable()) {
+        editor.fallbackTimer.request_stop();
+        editor.fallbackTimer.join();
+        editor.fallbackTick.store(false, std::memory_order_relaxed);
     }
 #endif
     editor.view.close();
@@ -205,6 +379,7 @@ void closeWebView(Instance& instance, bool flush) {
     web::View::readyToUnload();
 #endif
     editor.loaded = false;
+    editor.parameters.resetPage();
     editor.lastParameters.clear();
     editor.lastMeters.clear();
     if (flush && gestures && instance.hostParams && instance.hostParams->request_flush)
@@ -229,6 +404,8 @@ bool CLAP_ABI init(const clap_plugin_t* p) {
     i.hostState=static_cast<const clap_host_state_t*>(i.host->get_extension(i.host,CLAP_EXT_STATE));
     i.hostLatency=static_cast<const clap_host_latency_t*>(i.host->get_extension(i.host,CLAP_EXT_LATENCY));
     i.hostTail=static_cast<const clap_host_tail_t*>(i.host->get_extension(i.host,CLAP_EXT_TAIL));
+    i.presentationSource = dynamic_cast<const ParameterPresentationSource*>(&i.engine.processor());
+    try { refreshPresentation(i, false, false); } catch (...) { return false; }
     publishTail(i,false);
 #if CELL_HAS_UI || defined(CELL_CLAP_WEB_EDITOR)
     i.timers=static_cast<const clap_host_timer_support_t*>(i.host->get_extension(i.host,CLAP_EXT_TIMER_SUPPORT));
@@ -236,6 +413,7 @@ bool CLAP_ABI init(const clap_plugin_t* p) {
 #endif
 #if defined(CELL_CLAP_WEB_EDITOR)
     i.hostLog=static_cast<const clap_host_log_t*>(i.host->get_extension(i.host,CLAP_EXT_LOG));
+    i.gainReduction = dynamic_cast<const GainReductionSource*>(&i.engine.processor());
 #endif
     return true;
 }
@@ -268,14 +446,19 @@ bool CLAP_ABI activate(const clap_plugin_t* p,double sampleRate,std::uint32_t mi
         return true;
     } catch(...) { return false; }
 }
-void CLAP_ABI deactivate(const clap_plugin_t* p) {auto& i=Instance::get(p);i.processing=false;i.active=false;}
+void CLAP_ABI deactivate(const clap_plugin_t* p) {
+    auto& i = Instance::get(p);
+    i.processing = false;
+    i.active = false;
+    try { refreshPresentation(i); } catch (...) {}
+}
 bool CLAP_ABI start(const clap_plugin_t* p) {auto& i=Instance::get(p);if(!i.active||i.processing)return false;i.processing=true;return true;}
 void CLAP_ABI stop(const clap_plugin_t* p) {
     auto& i=Instance::get(p);
     i.processing=false;
     i.midiDelivery.reset();
 #if defined(CELL_CLAP_WEB_EDITOR)
-    i.editorMeter.clear();
+    i.clearEditorMeters();
 #endif
 }
 void CLAP_ABI reset(const clap_plugin_t* p) {
@@ -283,13 +466,33 @@ void CLAP_ABI reset(const clap_plugin_t* p) {
     i.engine.reset();
     i.midiDelivery.reset();
 #if defined(CELL_CLAP_WEB_EDITOR)
-    i.editorMeter.clear();
+    i.clearEditorMeters();
 #endif
     publishTail(i,true);
 }
 
-bool paramEvent(const clap_event_header_t* h) noexcept {
-    return h&&h->space_id==CLAP_CORE_EVENT_SPACE_ID&&h->type==CLAP_EVENT_PARAM_VALUE&&h->size>=sizeof(clap_event_param_value_t);
+std::optional<ParameterEdit> hostParameterEdit(const Instance& instance, const clap_event_header_t* h) noexcept {
+    if (!h || h->space_id != CLAP_CORE_EVENT_SPACE_ID) return {};
+    ParameterEdit edit;
+    if (h->type == CLAP_EVENT_PARAM_VALUE && h->size >= sizeof(clap_event_param_value_t)) {
+        const auto& event = *reinterpret_cast<const clap_event_param_value_t*>(h);
+        if (event.note_id != -1 || event.channel != -1 || event.key != -1 ||
+            !std::isfinite(event.value)) return {};
+        edit = {EditType::value, event.param_id, event.value};
+    } else if ((h->type == CLAP_EVENT_PARAM_GESTURE_BEGIN || h->type == CLAP_EVENT_PARAM_GESTURE_END) &&
+               h->size >= sizeof(clap_event_param_gesture_t)) {
+        edit = {h->type == CLAP_EVENT_PARAM_GESTURE_BEGIN ? EditType::begin : EditType::end,
+                reinterpret_cast<const clap_event_param_gesture_t*>(h)->param_id, 0};
+    } else return {};
+    const auto fields = instance.engine.parameters().descriptors();
+    const auto index = instance.engine.parameters().indexOf(edit.id);
+    if (index >= fields.size()) return {};
+    if (!instance.wirePresentation.empty()) {
+        const auto& presented = instance.wirePresentation[index];
+        if (presented.readOnly) return {};
+        if (edit.type == EditType::value) edit.value = mapParameterValue(edit.value, presented.field, fields[index]);
+    }
+    return edit;
 }
 bool overlapsAudio(const float* source,const float* destination,unsigned frames) noexcept {
     const std::less<const float*> before;
@@ -400,7 +603,10 @@ clap_process_status CLAP_ABI process(const clap_plugin_t* p,const clap_process_t
     const auto& descriptor = cell::plugin::descriptor();
     std::size_t eventCount=0,midiCount=0;const auto count=block->in_events?block->in_events->size(block->in_events):0;
     for(std::uint32_t n=0;n<count;++n){const auto* h=block->in_events->get(block->in_events,n);if(!h||h->time>block->frames_count)continue;
-        if(paramEvent(h)){const auto* e=reinterpret_cast<const clap_event_param_value_t*>(h);if(e->note_id!=-1||e->channel!=-1||e->key!=-1||!std::isfinite(e->value)||!i.engine.parameters().find(e->param_id))continue;if(eventCount==i.events.size())return CLAP_PROCESS_ERROR;i.events[eventCount++]={h->time,e->param_id,e->value};}
+        if (const auto edit = hostParameterEdit(i, h)) {
+            if (eventCount == i.events.size()) return CLAP_PROCESS_ERROR;
+            i.events[eventCount++] = {h->time, edit->id, edit->value, edit->type};
+        }
         else if(cell::plugin::descriptor().acceptsMidi&&h->space_id==CLAP_CORE_EVENT_SPACE_ID&&h->type==CLAP_EVENT_MIDI&&h->size>=sizeof(clap_event_midi_t)&&h->time<block->frames_count){auto* e=reinterpret_cast<const clap_event_midi_t*>(h);if(e->port_index!=0||e->data[0]<0x80||e->data[0]>=0xf0)continue;if(midiCount==i.midi.size())return CLAP_PROCESS_ERROR;i.midi[midiCount++]={h->time,{e->data[0],e->data[1],e->data[2]},3};}
         else if (descriptor.acceptsMidi && descriptor.supportsSysEx && h->space_id == CLAP_CORE_EVENT_SPACE_ID &&
                  h->type == CLAP_EVENT_MIDI_SYSEX && h->size >= sizeof(clap_event_midi_sysex_t) && h->time < block->frames_count) {
@@ -422,6 +628,9 @@ clap_process_status CLAP_ABI process(const clap_plugin_t* p,const clap_process_t
     std::array<float*,2> sidechainChannels{};
     const auto side=sidechainInput(i,*block,output,sidechainChannels);
     copyMainInput(i,*block,output);
+#if defined(CELL_CLAP_WEB_EDITOR)
+    i.editorInputMeter.publish(audio);
+#endif
     i.outputEdits(block->out_events);
     MidiOutput midiOutput;
     const bool sendsMidi=cell::plugin::descriptor().producesMidi&&block->frames_count;
@@ -433,8 +642,11 @@ clap_process_status CLAP_ABI process(const clap_plugin_t* p,const clap_process_t
                      sendsMidi?&i.midiDelivery:nullptr);
 #if defined(CELL_CLAP_WEB_EDITOR)
     i.editorMeter.publish(audio);
+    if (i.gainReduction && i.editorMetersEnabled.load(std::memory_order_relaxed))
+        i.reductionDb.store(i.gainReduction->gainReductionDb(), std::memory_order_relaxed);
 #endif
     publishTail(i,true);
+    if (eventCount || midiCount) requestPresentationCheck(i);
     if(i.engine.processor().latency()!=i.reportedLatency&&!i.restartRequested.exchange(true)&&i.host->request_restart)i.host->request_restart(i.host);
     // CLAP requires nondecreasing timestamps. Any edits queued during a
     // MIDI-output block can be sent at the start of the next block.
@@ -594,40 +806,71 @@ const clap_plugin_configurable_audio_ports_t configurablePorts{
         return true;
     }
 };
+const Parameter& hostField(const Instance& instance, std::size_t index) noexcept {
+    return instance.editorPresentation.empty() ? instance.engine.parameters().descriptors()[index] :
+                                                instance.editorPresentation[index].field;
+}
+
 const clap_plugin_params_t params{
     [](const clap_plugin_t* p)->std::uint32_t{return std::uint32_t(Instance::get(p).engine.parameters().descriptors().size());},
     [](const clap_plugin_t* p,std::uint32_t index,clap_param_info_t* info)->bool{
-        const auto all=Instance::get(p).engine.parameters().descriptors();if(!info||index>=all.size())return false;
-        const auto& param=all[index];*info={};info->id=param.id;info->cookie=const_cast<Parameter*>(&param);
-        info->flags=param.automatable?CLAP_PARAM_IS_AUTOMATABLE|CLAP_PARAM_REQUIRES_PROCESS:0;
+        const auto& instance = Instance::get(p);
+        const auto all = instance.engine.parameters().descriptors();
+        if (!info || index >= all.size()) return false;
+        const auto& param = hostField(instance, index);
+        const auto* presentation = instance.editorPresentation.empty() ? nullptr : &instance.editorPresentation[index];
+        const bool readOnly = presentation && presentation->readOnly;
+        *info={};info->id=param.id;info->cookie=const_cast<Parameter*>(&all[index]);
+        info->flags=param.automatable&&!readOnly?CLAP_PARAM_IS_AUTOMATABLE|CLAP_PARAM_REQUIRES_PROCESS:0;
+        if (readOnly) info->flags |= CLAP_PARAM_IS_READONLY;
+        if (presentation && presentation->hidden) info->flags |= CLAP_PARAM_IS_HIDDEN;
         if(param.step>=1)info->flags|=CLAP_PARAM_IS_STEPPED;
+        if(!param.choices.empty())info->flags|=CLAP_PARAM_IS_ENUM;
         if(param.bypass)info->flags|=CLAP_PARAM_IS_BYPASS;
         copy(info->name,sizeof(info->name),param.name.c_str());info->min_value=param.minimum;info->max_value=param.maximum;info->default_value=param.defaultValue;return true;
     },
     [](const clap_plugin_t* p,clap_id id,double* value)->bool{
-        auto& bank=Instance::get(p).engine.parameters();if(!value||!bank.find(id))return false;*value=bank.get(id);return true;
+        const auto& instance = Instance::get(p);
+        const auto& bank = instance.engine.parameters();
+        if (!value || !bank.find(id)) return false;
+        *value = instance.hostValue(id, bank.get(id));
+        return true;
     },
     [](const clap_plugin_t* p,clap_id id,double value,char* dest,std::uint32_t capacity)->bool{
-        const auto* param=Instance::get(p).engine.parameters().find(id);if(!param||!dest||!capacity)return false;
-        try{auto text=param->text(value);copy(dest,capacity,text.c_str());return text.size()<capacity;}catch(...){return false;}
+        const auto& instance = Instance::get(p);
+        const auto& bank = instance.engine.parameters();
+        const auto index = bank.indexOf(id);
+        if (index >= bank.descriptors().size() || !dest || !capacity) return false;
+        try{auto text=hostField(instance,index).text(value);copy(dest,capacity,text.c_str());return text.size()<capacity;}catch(...){return false;}
     },
     [](const clap_plugin_t* p,clap_id id,const char* text,double* value)->bool{
-        const auto* param=Instance::get(p).engine.parameters().find(id);if(!param||!text||!value)return false;
-        const auto length=std::strlen(text);double parsed{};const auto result=cell::detail::parseDoubleChars(text,text+length,parsed);
-        if(result.ec!=std::errc{}||!std::isfinite(parsed))return false;
-        std::string_view suffix(result.ptr,std::size_t(text+length-result.ptr));
-        while(!suffix.empty()&&suffix.front()==' ')suffix.remove_prefix(1);
-        while(!suffix.empty()&&suffix.back()==' ')suffix.remove_suffix(1);
-        if(!suffix.empty()&&suffix!=param->unit)return false;
-        *value=param->clamp(parsed);return true;
+        const auto& instance = Instance::get(p);
+        const auto& bank = instance.engine.parameters();
+        const auto index = bank.indexOf(id);
+        if (index >= bank.descriptors().size() || !text || !value) return false;
+        try {
+            const auto parsed = hostField(instance, index).parseText(text);
+            if (!parsed) return false;
+            *value = *parsed;
+            return true;
+        } catch (...) { return false; }
     },
     [](const clap_plugin_t* p,const clap_input_events_t* in,const clap_output_events_t* out){
-        auto& i=Instance::get(p);i.outputEdits(out);
-        const auto count=in?in->size(in):0;
-        for(std::uint32_t n=0;n<count;++n){const auto* h=in->get(in,n);if(paramEvent(h)){
-            const auto* e=reinterpret_cast<const clap_event_param_value_t*>(h);if(e->note_id==-1&&e->channel==-1&&e->key==-1)i.engine.parameters().set(e->param_id,e->value);
-        }}
-        publishTail(i,i.active);
+        auto& i = Instance::get(p);
+        i.outputEdits(out);
+        bool applied{};
+        const auto count = in && in->size && in->get ? in->size(in) : 0;
+        for (std::uint32_t n = 0; n < count; ++n) {
+            if (const auto edit = hostParameterEdit(i, in->get(in, n))) {
+                i.engine.applyParameterEvents(std::span(&*edit, 1));
+                applied = true;
+            }
+        }
+        publishTail(i, i.active);
+        if (applied) {
+            if (i.active) requestPresentationCheck(i);
+            else onMainThread(p);
+        }
     }
 };
 const clap_plugin_state_t state{
@@ -646,11 +889,111 @@ const clap_plugin_state_t state{
                 bytes.insert(bytes.end(),chunk.begin(),chunk.begin()+read);}
             auto& i=Instance::get(p);if(!i.engine.loadState(bytes))return false;
             if(!i.active)publishTail(i,false);
-            if(i.hostParams)i.hostParams->rescan(i.host,CLAP_PARAM_RESCAN_VALUES);
+            try { refreshPresentation(i, true); } catch (...) {}
             return true;
         }catch(...){return false;}
     }
 };
+#if defined(CELL_CLAP_EXPOSE_PROGRAMS)
+std::optional<ProgramAddress> presetAddress(std::string_view key) noexcept {
+    ProgramAddress address{};
+    const auto colon = key.find(':');
+    if (colon == std::string_view::npos) return {};
+    const auto end = key.data() + key.size();
+    const auto bank = std::from_chars(key.data(), key.data() + colon, address.bank);
+    const auto program = std::from_chars(key.data() + colon + 1, end, address.program);
+    if (bank.ec != std::errc{} || bank.ptr != key.data() + colon || program.ec != std::errc{} ||
+        program.ptr != end || address.bank > 16383 || address.program > 127) return {};
+    return address;
+}
+
+const clap_plugin_preset_load_t presetLoad{
+    [](const clap_plugin_t* plugin, std::uint32_t kind, const char* location, const char* key) {
+        auto& instance = Instance::get(plugin);
+        auto* memory = dynamic_cast<ProgramMemory*>(&instance.engine.processor());
+        if (!memory || kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location || !key ||
+            instance.engine.activeGestures()) return false;
+        try {
+            const auto address = presetAddress(key);
+            const auto catalog = memory->programs(instance.engine.parameters());
+            if (!address || !web::detail::findProgram(catalog, *address) ||
+                !memory->recallProgram(instance.engine, *address)) return false;
+        } catch (...) { return false; }
+        try { refreshPresentation(instance, true); } catch (...) {}
+        if (instance.hostState && instance.hostState->mark_dirty) instance.hostState->mark_dirty(instance.host);
+        auto* hostLoad = static_cast<const clap_host_preset_load_t*>(
+            instance.host->get_extension(instance.host, CLAP_EXT_PRESET_LOAD));
+        if (!hostLoad) hostLoad = static_cast<const clap_host_preset_load_t*>(
+            instance.host->get_extension(instance.host, CLAP_EXT_PRESET_LOAD_COMPAT));
+        if (hostLoad && hostLoad->loaded) hostLoad->loaded(instance.host, kind, location, key);
+        return true;
+    }
+};
+
+const clap_preset_discovery_provider_descriptor_t& presetProviderDescriptor() {
+    static const clap_preset_discovery_provider_descriptor_t descriptor{
+        CLAP_VERSION, clapDescriptor().id, clapDescriptor().name, clapDescriptor().vendor};
+    return descriptor;
+}
+
+struct PresetProvider {
+    clap_preset_discovery_provider_t provider{};
+    const clap_preset_discovery_indexer_t* indexer{};
+    ProgramCatalog catalog;
+    static PresetProvider& get(const clap_preset_discovery_provider_t* provider) {
+        return *static_cast<PresetProvider*>(provider->provider_data);
+    }
+};
+
+const clap_preset_discovery_factory_t presetFactory{
+    [](const clap_preset_discovery_factory_t*) -> std::uint32_t { return 1; },
+    [](const clap_preset_discovery_factory_t*, std::uint32_t index) {
+        return index ? nullptr : &presetProviderDescriptor();
+    },
+    [](const clap_preset_discovery_factory_t*, const clap_preset_discovery_indexer_t* indexer, const char* id)
+        -> const clap_preset_discovery_provider_t* {
+        if (!indexer || !indexer->declare_location || !id || std::strcmp(id, presetProviderDescriptor().id) ||
+            !clap_version_is_compatible(indexer->clap_version)) return nullptr;
+        try {
+            auto provider = std::make_unique<PresetProvider>();
+            provider->indexer = indexer;
+            provider->provider = {&presetProviderDescriptor(), provider.get(),
+                [](const clap_preset_discovery_provider_t* base) {
+                    auto& self = PresetProvider::get(base);
+                    try {
+                        Engine engine(cell::plugin::descriptor(), cell::plugin::createProcessor());
+                        const auto* memory = dynamic_cast<const ProgramMemory*>(&engine.processor());
+                        if (!memory) return false;
+                        self.catalog = memory->programs(engine.parameters());
+                        web::detail::validateProgramCatalog(self.catalog);
+                        const clap_preset_discovery_location_t location{CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT,
+                            clapDescriptor().name, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr};
+                        return self.indexer->declare_location(self.indexer, &location);
+                    } catch (...) { return false; }
+                },
+                [](const clap_preset_discovery_provider_t* base) { delete &PresetProvider::get(base); },
+                [](const clap_preset_discovery_provider_t* base, std::uint32_t kind, const char* location,
+                   const clap_preset_discovery_metadata_receiver_t* receiver) {
+                    if (kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location || !receiver ||
+                        !receiver->begin_preset || !receiver->add_plugin_id) return false;
+                    try {
+                        const clap_universal_plugin_id_t pluginId{"clap", clapDescriptor().id};
+                        for (const auto& bank : PresetProvider::get(base).catalog.banks)
+                            for (const auto& slot : bank.programs) {
+                                const auto key = std::to_string(bank.number) + ":" + std::to_string(slot.number);
+                                if (!receiver->begin_preset(receiver, slot.name.c_str(), key.c_str())) return false;
+                                receiver->add_plugin_id(receiver, &pluginId);
+                                if (receiver->add_extra_info) receiver->add_extra_info(receiver, "bank", bank.name.c_str());
+                            }
+                        return true;
+                    } catch (...) { return false; }
+                },
+                [](const clap_preset_discovery_provider_t*, const char*) -> const void* { return nullptr; }};
+            return &provider.release()->provider;
+        } catch (...) { return nullptr; }
+    }
+};
+#endif
 const clap_plugin_latency_t latency{[](const clap_plugin_t* p)->std::uint32_t{return Instance::get(p).reportedLatency;}};
 const clap_plugin_tail_t tail{[](const clap_plugin_t* p)->std::uint32_t{return Instance::get(p).reportedTail.load(std::memory_order_relaxed);}};
 
@@ -690,7 +1033,7 @@ const clap_plugin_gui_t gui{
             i.editor->productCommand=[&i](std::span<const std::byte> bytes){auto* target=dynamic_cast<cell::CommandTarget*>(&i.engine.processor());if(!target||!target->executeCommand(bytes))return false;if(i.hostState)i.hostState->mark_dirty(i.host);return true;};
             i.editor->transientInput=[&i](std::span<const std::byte> bytes){if(bytes.empty()||bytes.size()>cell::maxProductQueryBytes||!i.engine.executeProductCommand(bytes))return false;if(i.host&&i.host->request_process)i.host->request_process(i.host);return true;};
             i.editor->productQuery=[&i](std::span<const std::byte> bytes,bool){return i.engine.queryProduct(bytes);};
-            i.editor->restoreProductState=[&i](std::span<const std::byte> bytes){if(i.processing&&i.engine.stateRequiresStoppedProcessing())return false;if(!i.engine.loadState(bytes))return false;if(i.hostParams)i.hostParams->rescan(i.host,CLAP_PARAM_RESCAN_VALUES);if(i.hostState)i.hostState->mark_dirty(i.host);return true;};
+            i.editor->restoreProductState=[&i](std::span<const std::byte> bytes){if(i.processing&&i.engine.stateRequiresStoppedProcessing())return false;if(!i.engine.loadState(bytes))return false;try{refreshPresentation(i,true);}catch(...){}if(i.hostState)i.hostState->mark_dirty(i.host);return true;};
             i.editor->hostParameterMenuAvailable=[&i](ParamId id){const auto* field=i.engine.parameters().find(id);return field&&field->automatable&&i.window&&i.window->isOpen()&&i.hostContextMenu&&i.hostContextMenu->can_popup&&i.hostContextMenu->popup&&i.hostContextMenu->can_popup(i.host);};
             i.editor->showHostParameterMenu=[&i](ParamId id,ui::Point at){
                 if(!i.editor->hostParameterMenuAvailable(id))return false;const auto point=i.window->toNativePoint(at);
@@ -773,7 +1116,8 @@ bool webApiSupported([[maybe_unused]] const Instance& instance, const char* api,
 #if defined(__APPLE__)
     if (!pthread_main_np()) return false;
 #else
-    if (!instance.timers || !instance.timers->register_timer || !instance.timers->unregister_timer) return false;
+    if (!instance.host->request_callback &&
+        (!instance.timers || !instance.timers->register_timer || !instance.timers->unregister_timer)) return false;
 #endif
     try { return web::View::availability().available; }
     catch (...) { return false; }
@@ -790,6 +1134,8 @@ void updateWebEditor(Instance& instance) {
                 editor.lastMeters.clear();
             } else if (event.kind == web::Event::Kind::message && editor.loaded) {
                 edits |= editor.parameters.apply(event.text);
+                auto reply = editor.parameters.takeReply();
+                if (!reply.empty()) editor.view.send(reply);
                 editor.lastParameters.clear();
             } else if (event.kind == web::Event::Kind::error) {
                 cancelled |= editor.parameters.activeGestures() != 0 || editor.parameters.activeActions() != 0;
@@ -802,11 +1148,22 @@ void updateWebEditor(Instance& instance) {
             }
         }
         if (editor.loaded) {
+#if defined(CELL_CLAP_EDITOR_FILE_TYPES)
+            editor.pollFile();
+            auto reply = editor.parameters.takeReply();
+            if (!reply.empty()) editor.view.send(reply);
+#endif
+            refreshPresentation(instance);
             auto send = [&](std::string snapshot, std::string& previous) {
                 if (snapshot != previous && editor.view.send(snapshot)) previous = std::move(snapshot);
             };
-            send(editor.parameters.snapshot(), editor.lastParameters);
-            send(instance.editorMeter.snapshot(), editor.lastMeters);
+            if (editor.parameters.usesParameterDeltas()) {
+                editor.parameters.updateParameters([&](const std::string& message) { return editor.view.send(message); });
+            } else send(editor.parameters.snapshot(), editor.lastParameters);
+            const auto reduction = instance.gainReduction
+                ? std::optional{instance.reductionDb.load(std::memory_order_relaxed)} : std::nullopt;
+            send(web::OutputMeter::snapshot(instance.editorMeter.levels(), instance.editorInputMeter.levels(), reduction),
+                 editor.lastMeters);
         }
     } catch (...) {
         cancelled |= editor.parameters.activeGestures() != 0 || editor.parameters.activeActions() != 0;
@@ -841,8 +1198,23 @@ bool startWebEditorTimer(Instance& instance) {
     return instance.webEditor->updateTimer != nullptr;
 #else
     clap_id timer = CLAP_INVALID_ID;
-    if (!instance.timers->register_timer(instance.host, 33, &timer) || timer == CLAP_INVALID_ID) return false;
-    instance.timer = timer;
+    if (instance.timers && instance.timers->register_timer && instance.timers->unregister_timer &&
+        instance.timers->register_timer(instance.host, 33, &timer) && timer != CLAP_INVALID_ID) {
+        instance.timer = timer;
+        return true;
+    }
+    if (!instance.host->request_callback) return false;
+    auto& editor = *instance.webEditor;
+    editor.fallbackTimer = std::jthread([&instance, &editor](std::stop_token stop) {
+        std::mutex mutex;
+        std::condition_variable_any timeout;
+        std::unique_lock lock(mutex);
+        while (!stop.stop_requested()) {
+            if (!editor.fallbackTick.exchange(true, std::memory_order_acq_rel))
+                instance.host->request_callback(instance.host);
+            timeout.wait_for(lock, stop, std::chrono::milliseconds(33), [] { return false; });
+        }
+    });
     return true;
 #endif
 }
@@ -922,6 +1294,9 @@ const clap_plugin_gui_t webGui{
             web::Options options;
             options.parent = editor.parent;
             options.bounds = {0, 0, int(instance.guiWidth), int(instance.guiHeight)};
+#if defined(CELL_CLAP_EDITOR_ASSETS)
+            options.assets = assets::clapEditorPageAssets();
+#endif
 #if defined(_WIN32)
             const auto parent = reinterpret_cast<HWND>(options.parent);
             if (GetWindowThreadProcessId(parent, nullptr) != GetCurrentThreadId()) {
@@ -946,7 +1321,7 @@ const clap_plugin_gui_t webGui{
                 const auto problem = editor.view.error();
                 webLog(instance, problem.empty() ? "Cell CLAP editor page could not be loaded" : problem.c_str());
             } else if (startWebEditorTimer(instance)) {
-                instance.editorMeter.setEnabled(true);
+                instance.setEditorMeters(true);
                 return true;
             } else {
                 webLog(instance, "Cell CLAP editor timer registration failed");
@@ -983,6 +1358,9 @@ const void* CLAP_ABI extension(const clap_plugin_t*,const char* id) {
     if(!std::strcmp(id,CLAP_EXT_PARAMS))return &params;
     if(!std::strcmp(id,CLAP_EXT_NOTE_PORTS)&&(hasNotePort(true)||hasNotePort(false)))return &notePorts;
     if(!std::strcmp(id,CLAP_EXT_STATE))return &state;
+#if defined(CELL_CLAP_EXPOSE_PROGRAMS)
+    if (!std::strcmp(id, CLAP_EXT_PRESET_LOAD) || !std::strcmp(id, CLAP_EXT_PRESET_LOAD_COMPAT)) return &presetLoad;
+#endif
     if(!std::strcmp(id,CLAP_EXT_LATENCY))return &latency;
     if(!std::strcmp(id,CLAP_EXT_TAIL))return &tail;
 #if CELL_HAS_UI
@@ -1001,7 +1379,7 @@ const clap_plugin_factory_t factory{
     [](const clap_plugin_factory_t*,std::uint32_t index)->const clap_plugin_descriptor_t*{return index?nullptr:&clapDescriptor();},
     [](const clap_plugin_factory_t*,const clap_host_t* host,const char* id)->const clap_plugin_t*{
         if(portWidths().empty()||!host||!id||!host->get_extension||!clap_version_is_compatible(host->clap_version)||std::strcmp(id,clapDescriptor().id))return nullptr;
-        try{auto* i=new Instance;i->host=host;i->plugin={&clapDescriptor(),i,init,destroy,activate,deactivate,start,stop,reset,process,extension,[](const clap_plugin_t*){}};return &i->plugin;}catch(...){return nullptr;}
+        try{auto* i=new Instance;i->host=host;i->plugin={&clapDescriptor(),i,init,destroy,activate,deactivate,start,stop,reset,process,extension,onMainThread};return &i->plugin;}catch(...){return nullptr;}
     }
 };
 }
@@ -1029,6 +1407,14 @@ void leaveModule() {
 extern "C" {
 CLAP_EXPORT extern const clap_plugin_entry_t clap_entry{
     CLAP_VERSION,[](const char*)->bool{return enterModule();},[](){leaveModule();},
-    [](const char* id)->const void*{return id&&!std::strcmp(id,CLAP_PLUGIN_FACTORY_ID)?&factory:nullptr;}
+    [](const char* id)->const void* {
+        if (!id) return nullptr;
+        if (!std::strcmp(id, CLAP_PLUGIN_FACTORY_ID)) return &factory;
+#if defined(CELL_CLAP_EXPOSE_PROGRAMS)
+        if (!std::strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID) || !std::strcmp(id, CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT))
+            return &presetFactory;
+#endif
+        return nullptr;
+    }
 };
 }

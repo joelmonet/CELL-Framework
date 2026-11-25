@@ -22,6 +22,27 @@ void message(id self,SEL,id,WKScriptMessage* input){@autoreleasepool{
 }}
 void loaded(id self,SEL,WKWebView*,WKNavigation*){try{if(auto* data=getData(self))if(auto s=data->state.lock())s->push(Event::Kind::loaded,{});}catch(...){}}
 void failed(id self,SEL,WKWebView*,WKNavigation*,NSError* error){try{if(auto* data=getData(self))if(auto s=data->state.lock())s->push(Event::Kind::error,[[error localizedDescription] UTF8String]);}catch(...){}}
+void startAsset(id self, SEL, WKWebView*, id<WKURLSchemeTask> task) {
+    @autoreleasepool {
+        auto* data = getData(self);
+        const auto state = data ? data->state.lock() : nullptr;
+        NSURL* url = task.request.URL;
+        const char* uri = url.absoluteString.UTF8String;
+        const std::string_view address = uri ? uri : "";
+        if (state && !state->closed && address.starts_with(assetOrigin))
+            if (const auto* asset = findAsset(state->options, address.substr(assetOrigin.size()))) {
+                NSString* mime = [NSString stringWithUTF8String:assetMime(asset->name)];
+                NSHTTPURLResponse* response = [[[NSHTTPURLResponse alloc] initWithURL:url statusCode:200 HTTPVersion:@"HTTP/1.1"
+                    headerFields:@{@"Content-Type": mime, @"Cache-Control": @"no-store", @"Access-Control-Allow-Origin": @"*"}] autorelease];
+                [task didReceiveResponse:response];
+                [task didReceiveData:[NSData dataWithBytes:asset->bytes.data() length:asset->bytes.size()]];
+                [task didFinish];
+                return;
+            }
+        [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorResourceUnavailable userInfo:nil]];
+    }
+}
+void stopAsset(id, SEL, WKWebView*, id<WKURLSchemeTask>) {}
 void policy(id self,SEL,WKWebView*,WKNavigationAction* action,void(^decision)(WKNavigationActionPolicy)){
  bool allowed=false;
  try{if(auto* data=getData(self))if(auto s=data->state.lock();s&&!s->closed){const char* uri=[action.request.URL.absoluteString UTF8String];allowed=uri&&navigationAllowed(uri,s->options);if(!allowed)s->push(Event::Kind::navigationBlocked,uri?uri:"");}}catch(...){}
@@ -36,6 +57,9 @@ Class makeDelegateClass(){
  auto cls=objc_allocateClassPair([NSObject class],name.c_str(),0);if(!cls)throw std::runtime_error("Cannot allocate WebView delegate class");
  if(!class_addIvar(cls,"_cellState",sizeof(void*),std::uint8_t(std::log2(alignof(void*))),"^v")){objc_disposeClassPair(cls);throw std::runtime_error("Cannot allocate WebView delegate state");}
  class_addProtocol(cls,@protocol(WKScriptMessageHandler));class_addProtocol(cls,@protocol(WKNavigationDelegate));
+ class_addProtocol(cls,@protocol(WKURLSchemeHandler));
+ class_addMethod(cls,sel_registerName("webView:startURLSchemeTask:"),reinterpret_cast<IMP>(&startAsset),"v@:@@");
+ class_addMethod(cls,sel_registerName("webView:stopURLSchemeTask:"),reinterpret_cast<IMP>(&stopAsset),"v@:@@");
  class_addMethod(cls,sel_registerName("userContentController:didReceiveScriptMessage:"),reinterpret_cast<IMP>(&message),"v@:@@");
  class_addMethod(cls,sel_registerName("webView:didFinishNavigation:"),reinterpret_cast<IMP>(&loaded),"v@:@@");
  class_addMethod(cls,sel_registerName("webView:didFailNavigation:withError:"),reinterpret_cast<IMP>(&failed),"v@:@@@");
@@ -58,6 +82,7 @@ public:
     OwnedObject<WKUserContentController*> manager{[[WKUserContentController alloc] init]};if(!manager.value)throw std::runtime_error("Cannot create WKWebView content manager");[manager.value addScriptMessageHandler:delegate_ name:@"cell"];
     OwnedObject<WKUserScript*> script{[[WKUserScript alloc] initWithSource:string(bridgeScript()) injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]};if(!script.value)throw std::runtime_error("Cannot create WKWebView bridge");[manager.value addUserScript:script.value];
     config.value.userContentController=manager.value;
+    if (!state_->options.assets.empty()) [config.value setURLSchemeHandler:delegate_ forURLScheme:@"cell-asset"];
     view_=[[WKWebView alloc] initWithFrame:NSMakeRect(0,0,1,1) configuration:config.value];if(!view_)throw std::runtime_error("Cannot create WKWebView");
     view_.navigationDelegate=delegate_;if(@available(macOS 13.3,*))view_.inspectable=state_->options.developerTools;
     [parent_ addSubview:view_];bounds(state_->options.bounds);state_->ready=true;state_->push(Event::Kind::ready,{});++views;counted_=true;

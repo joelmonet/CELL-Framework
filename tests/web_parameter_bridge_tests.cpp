@@ -6,8 +6,136 @@ using namespace cell;
 namespace {
 void check(bool v,const char* text){if(!v)throw std::runtime_error(text);}
 class Gain final:public Processor{void prepare(const ProcessSpec&)override{}void reset()noexcept override{}void process(AudioBlock<float>,const ParameterBank&,const Transport&,std::span<const MidiEvent>)noexcept override{}};
+
+class Librarian final : public Processor, public ParameterPresentationSource, public EditorStatusSource,
+                         public WritableProgramMemory, public StateExtension, public web::ActionTarget {
+public:
+    void prepare(const ProcessSpec&) override {}
+    void reset() noexcept override {}
+    void process(AudioBlock<float>, const ParameterBank&, const Transport&, std::span<const MidiEvent>) noexcept override {}
+    std::optional<ParameterPresentation> parameterPresentation(ParamId id) const override {
+        if (id == stableId("mode")) {
+            ParameterPresentation result{{id,"mode",revision ? "New algorithm" : "Algorithm","",0,3,0,1}};
+            result.field.choices = {"Mono","Tape","Symphonic","Studio"};
+            result.displayCodes = {"Mn","tP","Sy","St"};
+            result.detentLabels = result.field.choices;
+            result.readOnly = readOnly;
+            return result;
+        }
+        if (id == stableId("hidden")) return ParameterPresentation{{id,"hidden","Hidden","",0,1,0},true};
+        return {};
+    }
+    std::uint64_t parameterPresentationRevision() const noexcept override { return revision; }
+    std::vector<EditorStatus> editorStatus() const override {
+        ++statusReads;
+        return {{"patch","Patch name",name,"info"}};
+    }
+    std::uint64_t editorStatusRevision() const noexcept override { return revision; }
+    ProgramCatalog programs(const ParameterBank&) const override {
+        return {{{0,"User",{{0,name}}}}, ProgramAddress{0,0}};
+    }
+    bool recallProgram(Engine&, ProgramAddress address) override { return address == ProgramAddress{0,0}; }
+    std::uint64_t catalogRevision() const noexcept override { return revision; }
+    ProgramWriteResult store(ProgramAddress address, std::span<const std::byte> data) override {
+        if (address != ProgramAddress{0,0} || data.size() != 2) return {false,"Invalid slot data"};
+        name = "Stored";
+        ++revision;
+        return {true,{}};
+    }
+    ProgramWriteResult rename(ProgramAddress address, std::string_view text) override {
+        if (address != ProgramAddress{0,0}) return {false,"Invalid slot"};
+        name = text;
+        ++revision;
+        return {true,{}};
+    }
+    ProgramWriteResult initialize(ProgramAddress address) override { return rename(address, "Init"); }
+    std::vector<std::byte> saveProductState(const ParameterBank&) const override {
+        const auto bytes=std::as_bytes(std::span(name));
+        return {bytes.begin(),bytes.end()};
+    }
+    bool loadProductState(std::span<const std::byte> bytes, ParameterBank&) override {
+        name.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+        ++revision;
+        return true;
+    }
+    bool supportsWebAction(std::string_view key, web::ActionMode) const noexcept override { return key == "import"; }
+    bool webAction(Engine&, std::string_view, web::ActionPhase) override { return false; }
+    web::ActionResult webActionWithArgument(Engine&, std::string_view, web::ActionPhase,
+                                            std::string_view argument) override {
+        return {false, argument == "bank" ? "Invalid checksum" : "Invalid argument"};
+    }
+    std::uint64_t revision{};
+    bool readOnly{};
+    std::string name{"Init"};
+    mutable int statusReads{};
+};
+
+void magicstompBridge() {
+    const std::array ids{stableId("mode"),stableId("hidden")};
+    const std::array<Parameter,2> fields{{
+        {ids[0],"mode","Mode","",0,1,0}, {ids[1],"hidden","Hidden","",0,1,0}}};
+    const PluginDescriptor descriptor{"cell.web.librarian","Librarian","Cell","1",2,fields};
+    auto owner=std::make_unique<Librarian>();
+    auto* processor=owner.get();
+    Engine engine(descriptor,std::move(owner));
+    const std::array actions{web::ActionBinding{"import",web::ActionMode::momentary}};
+    web::ParameterBridge bridge(engine,ids,true,actions);
+    check(bridge.apply(R"({"type":"parameter","key":"mode","value":2})") &&
+          engine.parameters().get(ids[0])==2.0/3,"Presented range did not map back to the storage domain");
+    const auto initial= json::read(bridge.snapshot());
+    const auto& item=initial["parameters"].array()->front();
+    check(initial["parameters"].array()->size()==1 && item["name"].text()=="Algorithm" &&
+          item["text"].text()=="Symphonic" && *item["value"].number()==2 &&
+          item["display"]["codes"].array()->at(2).text()=="Sy","Live metadata or hidden filtering failed");
+    (void)bridge.snapshot();
+    check(processor->statusReads==1,"Unchanged editor status was collected again");
+    std::string wire;
+    const auto record=[&](const std::string& message){wire=message;return true;};
+    auto full=[&]{return json::read(wire);};
+    check(bridge.updateParameters(record)&&full()["type"].text()=="parameters","Initial delta subscriber missed its snapshot");
+    engine.parameters().set(ids[0],1);
+    check(bridge.updateParameters(record)&&full()["type"].text()=="parameter-delta" &&
+          full()["parameters"].array()->size()==1 && full()["status"].isNull(),
+          "Delta duplicated status or failed to send the changed parameter");
+    bridge.resetParameterUpdates();
+    check(bridge.updateParameters(record)&&full()["type"].text()=="parameters","Force-resync did not send a full snapshot");
+    check(bridge.apply(R"({"type":"store-program","bank":0,"program":0,"bytes":[77,83]})") &&
+          *json::read(bridge.takeReply())["ok"].boolean(),"Bridge could not store program data");
+    check(bridge.apply(R"({"type":"rename-program","bank":0,"program":0,"name":"Vintage delay"})"),"Bridge could not rename");
+    const auto saved=engine.saveState();
+    check(bridge.apply(R"({"type":"initialize-program","bank":0,"program":0})") && engine.loadState(saved) &&
+          json::read(bridge.snapshot())["status"].array()->front()["text"].text()=="Vintage delay",
+          "Product state did not preserve a librarian rename");
+    processor->readOnly=true;
+    ++processor->revision;
+    check(*json::read(bridge.snapshot())["parameters"].array()->front()["readonly"].boolean() &&
+          !bridge.apply(R"({"type":"begin","key":"mode"})"),"A read-only presented lane acquired a gesture");
+    check(!bridge.apply(R"({"type":"action","key":"import","phase":"press","argument":"bank","request":"x"})") &&
+          bridge.activeActions()==0 && json::read(bridge.takeReply())["message"].text()=="Invalid checksum",
+          "Failed action did not report its result or retained a gesture");
+
+    std::vector<web::EditorFileRequest> files;
+    bridge.setFileEndpoint({".mstbank"},[&](auto request){files.push_back(std::move(request));return true;});
+    (void)bridge.apply(R"({"type":"open-file","request":"refused","filters":[".txt"]})");
+    const auto open = [&] {(void)bridge.apply(R"({"type":"open-file","request":"bank","filters":[".mstbank"]})");};
+    check(files.empty(),"File endpoint opened a disallowed file type");
+    open();
+    bridge.finishFile(true,{},{});
+    check(*json::read(bridge.takeReply())["cancelled"].boolean(),"File chooser cancellation was lost");
+    open();
+    const std::vector<std::byte> large(web::maxEditorFileBytes+1);
+    bridge.finishFile(false,"large.mstbank",large);
+    check(!*json::read(bridge.takeReply())["ok"].boolean(),"Oversize file was returned to the page");
+    open();
+    const std::array data{std::byte{77},std::byte{83}};
+    bridge.finishFile(false,"demo.mstbank",data);
+    check(json::read(bridge.takeReply())["bytes"].text()=="TVM=","File chooser changed the selected bytes");
+    (void)bridge.apply(R"({"type":"open-file","request":"save","filters":[".mstbank"],"save":true,"bytes":"TVM="})");
+    check(files.size()==4 && files.back().save && std::ranges::equal(files.back().bytes,data),"File export did not decode bytes");
+}
 }
 int main(){try{
+    magicstompBridge();
     const std::array<Parameter,2> fields{{{stableId("gain"),"gain","Gain","dB",-60,12,0,.1},{stableId("private"),"private","Hidden","",0,1,0,1}}};
     PluginDescriptor descriptor{"cell.web.test","Web test","Cell","1",2,fields};Engine engine(descriptor,std::make_unique<Gain>());engine.prepare(48000,64);
     const std::array allowed{stableId("gain")};web::ParameterBridge bridge(engine,allowed);
@@ -161,5 +289,12 @@ int main(){try{
     check(levels() == std::array{-6.0, -9.0}, "incorrect multichannel peak or RMS");
     meters.clear();
     check(levels() == std::array{-60.0, -60.0}, "meter did not clear");
+    const auto combined = json::read(web::OutputMeter::snapshot({.25f,.125f},
+        web::OutputMeter::Levels{.5f,.25f}, 6.f));
+    const auto& signals = *combined["meters"].array();
+    check(signals.size() == 5 && signals[2]["key"].text() == "input-peak" &&
+          *signals[2]["value"].number() == -6.0 && signals[3]["key"].text() == "input-rms" &&
+          signals[4]["key"].text() == "gain-reduction" && *signals[4]["value"].number() == 6.0,
+          "Combined meter readings lost input level or gain reduction");
     std::cout<<"PASS: web parameter allow-list, bounds, gestures, cancellation and descriptor snapshot\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

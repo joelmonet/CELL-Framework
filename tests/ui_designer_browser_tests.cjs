@@ -1537,6 +1537,20 @@ async function download(page, id, directory) {
         assert.equal(await hardwareExport.locator(".stepper .led-code").textContent(), "A1");
         await hardwareExport.screenshot({path: path.join(temp, "hardware-export-phone.png"), fullPage: true});
         await fs.writeFile(path.join(temp, "hardware-editor.html"), hardwareHtml);
+        const hostedModes = ["Mono", "Tape", "Symphonic", "Studio"];
+        await hardwareExport.evaluate(choices => window.receive({type: "parameters", revision: 1, supportsDeltas: true,
+            parameters: [{key: "gain", name: "Delay algorithm", minimum: 0, maximum: 3, step: 1, value: 2,
+                text: "Symphonic HQ", choices, display: {detents: choices}}]}), hostedModes);
+        assert.equal(await hardwareExport.locator(".knob .detents span").count(), 4);
+        assert.deepEqual(await hardwareExport.locator(".knob .detent-captions span").allTextContents(), hostedModes);
+        assert.equal(await hardwareExport.locator(".readout output").textContent(), "Symphonic HQ");
+        await hardwareExport.evaluate(() => window.receive({type: "parameter-delta", base: 4, revision: 5,
+            parameters: [], removed: ["gain"]}));
+        await hardwareExport.evaluate(choices => window.receive({type: "parameter-delta", base: 1, revision: 2,
+            parameters: [{key: "gain", name: "Delay algorithm", minimum: 0, maximum: 3, step: 1, value: 3,
+                choices, text: "Studio", readonly: true}], removed: []}), hostedModes);
+        assert.equal(await hardwareExport.locator(".knob input").isDisabled(), true);
+        assert.equal(await hardwareExport.locator(".readout output").textContent(), "Studio");
 
         for (const [family, label] of [["british", "British broadcast"], ["soviet", "Soviet-era laboratory"],
             ["german", "German precision"], ["field", "Field communications"]]) {

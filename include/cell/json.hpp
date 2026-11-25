@@ -48,6 +48,7 @@ public:
     explicit Value(const char* value) : value_(std::string(value)) {}
     explicit Value(Array value) : value_(std::move(value)) {}
     explicit Value(Object value) : value_(std::move(value)) {}
+    bool operator==(const Value&) const = default;
     bool isNull() const noexcept { return std::holds_alternative<std::nullptr_t>(value_); }
     bool isNumber() const noexcept { return std::holds_alternative<Number>(value_); }
     bool isBool() const noexcept { return std::holds_alternative<bool>(value_); }
@@ -66,7 +67,7 @@ public:
     const Value& operator[](std::string_view) const noexcept;
     std::string_view text() const noexcept { const auto* value = string(); return value ? std::string_view(*value) : std::string_view(); }
 private:
-    struct Number{std::variant<std::int64_t,std::uint64_t,double>exact;double approximate;};
+    struct Number{std::variant<std::int64_t,std::uint64_t,double>exact;double approximate;bool operator==(const Number&) const = default;};
     std::variant<std::nullptr_t, bool, Number, std::string, Array, Object> value_{nullptr};
 };
 

@@ -1,0 +1,58 @@
+<!doctype html><meta charset="utf-8"><title>Cell asset and editor fixture</title>
+<script>
+"use strict";
+const ready = new Promise(resolve => cell.onMessage(message => {
+    if (message.type === "parameters" && message.parameters.length === 16 &&
+            message.parameters.some(field => field.key === "slot1" && field.name === "Delay algorithm") &&
+            message.fileExtensions?.includes(".mstbank") && message.writablePrograms) resolve(true);
+}));
+function requestReply(type, body) {
+    return new Promise(resolve => {
+        const stop = cell.onMessage(message => {
+            if (message.type !== type || message.request !== body.request) return;
+            stop();
+            resolve(message);
+        });
+        cell.postMessage(body);
+    });
+}
+function choose(request) {
+    return requestReply("file-result", {type: "open-file", request, filters: [".mstbank"]});
+}
+Promise.all([
+    ready,
+    new Promise(resolve => {
+        const image = new Image();
+        image.onload = () => resolve(image.naturalWidth === 12);
+        image.onerror = () => resolve(false);
+        image.src = cell.assetUrl("meter.svg");
+    }),
+    ...["cell-asset://editor/missing.svg", "https://example.invalid/blocked.svg"].map(url => new Promise(resolve => {
+        const image = new Image();
+        image.onload = () => resolve(false);
+        image.onerror = () => resolve(true);
+        image.src = url;
+    }))
+]).then(async results => {
+    if (!results.every(Boolean)) return;
+    const cancelled = await choose("cancel");
+    const large = await choose("oversize");
+    const bank = await choose("bank");
+    if (!cancelled.cancelled || large.ok || !large.message.includes("45 KiB") ||
+            !bank.ok || bank.name !== "demo.mstbank" || bank.bytes !== "TVM=") return;
+    const address = {bank: 0, program: 37};
+    const renamed = new Promise(resolve => {
+        const stop = cell.onMessage(message => {
+            if (message.type !== "parameters" ||
+                    message.programs?.banks[0].programs[37].name !== "Imported P37") return;
+            stop();
+            resolve(true);
+        });
+    });
+    const stored = await requestReply("program-result", {
+        type: "store-program", request: "import", ...address,
+        bytes: Array.from(atob(bank.bytes), character => character.charCodeAt(0))
+    });
+    if (stored.ok && await renamed) cell.postMessage({type: "recall-program", ...address});
+});
+</script>

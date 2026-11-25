@@ -5,6 +5,7 @@
 #include <cell/json.hpp>
 #include <atomic>
 #include <cmath>
+#include <optional>
 
 namespace cell::web {
 // Single audio-thread producer, one or more readers. Each reading represents
@@ -54,7 +55,8 @@ public:
     std::string snapshot() const { return snapshot(levels()); }
 
     // GUI thread. Quantize values to the same resolution as the meter display.
-    static std::string snapshot(Levels values) {
+    static std::string snapshot(Levels values, std::optional<Levels> input = {},
+                                std::optional<float> reduction = {}) {
         using V = json::Value;
         auto reading = [](const char* key, float amplitude) {
             const double level = std::isfinite(amplitude) ? amplitude : 0.0;
@@ -62,8 +64,17 @@ public:
             return V(V::Object{{"key", V(std::string(key))}, {"minimum", V(-60.0)}, {"maximum", V(0.0)},
                 {"unit", V(std::string("dBFS"))}, {"value", V(db)}});
         };
-        return json::write(V(V::Object{{"type", V(std::string("meters"))}, {"meters", V(V::Array{
-            reading("output-peak", values.peak), reading("output-rms", values.rms)})}}));
+        V::Array meters{reading("output-peak", values.peak), reading("output-rms", values.rms)};
+        if (input) {
+            meters.push_back(reading("input-peak", input->peak));
+            meters.push_back(reading("input-rms", input->rms));
+        }
+        if (reduction && std::isfinite(*reduction)) {
+            const double db = std::round(std::clamp(double(*reduction), 0.0, 60.0) * 10) / 10;
+            meters.emplace_back(V::Object{{"key", V("gain-reduction")}, {"minimum", V(0.)},
+                {"maximum", V(60.)}, {"unit", V("dB")}, {"value", V(db)}});
+        }
+        return json::write(V(V::Object{{"type", V("meters")}, {"meters", V(std::move(meters))}}));
     }
 
 private:

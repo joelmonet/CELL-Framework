@@ -62,12 +62,37 @@ public:
 };
 // Non-audio metadata for fixed host lanes whose target can change with a rack.
 // Returning no override retains the descriptor's ordinary presentation.
-struct ParameterPresentation {Parameter field;bool hidden{};};
+struct ParameterPresentation {
+    Parameter field;
+    bool hidden{};
+    bool readOnly{};
+    // Indexed by the discrete physical steps of the presented parameter.
+    std::vector<std::string> displayCodes;
+    std::vector<std::string> detentLabels;
+};
 class ParameterPresentationSource {
 public:
     virtual ~ParameterPresentationSource()=default;
     virtual std::optional<ParameterPresentation> parameterPresentation(ParamId)const=0;
     virtual std::uint64_t parameterPresentationRevision()const noexcept=0;
+};
+ParameterPresentation resolveParameterPresentation(const Parameter&, const ParameterPresentationSource*);
+bool sameParameterDomain(const Parameter&, const Parameter&) noexcept;
+double mapParameterValue(double, const Parameter& from, const Parameter& to) noexcept;
+
+struct EditorStatus { std::string key, label, text, severity; };
+class EditorStatusSource {
+public:
+    virtual ~EditorStatusSource() = default;
+    // Serialized control thread. Results are owned and may allocate here.
+    virtual std::vector<EditorStatus> editorStatus() const = 0;
+    virtual std::uint64_t editorStatusRevision() const noexcept = 0;
+};
+class GainReductionSource {
+public:
+    virtual ~GainReductionSource() = default;
+    // Audio thread after rendering. Return a positive attenuation in dB.
+    virtual float gainReductionDb() const noexcept = 0;
 };
 class Processor {
 public:
@@ -76,8 +101,9 @@ public:
     virtual void attachParameterOutput(ParameterOutput*) {} // construction
     // Construction only: seed product-owned host lanes before a host reads them.
     virtual void initializeParameters(ParameterBank&) {}
-    // Audio thread, after an accepted host event. No locks or allocation.
+    // Serialized with processing, after an accepted host event. No locks or allocation.
     virtual void parameterChanged(ParamId,double)noexcept {}
+    virtual void parameterGesture(ParamId, EditType) noexcept {}
     virtual void prepare(const ProcessSpec&) = 0;
     virtual void reset() noexcept = 0;
     virtual void process(AudioBlock<float>, const ParameterBank&, const Transport&,
@@ -137,6 +163,16 @@ public:
     virtual bool recallProgram(Engine&, ProgramAddress) = 0;
 };
 
+struct ProgramWriteResult { bool ok{}; std::string error; };
+// Optional control-thread librarian. A product's state codec owns persistence.
+class WritableProgramMemory : public ProgramMemory {
+public:
+    virtual ProgramWriteResult store(ProgramAddress, std::span<const std::byte>) = 0;
+    virtual ProgramWriteResult rename(ProgramAddress, std::string_view) = 0;
+    virtual ProgramWriteResult initialize(ProgramAddress) = 0;
+    virtual std::uint64_t catalogRevision() const noexcept = 0;
+};
+
 class Engine : private ParameterOutput {
 public:
     Engine(const PluginDescriptor&, std::unique_ptr<Processor>);
@@ -147,6 +183,9 @@ public:
     // are ignored and processing continues without allocating or taking locks.
     void process(AudioBlock<float> block, std::span<const ParameterEvent> events = {},
                  const Transport& transport = {}, std::span<const MidiEvent> midi = {},AudioBlock<float> sidechain={},midi::Output* output=nullptr) noexcept;
+    // Host flush, serialized with process. Also safe before prepare. These
+    // inbound edits do not enter the outgoing automation queue.
+    void applyParameterEvents(std::span<const ParameterEdit>) noexcept;
 
     const PluginDescriptor& descriptor() const noexcept { return descriptor_; }
     ParameterBank& parameters() noexcept { return parameters_; }
@@ -205,9 +244,13 @@ public:
     // Audio consumes it at the next callback without locks or allocation.
     bool controllerMidi(const midi::ControlMessage&)noexcept;
     void releaseControllerMidi()noexcept;
+    // Serialized control producer. Copies payloads, reports backpressure and
+    // delivers accepted messages at frame zero when an output sink accepts them.
+    bool enqueueMidi(const MidiEvent&) noexcept;
     midi::PadInput* padInput()noexcept{return padInput_.get();} // control thread
     const midi::PadInput* padInput()const noexcept{return padInput_.get();}
 private:
+    void applyParameterEvent(const ParameterEdit&) noexcept;
     bool parameterOutput(ParamId,double) noexcept override;
     std::string id_,name_,vendor_,version_;
     PluginDescriptor descriptor_;
@@ -225,6 +268,8 @@ private:
     std::atomic<std::uint64_t> stateGeneration_{};
     std::vector<MidiEvent> midiScratch_;
     std::unique_ptr<midi::ControlInput> controllerInput_;
+    class QueuedMidi;
+    std::unique_ptr<QueuedMidi> queuedMidi_;
     std::unique_ptr<midi::PadInput> padInput_;
     std::vector<MidiEvent> hardwareScratch_;
     std::vector<MidiEvent> controllerScratch_;

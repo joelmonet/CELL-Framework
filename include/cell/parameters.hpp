@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -60,6 +61,8 @@ struct Parameter {
                       clamp(value), unit.empty() ? "" : " ", unit.c_str());
         return result;
     }
+    // Control thread parameter text input.
+    std::optional<double> parseText(std::string_view) const;
 };
 
 class ParameterBank {
@@ -184,7 +187,8 @@ private:
     std::unique_ptr<std::atomic<double>[]> values_;
 };
 
-struct ParameterEvent { std::uint32_t frame{}; ParamId id{}; double value{}; };
+enum class EditType : std::uint8_t { begin, value, end };
+struct ParameterEvent { std::uint32_t frame{}; ParamId id{}; double value{}; EditType type{EditType::value}; };
 // Stable merge ordering with caller-owned scratch: duplicate timestamps retain
 // host order without the temporary allocation used by std::stable_sort.
 template<class Event> inline bool stableFrameSort(std::span<Event> events,std::span<Event> scratch) noexcept {
@@ -202,7 +206,6 @@ template<class Event> inline bool stableFrameSort(std::span<Event> events,std::s
     return true;
 }
 inline bool stableEventSort(std::span<ParameterEvent> events,std::span<ParameterEvent> scratch) noexcept{return stableFrameSort<ParameterEvent>(events,scratch);}
-enum class EditType : std::uint8_t { begin, value, end };
 struct ParameterEdit { EditType type{}; ParamId id{}; double value{}; };
 
 } // namespace cell

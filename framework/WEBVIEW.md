@@ -460,7 +460,64 @@ through CLAP and displays live `output-peak` and `output-rms` meters.
 - On Linux, install GTK 3 and WebKitGTK 4.1 and run the host with an X11
   display.
 
-Windows and Linux hosts provide editor ticks through `clap.timer-support`.
+Windows and Linux use `clap.timer-support` when the host provides it. If the
+extension is unavailable, Cell schedules ticks through `request_callback`.
+The host still calls the editor on its GUI thread.
+
+#### Publish patch metadata
+
+Implement `ParameterPresentationSource` for product-owned names, units,
+ranges, defaults, steps, hidden/read-only flags, choices and optional
+`displayCodes` and `detentLabels`. Keep the original parameter IDs and keys.
+The bridge maps between the stable SDK storage range and the current presented
+range, omits hidden parameters, and includes each visible parameter's
+formatted `text`. Hidden lanes still accept host automation. A read-only lane
+remains visible and rejects WebView edits. Existing gestures can still close
+after the lane becomes hidden or read-only.
+
+For CLAP, a presentation revision triggers value, text and info rescans.
+Changing a host range, step or read-only flag requests a restart and publishes
+that domain when the host deactivates the plug-in. The embedded editor can
+read current patch metadata during playback. Products can publish patch names
+and import errors via `EditorStatusSource` with a revision.
+
+An editor can send `{"type":"subscribe-parameter-deltas"}` when it sees
+`supportsDeltas`. It receives a full snapshot followed by changed entries
+and removed keys, with base and new revisions. Send
+`{"type":"parameter-resync"}` to recover a full snapshot.
+
+#### Expose programs, actions and preset files
+
+Add `CLAP_EXPOSE_PROGRAMS` to use `ProgramMemory` for factory preset
+discovery and loading. Keys use the stable `bank:program` address. The
+discovery host can construct a separate processor instance to read its
+catalog. Keep catalog enumeration quick and independent of UI and audio
+activation.
+
+Products with `WritableProgramMemory` can receive `store-program`,
+`rename-program` and `initialize-program` messages. These take `bank` and
+`program`, plus `bytes` for store or `name` for rename. Store accepts up
+to 4,096 bytes as an array of integers. The product state codec persists
+the edited slots and increments `catalogRevision()` on changes. Actions may
+implement `webActionWithArgument` and return an `action-result`. Use an
+optional `request` string to correlate results.
+
+Add `CLAP_EDITOR_FILE_EXTENSIONS ".mstbank;.syx"` to enable native open/save dialogs.
+Send an `open-file` message with a `request` string, allowed `filters`, and
+optional `save`. For saving, include `bytes` as RFC 4648 base64. A
+`file-result` carries the basename and base64 bytes after selection, or
+reports cancellation or failure. Transfers are limited to 45 KiB and saving
+uses exclusive publication.
+
+Add `CLAP_EDITOR_ASSETS <directory>` to embed named images and fonts.
+Refer to them as `cell-asset://editor/<relative-name>` in HTML and CSS, or
+use `cell.assetUrl(name)` from script. WebView2 resolves the same references
+through its private in-memory editor origin. The browser policy allows
+the bundled assets and keeps external connections disabled.
+
+CLAP meters publish `input-peak`, `input-rms`, `output-peak` and
+`output-rms`. A processor implementing `GainReductionSource` also
+publishes `gain-reduction` in positive dB.
 
 For a native macOS check, choose **Load showcase** in the designer before
 exporting both files. With the gain example configured, build and run the

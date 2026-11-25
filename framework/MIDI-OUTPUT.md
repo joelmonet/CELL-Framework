@@ -22,6 +22,12 @@ Regression coverage includes a loaded Studio VST3 with an actual KEYS/PADS -> MI
 
 ## Send and receive MIDI 1.0 SysEx
 
+A control-thread action can call `Engine::enqueueMidi` to send an actual
+dump or request. The engine owns the queued bytes and delivers the event at
+frame zero of the next block with an accepting output sink. The queue holds
+four events, each with up to 65,535 SysEx bytes. Check the return value for
+backpressure or unsupported data.
+
 Set `PluginDescriptor::supportsSysEx` on a plug-in with `acceptsMidi`,
 `producesMidi`, or both. CLAP, VST3 and AUv3 carry SysEx in either enabled
 direction. For AUv3, use a component with MIDI capability such as a music

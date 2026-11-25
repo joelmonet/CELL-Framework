@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string_view>
+#include <string>
 namespace cell {
 class Engine;
 
@@ -16,6 +17,7 @@ namespace web {
 enum class ActionMode { invoke, momentary };
 enum class ActionPhase { invoke, press, release };
 struct ActionBinding { std::string_view key; ActionMode mode; };
+struct ActionResult { bool ok{}; std::string message; };
 
 // Optional, control-thread interface. A successful press owns one release.
 // Release must remain available until the press has been cleared.
@@ -24,6 +26,11 @@ public:
     virtual ~ActionTarget() = default;
     virtual bool supportsWebAction(std::string_view, ActionMode) const noexcept = 0;
     virtual bool webAction(Engine&, std::string_view, ActionPhase) = 0;
+    virtual ActionResult webActionWithArgument(Engine& engine, std::string_view key, ActionPhase phase,
+                                               std::string_view argument) {
+        if (!argument.empty()) return {false, "This action takes no argument"};
+        return {webAction(engine, key, phase), {}};
+    }
 };
 }
 
