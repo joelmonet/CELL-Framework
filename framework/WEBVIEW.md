@@ -165,17 +165,19 @@ Resize controls, set editor colors, or embed SVG, PNG, JPEG or WebP artwork on a
 knob or fader. Face artwork can use up to 256 KiB per control and raster
 dimensions up to 2048 × 2048 pixels.
 
-The **Hardware style** menu offers studio, British broadcast, Soviet-era
-laboratory, German precision, and field communications finishes. Choose
-**Hardware showcase** to load that style as a playable layout. The original
-artwork takes cues from vintage hardware. Use **Panel background** to choose
-an individual metal or enamel finish. Select a
-control to choose its **Hardware artwork** in the inspector. The collection
-includes classic console caps, amplifier chicken-head knobs and rockers, pedal
-knobs and footswitches, and outboard attenuators and lever toggles. Use switch
-artwork on toggles, momentary controls, and action buttons. Knob pointers, fader
-caps, displays, meters, and switch states follow the control in preview and
-export. The artwork is embedded in the layout and WebView HTML.
+Choose a **Hardware style** and click **Hardware showcase** to load a playable
+layout. The options include studio, British broadcast, Soviet-era laboratory,
+German precision, field communications, and tape studio. The tape studio pairs
+an oxblood knob and walnut fader with a vacuum fluorescent display and a
+momentary tape cue key that drives a blue indicator lamp.
+
+Use **Panel background** to choose a metal or enamel finish. Select a control
+and open **Hardware artwork** in the inspector to pick a face. The collection
+includes console caps, amplifier chicken-head knobs and rockers, pedal
+footswitches, jog wheels, counter bezels, and pilot lights. Use switch artwork
+on toggles, momentary controls, and action buttons. Knob pointers, fader caps,
+readouts, meters, and switch states follow the control in preview and export.
+The layout and exported WebView HTML both embed the artwork for offline use.
 
 **Field indicators** loads an olive panel with pilot and warning lamps, a red
 annunciator, and momentary **LAUNCH** and **DETONATE** buttons bound to preview

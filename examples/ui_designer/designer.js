@@ -1008,7 +1008,8 @@ const hardwareStyles = {
     british: {label: "British broadcast", background: "#182733", surface: "#243b4a", ink: "#eff6fa", lamp: "#f5dbad"},
     soviet: {label: "Soviet-era laboratory", background: "#282d24", surface: "#414638", ink: "#f1edd2", lamp: "#ffbf79"},
     german: {label: "German precision", background: "#252b2e", surface: "#363f44", ink: "#f1f4f4", lamp: "#a8e6f3"},
-    field: {label: "Field communications", background: "#252b20", surface: "#363e2e", ink: "#f1e8ce", lamp: "#fae49e"}
+    field: {label: "Field communications", background: "#252b20", surface: "#363e2e", ink: "#f1e8ce", lamp: "#fae49e"},
+    tape: {label: "Tape studio", background: "#202825", surface: "#293631", ink: "#e6e8d9", lamp: "#e8c17b"}
 };
 const hardwareStyle = query("#hardware-style");
 for (const [key, {label}] of Object.entries(hardwareStyles)) hardwareStyle.add(new Option(label, key));
@@ -1054,18 +1055,18 @@ query("#hardware-showcase").onclick = () => {
     const knob = pick("knob", 1);
     const fader = pick("fader", 1);
     const display = pick("display");
-    const parameters = model.readCatalog({type: "parameters", parameters: [
+    const fields = [
         {key: "gain", name: "Input trim", minimum: -60, maximum: 12, step: 0.01, value: -6, unit: "dB"},
         {key: "level", name: "Output level", minimum: -60, maximum: 12, step: 0.01, value: -12, unit: "dB"},
         {key: "mode", name: "Mode", minimum: 0, maximum: 2, step: 1, value: 1, unit: "",
             choices: ["Clean", "Warm", "Bright"]},
         {key: "bypass", name: "Bypass", minimum: 0, maximum: 1, step: 1, value: 0, unit: ""}
-    ]});
+    ];
     const control = (kind, label, key, [x, y, width, height], asset, options) => ({
         kind, label, key, x, y, width, height, artwork: asset.artwork, ...options
     });
     const green = "#a0f5bb";
-    loadShowcase([
+    const layout = [
         control("knob", "Input trim", "gain", [0, 0, 4, 3], knob, {artworkMode: "cap", accent: lamp}),
         control("readout", "Gain", "gain", [0, 3, 2, 1], display, {accent: lamp}),
         control("fader", "Output level", "level", [4, 0, 4, 4], fader, {artworkMode: "cap", accent: lamp}),
@@ -1073,9 +1074,20 @@ query("#hardware-showcase").onclick = () => {
             {segmented: true, accent: green, displayCodes: [{value: 0, code: "CL"}, {value: 1, code: "A1"}, {value: 2, code: "br"}]}),
         control("meter", "Output peak", "output-peak", [8, 2, 4, 2], family === "studio" ? pick("display", 1) : display,
             {accent: green}),
-        control("toggle", "Bypass", "bypass", [2, 3, 2, 1], pick("switch"), {accent: lamp})
-    ], {...model.defaultTheme, background, surface, text: ink, backgroundArtwork: panel.artwork},
-    parameters, [0], label + " showcase loaded.");
+        control("toggle", "Bypass", "bypass", [2, 3, 2, 1],
+            family === "tape" ? CellDesignerArtwork.switch[0] : pick("switch"), {accent: lamp})
+    ];
+    if (family === "tape") {
+        fields.push({key: "cue", name: "Cue", minimum: 0, maximum: 1, step: 1, value: 0, unit: ""});
+        layout.push(
+            control("momentary", "Cue", "cue", [0, 4, 6, 2], pick("switch"), {accent: lamp}),
+            control("indicator", "Cue active", "cue", [6, 4, 6, 2], pick("indicator"),
+                {accent: "#a3e8ff", indicatorSource: "parameter", threshold: 1})
+        );
+    }
+    const parameters = model.readCatalog({type: "parameters", parameters: fields});
+    loadShowcase(layout, {...model.defaultTheme, background, surface, text: ink, backgroundArtwork: panel.artwork},
+        parameters, [0], label + " showcase loaded.");
 };
 function stepHistory(source, destination) {
     if (!source.length) return;

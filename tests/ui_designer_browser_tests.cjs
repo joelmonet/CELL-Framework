@@ -1634,6 +1634,32 @@ async function download(page, id, directory) {
         await fieldEditor.evaluate(() => window.receive({type: "parameters", parameters: []}));
         assert.equal(await lampStatus(fieldEditor, "READY").textContent(), "Unavailable");
 
+        await hardware.getByLabel("Hardware style").selectOption("tape");
+        await hardware.getByRole("button", {name: "Hardware showcase", exact: true}).click();
+        await hardware.getByText("Tape studio showcase loaded.", {exact: true}).waitFor();
+        const cueStatus = lampStatus(hardwarePreview, "Cue active");
+        await cueStatus.filter({hasText: "Off"}).waitFor();
+        await hardwarePreview.getByRole("button", {name: "Cue", exact: true}).focus();
+        await hardware.keyboard.down("Space");
+        await cueStatus.filter({hasText: "On"}).waitFor();
+        await hardware.keyboard.up("Space");
+        await cueStatus.filter({hasText: "Off"}).waitFor();
+        await hardwarePreview.locator("main").screenshot({path: path.join(temp, "tape-studio-preview.png")});
+        if (!(await library.evaluate(panel => panel.open))) await library.locator("summary").click();
+        const jogWheel = hardware.getByRole("button", {name: "Cassette jog wheel"});
+        await jogWheel.locator("img").evaluate(image => image.decode());
+        await jogWheel.click();
+        const tapeLayout = JSON.parse(await download(hardware, "#save", temp));
+        const tapeKnob = tapeLayout.controls.find(control => control.kind === "knob");
+        assert.equal(tapeKnob.artwork, await jogWheel.locator("img").getAttribute("src"));
+        assert.equal(tapeKnob.artworkMode, "cap");
+        const tapeHtml = await download(hardware, "#export", temp);
+        for (const kind of ["knob", "fader", "meter", "momentary", "indicator"]) {
+            const control = tapeLayout.controls.find(control => control.kind === kind);
+            assert.match(control.artwork, /^data:image\/webp;base64,/);
+            assert.ok(tapeHtml.includes(control.artwork), `Export lost artwork for ${kind}`);
+        }
+
         assert.deepEqual(errors, []);
         console.log("Designer passed layout editing, program recall, displays, actions, conditional panels, typography, detent placement, layer-order exports, hardware artwork, and indicator lamps.");
     } finally {
