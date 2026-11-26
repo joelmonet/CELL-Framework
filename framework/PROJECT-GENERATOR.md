@@ -75,12 +75,12 @@ the project. Keep the selected ID after releasing the plug-in. `--output`
 selects a new directory under an existing parent. Generation works offline
 and refuses to overwrite an existing path.
 
-Every project includes the gain processor, test, and standalone WAV
+The default project includes a gain processor, tests, and a standalone WAV
 renderer. Add `--format clap`, `--format vst3`, `--format lv2`, `--format au`,
-or `--format auv3` to enable a plug-in build by default. For the first four,
-supply the format SDK location during configure
-through `CELL_PROJECT_CLAP_SDK`, `CELL_PROJECT_VST3_SDK`, `CELL_PROJECT_LV2_SDK`,
-or `CELL_PROJECT_AU_SDK`.
+or `--format auv3` to enable a plug-in build by default. CLAP uses the headers
+shipped with the SDK. Set `CELL_PROJECT_CLAP_SDK` during configure to use a
+different checkout. For VST3, LV2, and AU, supply the format SDK location with
+`CELL_PROJECT_VST3_SDK`, `CELL_PROJECT_LV2_SDK`, or `CELL_PROJECT_AU_SDK`.
 Repeat `--format` to enable several. Add `--ui` to use the native editor for
 CLAP and VST3 if your Cell installation includes the native UI component.
 The generated CMake options allow changing these selections later.
