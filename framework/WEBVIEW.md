@@ -179,6 +179,11 @@ on toggles, momentary controls, and action buttons. Knob pointers, fader caps,
 readouts, meters, and switch states follow the control in preview and export.
 The layout and exported WebView HTML both embed the artwork for offline use.
 
+The knob picker includes British and American guitar and bass amp designs,
+from spun gold and fluted cream caps to aluminum bass knobs and black skirt
+knobs. The Chime pointer and Black skirt have built-in index marks that
+rotate with the dial. The other amp caps use the Designer's dial pointer.
+
 **Field indicators** loads an olive panel with pilot and warning lamps, a red
 annunciator, and momentary **LAUNCH** and **DETONATE** buttons bound to preview
 audio controls. Add an **Indicator** and set its **Lamp source** to a parameter
