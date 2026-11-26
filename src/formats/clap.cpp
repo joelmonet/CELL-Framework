@@ -30,6 +30,7 @@
 #endif
 #include "cell_clap_web_bindings.hpp"
 #include "cell_clap_web_page.hpp"
+#include "clap_designer_live.hpp"
 #if defined(_WIN32)
 #include "webview2_plugin.hpp"
 #elif defined(__APPLE__)
@@ -125,11 +126,12 @@ const clap_plugin_descriptor_t& clapDescriptor() {
 #if defined(CELL_CLAP_WEB_EDITOR)
 struct WebEditor {
 #if defined(CELL_DESIGNER_HAS_ACTIONS) || defined(CELL_DESIGNER_HAS_RULE_SOURCES)
-    explicit WebEditor(Engine& engine) : parameters(cell::designer::bind(engine)) { prepareBridge(); }
+    WebEditor(Engine& engine, const char* id) : parameters(cell::designer::bind(engine)), livePage(id) { prepareBridge(); }
 #else
-    explicit WebEditor(Engine& engine) : parameters(engine, cell::designer::parameters) { prepareBridge(); }
+    WebEditor(Engine& engine, const char* id) : parameters(engine, cell::designer::parameters), livePage(id) { prepareBridge(); }
 #endif
     web::ParameterBridge parameters;
+    web::DesignerLivePage livePage;
     web::View view;
     std::uintptr_t parent{};
 #if defined(__APPLE__)
@@ -179,6 +181,7 @@ struct WebEditor {
 #endif
     void prepareBridge() {
         parameters.advertiseParameterDeltas();
+        parameters.advertiseHostShortcuts();
 #if defined(CELL_CLAP_EDITOR_FILE_TYPES)
         std::vector<std::string> extensions;
         auto text = std::string_view(CELL_CLAP_EDITOR_FILE_TYPES);
@@ -393,6 +396,7 @@ void closeWebView(Instance& instance, bool flush) {
     web::View::readyToUnload();
 #endif
     editor.loaded = false;
+    editor.livePage.reset();
     editor.parameters.resetPage();
     editor.lastParameters.clear();
     editor.lastMeters.clear();
@@ -1211,9 +1215,9 @@ constexpr auto& webWindowApi = CLAP_WINDOW_API_X11;
 std::uintptr_t webParent(const clap_window_t& parent) { return parent.x11; }
 #endif
 
-void webLog(const Instance& instance, const char* message) {
+void webLog(const Instance& instance, const char* message, clap_log_severity severity = CLAP_LOG_WARNING) {
     if (instance.hostLog && instance.hostLog->log)
-        instance.hostLog->log(instance.host, CLAP_LOG_WARNING, message);
+        instance.hostLog->log(instance.host, severity, message);
 }
 
 bool webApiSupported([[maybe_unused]] const Instance& instance, const char* api, bool floating) {
@@ -1228,16 +1232,52 @@ bool webApiSupported([[maybe_unused]] const Instance& instance, const char* api,
     catch (...) { return false; }
 }
 
+std::string_view embeddedWebPage() {
+    return {reinterpret_cast<const char*>(assets::clapEditorPage), sizeof(assets::clapEditorPage)};
+}
+
+bool changeWebPage(WebEditor& editor, std::string_view html, bool& cancelled) {
+    cancelled |= editor.parameters.activeGestures() != 0 || editor.parameters.activeActions() != 0;
+    editor.parameters.cancel();
+    editor.parameters.resetPage();
+#if defined(CELL_CLAP_EDITOR_FILE_TYPES)
+    editor.fileDialog.cancel();
+    editor.fileRequest.reset();
+#endif
+    editor.loaded = false;
+    editor.lastParameters.clear();
+    editor.lastMeters.clear();
+    return editor.view.loadHtml(html);
+}
+
 void updateWebEditor(Instance& instance) {
     auto& editor = *instance.webEditor;
     bool edits = false, cancelled = false, startupFailed = false;
     try {
         for (const auto& event : editor.view.poll()) {
             if (event.kind == web::Event::Kind::loaded) {
-                editor.loaded = true;
+                if (!editor.livePage.active()) editor.loaded = true;
                 editor.lastParameters.clear();
                 editor.lastMeters.clear();
-            } else if (event.kind == web::Event::Kind::message && editor.loaded) {
+            } else if (event.kind == web::Event::Kind::message) {
+                const auto message = json::read(event.text, {64 * 1024, 8192, 64 * 1024, 32});
+                const auto type = message["type"].text();
+                if (editor.livePage.active()) {
+                    if (!editor.livePage.accepts(message)) continue;
+                    if (type == "designer-ready" && editor.livePage.pending()) {
+                        editor.livePage.ready();
+                        editor.loaded = true;
+                        webLog(instance, "Designer live page reloaded", CLAP_LOG_INFO);
+                        continue;
+                    }
+                } else if (message["designerPage"].string()) continue;
+                if (!editor.loaded) continue;
+                if (type == "host-shortcut") {
+                    const auto key = message["key"].text();
+                    if (key == "release") editor.view.sendHostKey(web::HostKey::release);
+                    if (key == "space") editor.view.sendHostKey(web::HostKey::space);
+                    continue;
+                }
                 edits |= editor.parameters.apply(event.text);
                 auto reply = editor.parameters.takeReply();
                 if (!reply.empty()) editor.view.send(reply);
@@ -1246,11 +1286,25 @@ void updateWebEditor(Instance& instance) {
                 cancelled |= editor.parameters.activeGestures() != 0 || editor.parameters.activeActions() != 0;
                 editor.parameters.cancel();
                 webLog(instance, event.text.c_str());
-                if (!editor.loaded) {
+                if (!editor.loaded && !editor.livePage.pending()) {
                     startupFailed = true;
                     break;
                 }
             }
+        }
+        if (editor.livePage.timedOut()) {
+            webLog(instance, "Designer live page did not initialize. Restoring the embedded editor.");
+            editor.livePage.fallback();
+            startupFailed = !changeWebPage(editor, embeddedWebPage(), cancelled);
+        } else if (editor.loaded) {
+            try {
+                if (auto content = editor.livePage.read(editor.parameters)) {
+                    if (!changeWebPage(editor, *content, cancelled)) {
+                        editor.livePage.fallback();
+                        startupFailed = !changeWebPage(editor, embeddedWebPage(), cancelled);
+                    }
+                }
+            } catch (const std::exception& error) { webLog(instance, error.what()); }
         }
         if (editor.loaded) {
 #if defined(CELL_CLAP_EDITOR_FILE_TYPES)
@@ -1338,7 +1392,7 @@ const clap_plugin_gui_t webGui{
         auto& instance = Instance::get(plugin);
         if (instance.webEditor || !webApiSupported(instance, api, floating)) return false;
         try {
-            instance.webEditor = std::make_unique<WebEditor>(instance.engine);
+            instance.webEditor = std::make_unique<WebEditor>(instance.engine, plugin->desc->id);
             instance.guiWidth = std::clamp(instance.guiWidth, 1u, 8192u);
             instance.guiHeight = std::clamp(instance.guiHeight, 1u, 8192u);
             return true;
@@ -1420,9 +1474,7 @@ const clap_plugin_gui_t webGui{
                 return false;
             }
 #endif
-            const std::string_view html(reinterpret_cast<const char*>(assets::clapEditorPage),
-                                        sizeof(assets::clapEditorPage));
-            if (!editor.view.open(options) || !editor.view.loadHtml(html)) {
+            if (!editor.view.open(options) || !editor.view.loadHtml(embeddedWebPage())) {
                 const auto problem = editor.view.error();
                 webLog(instance, problem.empty() ? "Cell CLAP editor page could not be loaded" : problem.c_str());
             } else if (startWebEditorTimer(instance)) {

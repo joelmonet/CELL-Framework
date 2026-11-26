@@ -346,12 +346,23 @@ public:
             {"message", V(std::string(error.substr(0, 512)))}}));
     }
 
+    bool allowsParameter(std::string_view key, bool writable) const {
+        const auto id = stableId(key);
+        const auto field = allowed_.find(id);
+        return field != allowed_.end() && field->second->key == key && (!writable || !readOnly_.contains(id));
+    }
+    bool allowsAction(std::string_view key, ActionMode mode) const {
+        return allowedActions_.contains({std::string(key), mode});
+    }
+
     std::string snapshot() const { return encodeSnapshot(json::Value(snapshotValue())); }
     void advertiseParameterDeltas() noexcept { advertiseDeltas_ = true; }
+    void advertiseHostShortcuts() noexcept { hostShortcuts_ = true; }
     bool usesParameterDeltas() const noexcept { return deltas_; }
     void resetParameterUpdates() noexcept { lastSnapshot_.reset(); }
     void resetPage() noexcept {
         deltas_ = false;
+        catalogRevision_.reset();
         resetParameterUpdates();
         reply_.clear();
         fileRequest_.reset();
@@ -418,6 +429,7 @@ private:
         }
         V::Object snapshot{{"type", V("parameters")}, {"parameters", V(std::move(parameters))}};
         if (advertiseDeltas_) snapshot.emplace("supportsDeltas", V(true));
+        if (hostShortcuts_) snapshot.emplace("hostShortcuts", V(true));
         if (openFile_) {
             V::Array extensions;
             for (const auto& extension : fileExtensions_) extensions.emplace_back(extension);
@@ -593,6 +605,7 @@ private:
     mutable json::Value catalog_;
     std::string reply_;
     bool deltas_{}, advertiseDeltas_{};
+    bool hostShortcuts_{};
     std::uint64_t revision_{}, committedRevision_{};
     std::optional<json::Value::Object> lastSnapshot_;
     std::vector<std::string> fileExtensions_;

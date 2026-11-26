@@ -119,15 +119,34 @@ summary{cursor:pointer;font-weight:600}
 <button type="button" id="paste-controls">Paste controls</button>
 <button type="button" id="preview" aria-controls="preview-panel" aria-expanded="false">Live preview</button>
 <button type="button" id="check-bindings">Check bindings</button>
+<button type="button" id="live-host" aria-pressed="false">Connect live host</button>
+<button type="button" id="export-live">Export live page</button>
 <button type="button" id="export">Export WebView HTML</button>
 <button type="button" id="export-cpp" class="primary">Export C++ bindings</button>
 </nav>
+<p id="live-host-status" class="help" role="status" hidden></p>
 <div class="workspace">
 <section class="panel design" aria-label="Design tools">
 <div class="section-head">
 <h2>Controls</h2>
 <div id="palette" class="action-row" aria-label="Control palette"></div>
 </div>
+<details id="component-library">
+<summary>Components</summary>
+<div class="action-row">
+<label>Component name <input id="component-name" maxlength="80"></label>
+<button id="component-save" type="button" disabled>Save selection</button>
+<button id="component-import" type="button">Import component</button>
+<input id="component-file" type="file" accept=".json,application/json" hidden>
+</div>
+<div class="action-row">
+<label>Saved components <select id="component-list"></select></label>
+<button id="component-insert" type="button" disabled>Insert component</button>
+<button id="component-export" type="button" disabled>Export component</button>
+<button id="component-remove" type="button" disabled>Remove component</button>
+</div>
+<div id="component-bindings" class="action-row" aria-label="Component bindings"></div>
+</details>
 <div class="layout-options">
 <label>Edit layout <select id="layout-size"><option value="wide">Wide</option><option value="phone">Phone</option></select></label>
 <label><input type="checkbox" id="snap-placement" checked> Snap to grid</label>

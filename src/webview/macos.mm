@@ -103,6 +103,23 @@ public:
  }
  void visible(bool show)override{if(view_)view_.hidden=!show;}
  void focus()override{if(view_)[view_.window makeFirstResponder:view_];}
+ bool sendHostKey(HostKey key) override {
+  @autoreleasepool {
+   auto* window = parent_.window;
+   if (!window) return false;
+   if (![window makeFirstResponder:parent_]) [window makeFirstResponder:nil];
+   if (key == HostKey::release) return true;
+   if (auto* owner = window.parentWindow) window = owner;
+   for (const auto type : {NSEventTypeKeyDown, NSEventTypeKeyUp}) {
+    auto* event = [NSEvent keyEventWithType:type location:NSZeroPoint modifierFlags:0
+                         timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber
+                           context:nil characters:@" " charactersIgnoringModifiers:@" " isARepeat:NO keyCode:49];
+    if (!event) return false;
+    [NSApp postEvent:event atStart:NO];
+   }
+   return true;
+  }
+ }
  void poll()override{} // Cocoa's host event loop owns callbacks.
  void close()override{@autoreleasepool{
   if(delegate_){delete getData(delegate_);setData(delegate_,nullptr);}

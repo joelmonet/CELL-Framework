@@ -29,6 +29,22 @@ assert.deepEqual(Object.fromEntries(project.controls.map(({kind,skin}) => [kind,
     {text:"modern", knob:"field", fader:"studio", meter:"broadcast"});
 assert.equal(project.catalog, null);
 assert.equal(model.parameterKeys(project.controls).join(","), "gain");
+const component = model.namedComponent("Channel strip", [
+    {...project.controls[1], visibleWhen: "enabled = 1", labelFrom: {key:"gain", source:"name"}},
+    {kind:"action", label:"Recall", action:"reset-a", x:6, y:1, width:2, height:1}
+]);
+const copiedComponent = model.readComponent(JSON.stringify(component));
+const remapped = model.instantiateComponent(copiedComponent,
+    new Map([["gain","channel.b"],["enabled","enabled-b"]]), new Map([["reset-a","reset-b"]]));
+assert.equal(remapped[0].key, "channel.b");
+assert.equal(remapped[0].labelFrom.key, "channel.b");
+assert.equal(model.conditionRules(remapped[0].visibleWhen)[0][0].key, "enabled-b");
+assert.equal(remapped[1].action, "reset-b");
+assert.deepEqual(remapped[0].phone, component.controls[0].phone);
+assert.equal(component.controls[0].key, "gain");
+assert.equal(model.bindingContract(remapped).parameters[1].writable, false);
+assert.match(CellDesignerRuntime.liveHtml(remapped, project.theme), /^<!-- cell.designer.live.v1 /);
+assert.throws(() => model.instantiateComponent(component, new Map([["gain",""]]), new Map()), /Invalid settings/);
 const printed = {...project.controls[0], label: "Signal path\\r\\nPanel legend",
     typography: {...model.silkscreen, size: 18.5, tracking: 0}};
 const printLayout = model.readProject(model.serialize([printed], project.theme, null));

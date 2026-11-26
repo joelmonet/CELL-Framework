@@ -343,7 +343,7 @@ def executable(value, name, defaults=()):
     return Path(candidate).resolve()
 
 
-def open_reaper(host, artifact, manifest, report_dir):
+def open_reaper(host, artifact, manifest, report_dir, designer_live=None):
     stage = {"name": "open-reaper", "status": "failed", "log": "open-reaper.log"}
     started = time.monotonic()
     process = None
@@ -365,6 +365,10 @@ def open_reaper(host, artifact, manifest, report_dir):
         env = dict(os.environ, CLAP_PATH=str(copied), CELL_REFERENCE_RUN=str(report_dir),
                    CELL_REFERENCE_PLUGIN=manifest["name"],
                    CELL_REFERENCE_INSTRUMENT="1" if manifest["template"] == "instrument" else "0")
+        if designer_live:
+            env.update(CELL_DESIGNER_LIVE_DIR=str(designer_live), CELL_DESIGNER_LIVE_ID=manifest["plugin_id"])
+            stage["designer_live_directory"] = str(designer_live)
+            print(f"Publish Designer pages to {designer_live}", flush=True)
         with log.open("wb") as output:
             process = subprocess.Popen([host, "-newinst", "-nosplash", "-ignoreerrors", "-cfgfile", profile,
                                         "-new", lua], env=env, stdout=output, stderr=subprocess.STDOUT)
@@ -457,6 +461,11 @@ def run_project(args):
     mobile = manifest.get("template") == "mobile" or ("android" in manifest["formats"] and "clap" not in manifest["formats"])
     if mobile and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", manifest["plugin_id"]):
         raise ValueError("Invalid Android app ID in cell-project.json")
+    if args.designer_live and (mobile or args.build_only):
+        raise ValueError("--designer-live opens a desktop CLAP editor in REAPER")
+    designer_live = args.designer_live.resolve() if args.designer_live else None
+    if designer_live:
+        designer_live.mkdir(parents=True, exist_ok=True)
     report_root = project / ".cell-run"
     report_root.mkdir(exist_ok=True)
     report_dir = Path(tempfile.mkdtemp(prefix="run-", dir=report_root))
@@ -479,7 +488,7 @@ def run_project(args):
             stages[1]["artifact"] = str(artifact)
             print(f"Built {artifact}", flush=True)
             if host:
-                stage = open_reaper(host, artifact, manifest, report_dir)
+                stage = open_reaper(host, artifact, manifest, report_dir, designer_live)
                 stages.append(stage)
                 passed = stage["status"] == "passed"
     report = {"schema": "cell.run.v1", "status": "passed" if passed else "failed", "project": str(project),
@@ -715,6 +724,7 @@ def main():
     launch = commands.add_parser("run", help="Build and open a generated project in REAPER or on Android")
     build_options(launch)
     launch.add_argument("--host", help="Path to the REAPER executable")
+    launch.add_argument("--designer-live", type=Path, metavar="DIRECTORY", help="Watch a folder for the Designer live page")
     launch.add_argument("--build-only", action="store_true", help="Build and check without launching")
     launch.add_argument("--android-cell-sdk", type=Path, help="Root containing the two installed Android Cell SDKs")
     launch.add_argument("--gradle", help="Path to the Gradle executable")

@@ -144,6 +144,9 @@ int main(){try{
         const std::array watched{stableId("gain"), stableId("private")};
         const std::array readOnly{watched[1]};
         web::ParameterBridge observed(engine, watched, true, {}, readOnly);
+        check(observed.allowsParameter("gain", true) && observed.allowsParameter("private", false) &&
+              !observed.allowsParameter("private", true) && !observed.allowsParameter("missing", false),
+              "Live binding checks changed the compiled parameter access");
         check(engine.parameters().set(watched[1], 1), "could not update observed parameter at source");
         const auto snapshot = json::read(observed.snapshot());
         const auto& snapshotFields = *snapshot["parameters"].array();
@@ -232,6 +235,9 @@ int main(){try{
             return true;
         };
         web::ParameterBridge actions(std::move(endpoint), {}, allowedActions);
+        check(actions.allowsAction("store", ActionMode::invoke) &&
+              !actions.allowsAction("store", ActionMode::momentary) &&
+              !actions.allowsAction("private", ActionMode::invoke), "Live action checks changed the compiled modes");
         check(json::read(actions.snapshot())["actions"].array()->size() == 2, "snapshot advertised unavailable commands");
         check(!actions.apply(R"({"type":"action","key":"private","phase":"invoke"})") &&
               !actions.apply(R"({"type":"action","key":"unavailable","phase":"invoke"})") &&

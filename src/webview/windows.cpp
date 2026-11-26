@@ -279,6 +279,20 @@ public:
     void bounds(Bounds b)override{native_->setBounds(b);}
     void visible(bool visible)override{native_->setVisible(visible);}
     void focus()override{if(native_->controller)native_->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);}
+    bool sendHostKey(HostKey key) override {
+        const auto parent = reinterpret_cast<HWND>(native_->state->options.parent);
+        if (!IsWindow(parent)) return false;
+        if (key == HostKey::release) {
+            SetFocus(parent);
+            return GetFocus() == parent;
+        }
+        const auto owner = GetAncestor(parent, GA_ROOTOWNER);
+        const auto target = owner ? owner : parent;
+        const LPARAM scan = static_cast<LPARAM>(MapVirtualKeyW(VK_SPACE, MAPVK_VK_TO_VSC)) << 16;
+        const auto pressed = PostMessageW(target, WM_KEYDOWN, VK_SPACE, scan | 1);
+        const auto released = PostMessageW(target, WM_KEYUP, VK_SPACE, scan | 1 | 0xC0000000u);
+        return pressed && released;
+    }
     void poll()override{} // The embedding window's GUI loop dispatches COM messages.
     void close()override{if(native_){native_->close();native_.reset();}}
 };

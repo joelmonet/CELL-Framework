@@ -1693,8 +1693,116 @@ async function download(page, id, directory) {
                 {type: "action", key: "factory-recall", phase: "invoke"});
         }
 
+        {
+            const libraryPage = await context.newPage();
+            libraryPage.on("pageerror", error => errors.push(error));
+            libraryPage.on("dialog", dialog => dialog.accept());
+            await libraryPage.addInitScript(() => {
+                window.written = [];
+                window.showDirectoryPicker = async () => ({
+                    name: "live-fixture",
+                    async getFileHandle(name) {
+                        if (name !== "cell-designer-live.html") throw new Error("Unexpected live page filename");
+                        return {async createWritable() {
+                            let content;
+                            return {async write(text) { content = text; },
+                                async close() { window.written.push(content); }, async abort() {}};
+                        }};
+                    }
+                });
+            });
+            await libraryPage.route(origin + "/**", serveDesigner);
+            await libraryPage.goto(origin + "/index.html");
+            const accessibleLayout = {schema: "cell.ui-layout.v3", controls: [
+                {kind:"slider", label:"Drive", key:"gain", x:0,y:0,width:4,height:1, phone:{x:0,y:2,width:4,height:1}},
+                {kind:"stepper", label:"Mode", key:"mode", x:0,y:1,width:4,height:1, phone:{x:0,y:0,width:4,height:1}},
+                {kind:"toggle", label:"Bypass", key:"bypass", x:0,y:2,width:4,height:1, phone:{x:0,y:1,width:4,height:1}}
+            ]};
+            await libraryPage.locator("#layout-file").setInputFiles({name:"keyboard-layout.json",mimeType:"application/json",
+                buffer:Buffer.from(JSON.stringify(accessibleLayout))});
+            await libraryPage.getByText("Layout opened.", {exact: true}).waitFor();
+            await libraryPage.getByText("Components", {exact:true}).click();
+            await libraryPage.getByLabel("Component name").fill("Drive strip");
+            await libraryPage.getByRole("button", {name:"Save selection"}).click();
+            await libraryPage.getByLabel("Parameter gain").fill("driveB");
+            await libraryPage.getByRole("button", {name:"Insert component"}).click();
+            assert.equal(await libraryPage.locator("#canvas .tile").count(), 4);
+            const componentLayout = JSON.parse(await download(libraryPage, "#save", temp));
+            assert.deepEqual(componentLayout.controls.filter(control => control.label === "Drive").map(control => control.key),
+                ["gain", "driveB"]);
+            await libraryPage.getByRole("button", {name:"Undo", exact:true}).click();
+            assert.equal(await libraryPage.locator("#canvas .tile").count(), 3);
+            const componentFile = await download(libraryPage, "#component-export", temp);
+            assert.equal(JSON.parse(componentFile).controls[0].key, "gain");
+            await libraryPage.reload();
+            await libraryPage.getByText("Components", {exact:true}).click();
+            assert.equal(await libraryPage.getByLabel("Saved components").inputValue(), "Drive strip");
+            await libraryPage.getByRole("button", {name:"Remove component"}).click();
+            await libraryPage.locator("#component-file").setInputFiles({name:"strip.json",mimeType:"application/json",
+                buffer:Buffer.from(componentFile)});
+            await libraryPage.getByText("Drive strip saved.", {exact:true}).waitFor();
+            await libraryPage.locator("#layout-file").setInputFiles({name:"keyboard-layout.json",mimeType:"application/json",
+                buffer:Buffer.from(JSON.stringify(accessibleLayout))});
+            await libraryPage.getByText("Layout opened.", {exact:true}).waitFor();
+            await libraryPage.getByRole("button", {name:"Connect live host"}).click();
+            await libraryPage.getByText("Published to live-fixture", {exact:true}).waitFor();
+            await libraryPage.getByRole("button", {name:"Drive · slider", exact:true}).press("ArrowRight");
+            await libraryPage.waitForFunction(() => window.written.length === 2);
+            const live = await download(libraryPage, "#export-live", temp);
+            assert.equal(live, await libraryPage.evaluate(() => window.written.at(-1)));
+            const [contract] = live.split("\n");
+            assert.match(contract, /"key":"gain","writable":true/);
+            await libraryPage.getByRole("button", {name:"Connect live host"}).click();
+
+            const keys = await browser.newPage({viewport:{width:850,height:500}});
+            keys.on("pageerror", error => errors.push(error));
+            await keys.addInitScript(() => {
+                window.__cellDesignerLivePage = 9;
+                window.sent = [];
+                window.cell = {onMessage(callback) { window.receive = callback; }, postMessage(message) { window.sent.push(message); }};
+            });
+            await keys.route(origin + "/keyboard.html", route => route.fulfill({body:live,contentType:"text/html"}));
+            await keys.goto(origin + "/keyboard.html");
+            await keys.evaluate(project => window.receive({...project, hostShortcuts:true}), project);
+            assert.deepEqual(await keys.evaluate(() => window.sent.shift()), {type:"designer-ready", designerPage:"9"});
+            const drive = keys.getByRole("slider", {name: "Drive"});
+            const minus = keys.getByRole("button", {name: "Decrease Mode"});
+            const plus = keys.getByRole("button", {name: "Increase Mode"});
+            await keys.keyboard.press("Tab");
+            assert.equal(await drive.evaluate(node => node === document.activeElement), true);
+            assert.equal(await drive.getAttribute("aria-valuetext"), "-6.00 dB");
+            const accessibleTree = await keys.locator("main").ariaSnapshot();
+            assert.match(accessibleTree, /slider "Drive"/);
+            assert.match(accessibleTree, /group "Mode"/);
+            assert.match(accessibleTree, /button "Decrease Mode"/);
+            assert.match(accessibleTree, /button "Bypass"/);
+            await keys.keyboard.press("Tab");
+            assert.equal(await minus.evaluate(node => node === document.activeElement), true);
+            await keys.keyboard.press("Tab");
+            assert.equal(await plus.evaluate(node => node === document.activeElement), true);
+            await keys.keyboard.press("Space");
+            assert.equal(await keys.locator(".spoken-value").getAttribute("role"), "status");
+            assert.equal(await keys.locator(".spoken-value").textContent(), "Mode: Bright");
+            assert.deepEqual(await keys.evaluate(() => window.sent.map(({type}) => type)), ["begin","parameter","end"]);
+            await keys.locator("main").focus();
+            await keys.keyboard.press("Space");
+            await keys.keyboard.press("Escape");
+            await keys.locator("main").dispatchEvent("keydown", {key:" "});
+            assert.deepEqual(await keys.evaluate(() => window.sent.filter(({type}) => type === "host-shortcut")), [
+                {type:"host-shortcut", key:"space", designerPage:"9"},
+                {type:"host-shortcut", key:"release", designerPage:"9"}
+            ]);
+            await keys.setViewportSize({width:390,height:500});
+            await keys.locator('main[data-layout="phone"]').waitFor();
+            await keys.locator("main").focus();
+            await keys.keyboard.press("Tab");
+            assert.equal(await minus.evaluate(node => node === document.activeElement), true);
+            assert.equal(await keys.locator("main").ariaSnapshot().then(tree =>
+                tree.indexOf('button "Decrease Mode"') < tree.indexOf('slider "Drive"')), true);
+
+        }
         assert.deepEqual(errors, []);
-        console.log("Designer passed layout editing, program recall, displays, actions, conditional panels, typography, detent placement, layer-order exports, hardware artwork, and indicator lamps.");
+        console.log("Designer passed layout editing, program recall, displays, actions, conditional panels, typography, detent placement, layer-order exports, hardware artwork, indicators, components, live publishing, accessibility, and shortcut routing.");
     } finally {
         await browser.close();
         if (!process.env.CELL_UI_DESIGNER_TEST_OUTPUT) await fs.rm(temp, {recursive: true, force: true});

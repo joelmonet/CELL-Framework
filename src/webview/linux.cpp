@@ -1,4 +1,7 @@
 #include "internal.hpp"
+#include <X11/Xlib.h>
+#include <X11/keysym.h>
+#include <X11/Xutil.h>
 #include <dlfcn.h>
 #include <algorithm>
 #include <array>
@@ -11,7 +14,7 @@ namespace {
 struct LibraryClose {void operator()(void* p) const noexcept{if(p)dlclose(p);}};
 using Library=std::unique_ptr<void,LibraryClose>;
 struct Runtime {
-    Library gtk,webkit;
+    Library gtk,webkit,xtest;
     std::string error;
     int (*init)(int*,char***){};
     void* (*plugNew)(void*,unsigned long){};
@@ -35,6 +38,14 @@ struct Runtime {
     std::size_t (*x11DisplayType)(){};
     int (*isInstanceOf)(void*,std::size_t){};
     void* (*display)(void*){};void* (*xdisplay)(void*){};unsigned long (*xid)(void*){};
+    decltype(&XSendEvent) sendKey{};
+    decltype(&XSetInputFocus) setInputFocus{};
+    int (*testServer)(Display*, int*, int*, int*, int*){};
+    int (*fakeKey)(Display*, unsigned, int, unsigned long){};
+    decltype(&XKeysymToKeycode) keyCode{};
+    decltype(&XQueryTree) xQueryTree{};
+    decltype(&XGetTransientForHint) xTransientOwner{};
+    decltype(&XFree) xFree{};
     int (*xmove)(void*,unsigned long,int,int,unsigned,unsigned){};int (*xflush)(void*){};
     void (*sizeRequest)(void*,int,int){};
     void (*windowResize)(void*,int,int){};
@@ -82,6 +93,11 @@ struct Runtime {
         gtk.reset(dlopen("libgtk-3.so.0",RTLD_NOW|RTLD_LOCAL|RTLD_NODELETE));
         webkit.reset(dlopen("libwebkit2gtk-4.1.so.0",RTLD_NOW|RTLD_LOCAL|RTLD_NODELETE));
         if(!gtk||!webkit){error="Install GTK 3 and WebKitGTK 4.1 (libwebkit2gtk-4.1-0)";return;}
+        xtest.reset(dlopen("libXtst.so.6", RTLD_NOW | RTLD_LOCAL));
+        if (xtest) {
+            testServer = reinterpret_cast<decltype(testServer)>(dlsym(xtest.get(), "XTestQueryExtension"));
+            fakeKey = reinterpret_cast<decltype(fakeKey)>(dlsym(xtest.get(), "XTestFakeKeyEvent"));
+        }
         auto bind=[&](auto& fn,const char* name){void* p=dlsym(webkit.get(),name);if(!p)p=dlsym(gtk.get(),name);fn=reinterpret_cast<std::remove_reference_t<decltype(fn)>>(p);if(!p)error=std::string("Missing system WebView symbol: ")+name;return p!=nullptr;};
         loaded=bind(init,"gtk_init_check")&&bind(plugNew,"gtk_plug_new_for_display")&&bind(add,"gtk_container_add")&&
           bind(show,"gtk_widget_show_all")&&bind(hide,"gtk_widget_hide")&&bind(destroy,"gtk_widget_destroy")&&
@@ -91,7 +107,9 @@ struct Runtime {
           bind(displayName,"gdk_display_get_name")&&bind(displayOpen,"gdk_display_open")&&bind(displayClose,"gdk_display_close")&&
           bind(defaultScreen,"gdk_display_get_default_screen")&&bind(setScreen,"gtk_window_set_screen")&&
           bind(lookupWindow,"gdk_x11_window_lookup_for_display")&&bind(windowUserData,"gdk_window_get_user_data")&&bind(socketType,"gtk_socket_get_type")&&
-          bind(display,"gdk_window_get_display")&&bind(xdisplay,"gdk_x11_display_get_xdisplay")&&bind(xid,"gdk_x11_window_get_xid")&&bind(xmove,"XMoveResizeWindow")&&bind(xflush,"XFlush")&&bind(sizeRequest,"gtk_widget_set_size_request")&&bind(windowResize,"gtk_window_resize")&&bind(grabFocus,"gtk_widget_grab_focus")&&
+          bind(display,"gdk_window_get_display")&&bind(xdisplay,"gdk_x11_display_get_xdisplay")&&bind(xid,"gdk_x11_window_get_xid")&&bind(xmove,"XMoveResizeWindow")&&bind(xflush,"XFlush")&&
+          bind(sendKey,"XSendEvent")&&bind(setInputFocus,"XSetInputFocus")&&bind(keyCode,"XKeysymToKeycode")&&
+          bind(xQueryTree,"XQueryTree")&&bind(xTransientOwner,"XGetTransientForHint")&&bind(xFree,"XFree")&&bind(sizeRequest,"gtk_widget_set_size_request")&&bind(windowResize,"gtk_window_resize")&&bind(grabFocus,"gtk_widget_grab_focus")&&
           bind(refSink,"g_object_ref_sink")&&bind(unref,"g_object_unref")&&bind(free,"g_free")&&bind(connect,"g_signal_connect_data")&&bind(disconnect,"g_signal_handler_disconnect")&&bind(iterate,"g_main_context_iteration")&&
           bind(dataEphemeral,"webkit_website_data_manager_new_ephemeral")&&bind(contextNew,"webkit_web_context_new_with_website_data_manager")&&bind(viewNew,"webkit_web_view_new_with_context")&&
           bind(manager,"webkit_web_view_get_user_content_manager")&&bind(settings,"webkit_web_view_get_settings")&&bind(developerTools,"webkit_settings_set_enable_developer_extras")&&
@@ -231,6 +249,60 @@ public:
         return window?api_.xid(window):0;
     }
     void focus()override{if(web_){if(auto* w=api_.window(plug_))api_.windowFocus(w,0);api_.grabFocus(web_);}}
+    bool sendHostKey(HostKey key) override {
+        auto* window = plug_ ? api_.window(plug_) : nullptr;
+        if (!window) return false;
+        auto* display = static_cast<Display*>(api_.xdisplay(api_.display(window)));
+        const auto parent = static_cast<Window>(state_->options.parent);
+        if (key == HostKey::release) {
+            api_.setInputFocus(display, parent, RevertToParent, CurrentTime);
+            api_.xflush(display);
+            return true;
+        }
+        const auto root = DefaultRootWindow(display);
+        const auto parentOf = [&](Window child) {
+            Window screen{}, next{}, *children{};
+            unsigned childCount{};
+            if (!api_.xQueryTree(display, child, &screen, &next, &children, &childCount)) return Window{};
+            if (children) api_.xFree(children);
+            return next == child ? Window{} : next;
+        };
+        const auto keyCode = api_.keyCode(display, XK_space);
+        if (!keyCode) return false;
+        auto target = parent;
+        // Floating effect editors are often transient for the DAW's main
+        // window. Transport belongs to that owner, outside the FX dialog.
+        for (auto ancestor = parent; ancestor && ancestor != root; ancestor = parentOf(ancestor)) {
+            Window owner{};
+            if (api_.xTransientOwner(display, ancestor, &owner) && owner && owner != root) {
+                target = owner;
+                break;
+            }
+        }
+        int eventBase{}, errorBase{}, major{}, minor{};
+        // Some DAWs ignore XSendEvent. Give a floating editor's owner
+        // keyboard focus before committing the browser's transport shortcut.
+        if (target != parent && api_.testServer && api_.fakeKey &&
+            api_.testServer(display, &eventBase, &errorBase, &major, &minor)) {
+            api_.setInputFocus(display, target, RevertToParent, CurrentTime);
+            const auto pressed = api_.fakeKey(display, keyCode, True, CurrentTime);
+            const auto released = api_.fakeKey(display, keyCode, False, CurrentTime);
+            api_.xflush(display);
+            return pressed && released;
+        }
+        XEvent event{};
+        event.xkey.display = display;
+        event.xkey.window = target;
+        event.xkey.root = root;
+        event.xkey.same_screen = True;
+        event.xkey.keycode = keyCode;
+        event.type = KeyPress;
+        const auto pressed = api_.sendKey(display, target, True, KeyPressMask, &event);
+        event.type = KeyRelease;
+        const auto released = api_.sendKey(display, target, True, KeyReleaseMask, &event);
+        api_.xflush(display);
+        return pressed && released;
+    }
     void poll()override{
         // A GTK iteration can dispatch host work that closes this view.
         const auto state=state_;

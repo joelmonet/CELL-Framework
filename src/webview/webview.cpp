@@ -92,6 +92,7 @@ std::uintptr_t View::x11Window()const{impl_->thread();return impl_->native?impl_
 void View::setBounds(Bounds b){impl_->thread();detail::validateBounds(b);impl_->state->options.bounds=b;if(impl_->native)impl_->native->bounds(b);}
 void View::setVisible(bool visible){impl_->thread();if(impl_->native)impl_->native->visible(visible);}
 void View::focus(){impl_->thread();if(impl_->native)impl_->native->focus();}
+bool View::sendHostKey(HostKey key){impl_->thread();return ready()&&impl_->native->sendHostKey(key);}
 std::vector<Event> View::poll(){
     impl_->thread();if(impl_->native)impl_->native->poll();
     if(ready()&&!impl_->state->pendingHtml.empty()){

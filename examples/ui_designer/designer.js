@@ -19,6 +19,15 @@ const undoButton = query("#undo");
 const redoButton = query("#redo");
 const copyButton = query("#copy-controls");
 const pasteButton = query("#paste-controls");
+const componentSave = query("#component-save");
+const componentList = query("#component-list");
+const componentBindings = query("#component-bindings");
+const components = new Map();
+const componentStorage = "cell.ui-designer.components.v1";
+const liveButton = query("#live-host");
+const liveStatus = query("#live-host-status");
+let liveDirectory, liveTimer, liveWriting = false, liveRevision = 0, lastLivePage;
+
 const multiSelect = query("#multi-select");
 const editArt = query("#edit-art");
 const artworkElement = query("#artwork-element");
@@ -180,6 +189,7 @@ function refreshProject() {
         : "";
     query("#clear-parameters").disabled = !catalog;
     if (!previewPanel.hidden) renderPreview();
+    queueLivePage();
 }
 
 function snapshot() {
@@ -204,6 +214,7 @@ function select(items) {
     selection = items;
     selected = items.length === 1 ? items[0] : undefined;
     copyButton.disabled = !items.length;
+    componentSave.disabled = !items.length;
     form.hidden = !selected;
     query("#empty-inspector").hidden = Boolean(items.length);
     selectionTools.hidden = items.length < 2;
@@ -692,7 +703,7 @@ function insertControls(copies) {
     return true;
 }
 
-function captureClipboard() {
+function selectedControls() {
     const phone = model.phonePlacements(controls);
     const chosen = new Set(selection);
     const copies = [];
@@ -701,8 +712,12 @@ function captureClipboard() {
         const {tile, ...data} = control;
         copies.push({...data, phone: phone[index]});
     });
+    return copies;
+}
+
+function captureClipboard() {
     try {
-        localClipboard = model.writeClipboard(copies);
+        localClipboard = model.writeClipboard(selectedControls());
         return localClipboard;
     } catch (error) {
         status.textContent = error.message;
@@ -718,15 +733,93 @@ function pasteControls(text) {
         status.textContent = error.message;
         return;
     }
+    if (placeCopiedControls(items, "paste these controls"))
+        status.textContent = items.length === 1 ? "Control pasted." : `${items.length} controls pasted.`;
+}
+
+function placeCopiedControls(items, action) {
     const wide = model.findGroupPlacement(items, controls, wideGrid);
     const phone = model.findGroupPlacement(model.phonePlacements(items), model.phonePlacements(controls), phoneGrid);
     if (!wide || !phone) {
-        status.textContent = `Make room on the ${wide ? "phone" : "wide"} grid to paste these controls.`;
-        return;
+        status.textContent = `Make room on the ${wide ? "phone" : "wide"} grid to ${action}.`;
+        return false;
     }
     const copies = items.map((control, i) => ({...control, ...wide[i], phone: phone[i]}));
-    if (insertControls(copies)) status.textContent = items.length === 1 ? "Control pasted." : `${items.length} controls pasted.`;
+    return insertControls(copies);
 }
+
+function showComponentBindings() {
+    const component = components.get(componentList.value);
+    const rows = [];
+    const add = (key, kind) => {
+        const label = document.createElement("label");
+        label.textContent = kind + " " + key;
+        const input = document.createElement("input");
+        input.value = key;
+        input.dataset.key = key;
+        input.dataset.binding = kind;
+        input.maxLength = 80;
+        if (kind === "Parameter") input.setAttribute("list", "parameter-keys");
+        label.append(input);
+        rows.push(label);
+    };
+    if (component) {
+        model.parameterKeys(component.controls).forEach(key => add(key, "Parameter"));
+        new Set(model.actionBindings(component.controls).map(binding => binding.key)).forEach(key => add(key, "Action"));
+    }
+    componentBindings.replaceChildren(...rows);
+    for (const id of ["insert", "export", "remove"]) query("#component-" + id).disabled = !component;
+}
+
+function refreshComponents(name) {
+    const names = [...components.keys()];
+    componentList.replaceChildren(...(names.length ? names : ["No saved components"]).map(value =>
+        new Option(value, names.length ? value : "")));
+    if (name) componentList.value = name;
+    showComponentBindings();
+}
+
+function persistComponents() {
+    try {
+        localStorage.setItem(componentStorage, JSON.stringify([...components.values()]));
+        return "";
+    } catch {
+        return " This browser could not save the library. Export components to keep them.";
+    }
+}
+
+function addComponent(component) {
+    if (components.has(component.name)) throw new Error("A component with this name already exists.");
+    if (components.size >= 32) throw new Error("The component library can hold up to 32 components.");
+    components.set(component.name, component);
+    refreshComponents(component.name);
+    status.textContent = component.name + " saved." + persistComponents();
+}
+
+componentList.onchange = showComponentBindings;
+componentSave.onclick = () => applyArtwork(() => addComponent(
+    model.namedComponent(query("#component-name").value, selectedControls())));
+query("#component-insert").onclick = () => applyArtwork(() => {
+    const component = components.get(componentList.value);
+    const collect = kind => new Map([...componentBindings.querySelectorAll("input")]
+        .filter(input => input.dataset.binding === kind)
+        .map(input => [input.dataset.key, input.value]));
+    const controls = model.instantiateComponent(component, collect("Parameter"), collect("Action"));
+    if (placeCopiedControls(controls, "insert the component")) status.textContent = component.name + " inserted.";
+});
+query("#component-export").onclick = () => {
+    const component = components.get(componentList.value);
+    download(JSON.stringify(component), "application/json", "cell-component.json");
+};
+query("#component-remove").onclick = () => {
+    components.delete(componentList.value);
+    refreshComponents();
+    status.textContent = "Component removed." + persistComponents();
+};
+bindFile(query("#component-import"), query("#component-file"), async file => {
+    if (file.size > model.maxProjectBytes) throw new Error("The component file exceeds 2 MiB.");
+    addComponent(model.readComponent(await file.text()));
+});
 
 function isTextInput(target) {
     return target instanceof HTMLElement && (target.isContentEditable || target.matches("input,select,textarea"));
@@ -1303,6 +1396,70 @@ query("#check-bindings").onclick = () => {
         !catalog ? "Load a parameter snapshot to verify parameter bindings." :
         !controls.length ? "Add a control to check its binding." : "All parameter bindings match the snapshot.";
 };
+function queueLivePage() {
+    if (!liveDirectory) return;
+    ++liveRevision;
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(publishLivePage, 200);
+}
+
+function liveContent() {
+    const layout = controlsOnly();
+    if (model.parameterKeys(layout).length > 128 || model.actionBindings(layout).length > 128)
+        throw new Error("Live pages can contain up to 128 parameters and 128 actions.");
+    return runtime.liveHtml(layout, theme);
+}
+
+async function publishLivePage() {
+    if (!liveDirectory || liveWriting) return;
+    const directory = liveDirectory;
+    const revision = liveRevision;
+    liveWriting = true;
+    let writable;
+    try {
+        const content = liveContent();
+        if (content !== lastLivePage) {
+            const file = await directory.getFileHandle("cell-designer-live.html", {create: true});
+            writable = await file.createWritable();
+            await writable.write(content);
+            await writable.close();
+            if (directory === liveDirectory) lastLivePage = content;
+        }
+        if (directory === liveDirectory) liveStatus.textContent = "Published to " + directory.name;
+    } catch (error) {
+        if (writable) await writable.abort().catch(() => {});
+        if (directory === liveDirectory) liveStatus.textContent = error.message;
+    } finally {
+        liveWriting = false;
+        if (liveDirectory && revision !== liveRevision) queueLivePage();
+    }
+}
+
+liveButton.onclick = async () => {
+    liveStatus.hidden = false;
+    if (liveDirectory) {
+        liveDirectory = undefined;
+        clearTimeout(liveTimer);
+        liveButton.setAttribute("aria-pressed", "false");
+        liveStatus.textContent = "Live publishing paused.";
+        return;
+    }
+    if (!window.showDirectoryPicker) {
+        liveStatus.textContent = "This browser cannot write directly to a folder. Use Export live page.";
+        return;
+    }
+    try {
+        liveDirectory = await window.showDirectoryPicker({mode: "readwrite"});
+        lastLivePage = undefined;
+        liveButton.setAttribute("aria-pressed", "true");
+        queueLivePage();
+    } catch (error) {
+        if (error.name !== "AbortError") liveStatus.textContent = error.message;
+    }
+};
+query("#export-live").onclick = () => applyArtwork(() =>
+    download(liveContent(), "text/html", "cell-designer-live.html"));
+
 function exportEditor(bindings) {
     if (!controls.length && (bindings || !theme.backgroundArtwork)) {
         status.textContent = bindings ? "Add a control before exporting bindings." : "Add a control or background image before exporting.";
@@ -1331,5 +1488,12 @@ window.addEventListener("beforeunload", event => {
     event.returnValue = true;
 });
 
+try {
+    for (const data of JSON.parse(localStorage.getItem(componentStorage) ?? "[]").slice(0, 32)) {
+        const component = model.readComponent(JSON.stringify(data));
+        components.set(component.name, component);
+    }
+} catch { /* An unavailable library does not prevent editing a layout. */ }
+refreshComponents();
 select([]);
 refreshProject();

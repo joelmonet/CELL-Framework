@@ -13,11 +13,21 @@ const CellDesignerRuntime = (() => {
         const owners = new Map();
         const stopDrags = [];
         const maxDetents = 64;
-        const bridge = window.cell;
+        const nativeBridge = window.cell;
+        const livePage = window.__cellDesignerLivePage;
+        const bridge = livePage && nativeBridge ? {
+            onMessage: listener => nativeBridge.onMessage(listener),
+            postMessage: message => nativeBridge.postMessage({...message, designerPage: String(livePage)})
+        } : nativeBridge;
         const actionControls = [];
         let actions = new Set();
-        let momentaryAvailable = false;
+        let momentaryAvailable = false, hostShortcutsAvailable = false;
         const programControls = [];
+        const spokenValue = document.createElement("div");
+        spokenValue.className = "spoken-value";
+        spokenValue.setAttribute("role", "status");
+        spokenValue.setAttribute("aria-atomic", "true");
+        stage.append(spokenValue);
         let memory = null;
         let bankNumber;
         let catalogSignature;
@@ -218,7 +228,7 @@ const CellDesignerRuntime = (() => {
             }
         }
 
-        function write(binding, value) {
+        function write(binding, value, announce = false) {
             const parameter = parameters.get(binding.key);
             if (!interactive(binding.control) || !parameter || parameter.readonly) return;
             const previous = owners.get(binding.key);
@@ -234,6 +244,7 @@ const CellDesignerRuntime = (() => {
             binding.deferred = undefined;
             send("parameter", binding.key, value);
             display(binding, parameter, value);
+            if (announce) spokenValue.textContent = labelOf(binding.control) + ": " + format(parameter, value);
         }
 
         function display(binding, parameter, value) {
@@ -611,7 +622,7 @@ const CellDesignerRuntime = (() => {
                 const parameter = parameters.get(binding.key);
                 const next = adjacentValue(parameter, binding.value, direction, stepCount(parameter));
                 if (next === undefined) return false;
-                write(binding, next);
+                write(binding, next, true);
                 return true;
             };
             Object.assign(binding, pairInput(binding.control, face, binding.output, advance, () => end(binding)));
@@ -648,7 +659,10 @@ const CellDesignerRuntime = (() => {
             const {kind} = control;
             const element = document.createElement(kind === "bank" || kind === "program" ? "select" : "div");
             nameElement(control, element);
-            if (kind === "patch-name") element.setAttribute("role", "status");
+            if (kind === "patch-name") {
+                element.setAttribute("role", "status");
+                element.setAttribute("aria-atomic", "true");
+            }
             if (kind === "program-grid") element.className = "program-banks";
             const data = {control, element, buttons: []};
             programControls.push(data);
@@ -969,6 +983,26 @@ const CellDesignerRuntime = (() => {
         compact.addEventListener("change", arrange);
         if (programControls.length) updateMemory({});
         if (!bridge) return;
+        // Only trusted key presses can leave the embedded page. Leave Space
+        // with focused buttons, native menus and text controls.
+        window.addEventListener("keydown", event => {
+            if (!hostShortcutsAvailable || !event.isTrusted || event.defaultPrevented || event.repeat ||
+                event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+            const target = event.target;
+            const editing = target instanceof HTMLElement &&
+                (target.isContentEditable || target.closest("textarea,select,input:not([type=range])"));
+            if (editing) return;
+            const button = target instanceof Element && target.closest("button,[role=button]");
+            const key = event.key === "Escape" ? "release" :
+                event.key === " " && !button ? "space" : "";
+            if (!key) return;
+            event.preventDefault();
+            if (key === "release") cancel();
+            bridge.postMessage({type: "host-shortcut", key});
+        });
+        stage.addEventListener("pointerdown", event => {
+            if (event.target === stage) stage.focus({preventScroll: true});
+        });
         window.addEventListener("blur", cancel);
         window.addEventListener("pagehide", cancel);
         document.addEventListener("visibilitychange", () => { if (document.hidden) cancel(); });
@@ -1022,9 +1056,11 @@ const CellDesignerRuntime = (() => {
                 receiving = false;
             }
         });
+        if (livePage) bridge.postMessage({type: "designer-ready"});
 
         function applyParameterSnapshot(message) {
             momentaryAvailable = message.momentary === true;
+            hostShortcutsAvailable = message.hostShortcuts === true;
             actions = new Set((Array.isArray(message.actions) ? message.actions : []).flatMap(action =>
                 typeof action?.key === "string" && ["invoke", "momentary"].includes(action.mode)
                     ? [action.key + "/" + action.mode] : []));
@@ -1164,6 +1200,7 @@ input,select,button{font:inherit;color:inherit;accent-color:var(--accent);margin
 input[type=range],select,button{width:100%;min-width:0;min-height:44px}
 select,button{background:var(--background);border:1px solid currentColor;border-radius:7px;padding:4px 8px}
 .action button,.toggle button,.momentary button{white-space:pre-wrap;overflow-wrap:anywhere}
+.spoken-value{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 button[aria-pressed=true]{border-color:var(--accent);box-shadow:inset 0 -3px var(--accent)}
 button[data-held]{border-color:var(--accent);box-shadow:inset 0 0 0 2px var(--accent)}
 .action button,.momentary button{touch-action:none}
@@ -1363,5 +1400,10 @@ ${simulation}(${mount.toString()})(controls,${json(background)},${phoneGrid.brea
 ${paintTypography.toString()},${json(typographyFamilies)});</script></body></html>`;
     }
 
-    return {html, fontCss, paintTypography, typographyCss};
+    function liveHtml(controls, theme) {
+        const contract = json(CellDesignerModel.bindingContract(controls)).replace(/>/g, "\\u003e");
+        return "<!-- cell.designer.live.v1 " + contract + "-->\n" + html(controls, theme);
+    }
+
+    return {html, liveHtml, fontCss, paintTypography, typographyCss};
 })();

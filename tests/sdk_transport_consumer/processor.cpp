@@ -46,6 +46,7 @@ public:
   }
   ProgramCatalog programs(const ParameterBank&) const override {
     ProgramCatalog output;
+    output.active = activePatch;
     for (unsigned bank = 0; bank < 2; ++bank) {
       ProgramBank entry{bank, "Factory " + std::to_string(bank + 1), {}};
       for (unsigned index = 0; index < (bank == 0 ? 128u : 70u); ++index)
@@ -60,6 +61,7 @@ public:
     const auto value = address.bank == 0 && address.program == 37 && hasStoredPatch ?
         .75 : double(128 * address.bank + address.program) / 197;
     if (!engine.parameters().set(18, value)) return false;
+    activePatch = address;
     if (address.bank == 0 && address.program == 37) {
       const std::array<std::uint8_t,5> dump{0xf0,0x7d,37,1,0xf7};
       (void)engine.enqueueMidi(MidiEvent::systemExclusive(19,dump));
@@ -134,6 +136,7 @@ private:
   std::uint32_t latencyFrames{}, tailFrames{};
   unsigned flushSequence{};
   std::string slotName{"P37"};
+  std::optional<ProgramAddress> activePatch;
   std::uint64_t catalogVersion{};
   bool hasStoredPatch{};
   std::atomic<bool> changed{};

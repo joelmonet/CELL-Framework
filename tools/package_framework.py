@@ -184,7 +184,7 @@ FILES = {
     'src/ui/canvas.cpp', 'src/ui/instrument_controller.cpp', 'src/ui/window_linux.cpp', 'src/ui/window_windows.cpp', 'src/ui/window_macos.mm',
     'tests/instrument_controller_tests.cpp', 'tests/ui_scaling_tests.cpp',
     'tests/test_vst3_external_consumer.py',
-    'src/formats/clap.cpp', 'src/formats/clap_trace.hpp', 'src/formats/clap_trace_capture.hpp', 'src/formats/vst3.cpp', 'src/formats/webview2_plugin.hpp', 'src/formats/cocoa_web_editor.hpp', 'src/formats/reaper_project.hpp', 'src/formats/vst2.cpp', 'src/formats/aax.cpp', 'src/wrappers/runtime.cpp',
+    'src/formats/clap.cpp', 'src/formats/clap_trace.hpp', 'src/formats/clap_trace_capture.hpp', 'src/formats/clap_designer_live.hpp', 'src/formats/vst3.cpp', 'src/formats/webview2_plugin.hpp', 'src/formats/cocoa_web_editor.hpp', 'src/formats/reaper_project.hpp', 'src/formats/vst2.cpp', 'src/formats/aax.cpp', 'src/wrappers/runtime.cpp',
     'tools/embed_resource.py', 'tools/package_framework.py', 'tools/audit_wrapper_sources.py', 'tools/audit_interaction_sources.py',
     'tests/service_tests.cpp', 'tests/json_tests.cpp', 'tests/ui_components_tests.cpp', 'tests/product_query_tests.cpp', 'tests/wrapper_runtime_tests.cpp', 'tests/parameter_timeline_tests.cpp',
     'tests/allocation_watch.hpp', 'tests/vst2_host.cpp', 'tests/test_framework_package.py', 'tests/interaction_tests.cpp',

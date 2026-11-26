@@ -26,6 +26,7 @@ struct Options {
     BoundsUnits boundsUnits=BoundsUnits::physicalPixels;
     std::vector<Asset> assets;
 };
+enum class HostKey { release, space };
 struct Event {
     enum class Kind { ready, loaded, message, error, navigationBlocked };
     Kind kind{}; std::string text;
@@ -49,6 +50,8 @@ public:
     // X11 window ID of a live embedded child, or zero when unavailable.
     std::uintptr_t x11Window() const;
     void setBounds(Bounds); void setVisible(bool); void focus();
+    // Return keyboard focus to the embedding window or forward transport Space.
+    bool sendHostKey(HostKey);
     std::vector<Event> poll();
     void close();
     std::string error() const;
