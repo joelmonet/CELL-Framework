@@ -13,6 +13,7 @@ import zipfile
 FILES = {
     "README.md",
     ".github/workflows/apple-sdk.yml",
+    ".github/workflows/android-quickstart.yml",
     ".github/workflows/clap-contracts.yml",
     ".github/workflows/windows-sdk.yml",
     ".github/workflows/raspberry-pi-sdk.yml",
@@ -41,6 +42,11 @@ FILES = {
     "tests/test_cell_doctor.py",
     "tests/test_project_generator.py",
     "tools/cell.py", "tools/cell.cmd", "tools/project/CMakeLists.txt.in",
+    "tools/project/open-in-reaper.lua",
+    "examples/sdk_instrument/processor.cpp", "examples/sdk_instrument/main.cpp",
+    "examples/sdk_instrument/parameter-ids.tsv",
+    "examples/sdk_banked/check.cpp", "examples/sdk_banked/clap_check.cpp", "examples/sdk_banked/export.cjs",
+    "examples/sdk_banked/layout.json", "examples/sdk_banked/cell-plugin-editor.html", "examples/sdk_banked/cell-ui-bindings.hpp",
     "tools/qualify_reaper.py", "tools/qualify_reaper.lua",
     "tools/qualify_ardour_lv2.py", "tools/qualify_ardour_lv2.lua",
     "tools/qualify_ardour_lv2_stimulus.lua",
@@ -214,6 +220,8 @@ def source_files(root):
     root = Path(root).resolve(strict=True)
     names = set(FILES)
     names.update(path.relative_to(root).as_posix() for path in (root/'include/cell').rglob('*.hpp') if path.name != 'studio_dsp.hpp')
+    names.update(path.relative_to(root).as_posix() for path in (root/'third_party/clap/include').rglob('*.h'))
+    names.update({"third_party/clap/LICENSE", "third_party/clap/UPSTREAM"})
     for name in names:
         path = root/name
         if not path.is_file() or path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != root.parent):

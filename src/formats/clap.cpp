@@ -41,6 +41,11 @@
 
 namespace {
 using namespace cell;
+#if defined(CELL_CLAP_INSTRUMENT)
+constexpr bool instrument = true;
+#else
+constexpr bool instrument = false;
+#endif
 void copy(char* dest,std::size_t capacity,const char* value) noexcept {
     if(capacity){std::strncpy(dest,value,capacity-1);dest[capacity-1]=0;}
 }
@@ -101,7 +106,7 @@ const char* portType(unsigned width) noexcept {
 const clap_plugin_descriptor_t& clapDescriptor() {
     const auto& info=cell::plugin::descriptor();
     static const auto features=[] {
-        std::array<const char*,5> result{CLAP_PLUGIN_FEATURE_AUDIO_EFFECT};
+        std::array<const char*,5> result{instrument ? CLAP_PLUGIN_FEATURE_INSTRUMENT : CLAP_PLUGIN_FEATURE_AUDIO_EFFECT};
         const auto widths=portWidths();
         unsigned index=1;
         if(std::find(widths.begin(),widths.end(),1)!=widths.end())result[index++]=CLAP_PLUGIN_FEATURE_MONO;
@@ -656,6 +661,7 @@ clap_process_status CLAP_ABI process(const clap_plugin_t* p,const clap_process_t
 }
 
 std::uint32_t audioPortCount(bool input) {
+    if (input && instrument) return 0;
     return input&&cell::plugin::descriptor().supportsSidechain?2u:1u;
 }
 bool audioPortInfo(unsigned width,std::uint32_t index,bool input,clap_audio_port_info_t* info) {
@@ -673,7 +679,7 @@ bool audioPortInfo(unsigned width,std::uint32_t index,bool input,clap_audio_port
         info->flags=CLAP_AUDIO_PORT_IS_MAIN;
         info->channel_count=width;
         info->port_type=portType(width);
-        info->in_place_pair=input?1:0;
+        info->in_place_pair=instrument?CLAP_INVALID_ID:input?1:0;
     }
     return true;
 }
@@ -694,9 +700,9 @@ const clap_plugin_surround_t surround{
         }
         return false;
     },
-    [](const clap_plugin_t* p,bool,std::uint32_t index,std::uint8_t* map,std::uint32_t capacity)->std::uint32_t{
+    [](const clap_plugin_t* p,bool input,std::uint32_t index,std::uint8_t* map,std::uint32_t capacity)->std::uint32_t{
         const auto speakers=surroundMap(Instance::get(p).channels);
-        if(index!=0||!map||speakers.empty()||capacity<speakers.size())return 0;
+        if(index!=0||!audioPortCount(input)||!map||speakers.empty()||capacity<speakers.size())return 0;
         std::copy(speakers.begin(),speakers.end(),map);
         return static_cast<std::uint32_t>(speakers.size());
     }
@@ -730,8 +736,11 @@ const clap_plugin_audio_ports_config_t portConfigurations{
         if(width<=2)copy(info->name,sizeof(info->name),width==1?"Mono":"Stereo");
         else std::snprintf(info->name,sizeof(info->name),"%u channels",width);
         info->input_port_count=audioPortCount(true);info->output_port_count=audioPortCount(false);
-        info->has_main_input=info->has_main_output=true;info->main_input_channel_count=info->main_output_channel_count=width;
-        info->main_input_port_type=info->main_output_port_type=portType(width);return true;
+        info->has_main_output=true;info->main_output_channel_count=width;info->main_output_port_type=portType(width);
+        if (!instrument) {
+            info->has_main_input=true;info->main_input_channel_count=width;info->main_input_port_type=portType(width);
+        }
+        return true;
     },
     [](const clap_plugin_t* p,clap_id id)->bool{
         auto& i=Instance::get(p);
@@ -1349,7 +1358,7 @@ const void* CLAP_ABI extension(const clap_plugin_t*,const char* id) {
     if(!std::strcmp(id,CLAP_EXT_AUDIO_PORTS))return &ports;
     if(portWidths().size()>1) {
         if(!std::strcmp(id,CLAP_EXT_AUDIO_PORTS_CONFIG))return &portConfigurations;
-        if(!std::strcmp(id,CLAP_EXT_CONFIGURABLE_AUDIO_PORTS)||!std::strcmp(id,"clap.configurable-audio-ports.draft1"))
+        if(!instrument&&(!std::strcmp(id,CLAP_EXT_CONFIGURABLE_AUDIO_PORTS)||!std::strcmp(id,"clap.configurable-audio-ports.draft1")))
             return &configurablePorts;
         if(!std::strcmp(id,CLAP_EXT_AUDIO_PORTS_CONFIG_INFO)||!std::strcmp(id,"clap.audio-ports-config-info/draft-0"))
             return &portConfigurationInfo;

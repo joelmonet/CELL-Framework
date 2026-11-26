@@ -37,6 +37,28 @@ jobs:
             "-DCELL_TRANSPORT_CLAP_SDK=$GITHUB_WORKSPACE/ci-clap" -DCELL_TRANSPORT_CLAP_EDITOR_TEST=ON
           cmake --build "$RUNNER_TEMP/cell-host" --parallel 3
           xvfb-run -a ctest --test-dir "$RUNNER_TEMP/cell-host" --output-on-failure --no-tests=error
+      - name: Build the generated quickstart projects from the installed SDK
+        run: |
+          cell="$RUNNER_TEMP/cell-sdk/bin/cell"
+          "$cell" new BankedTrim --template banked --output "$RUNNER_TEMP/BankedTrim"
+          "$cell" new PolySine --template instrument --output "$RUNNER_TEMP/PolySine"
+          "$cell" run "$RUNNER_TEMP/BankedTrim" --build-only --build-dir "$RUNNER_TEMP/cell-banked-build"
+          "$cell" run "$RUNNER_TEMP/PolySine" --build-only --build-dir "$RUNNER_TEMP/cell-instrument-build"
+          python3 tests/test_project_generator.py "$cell"
+          node examples/sdk_banked/export.cjs "$RUNNER_TEMP/banked-exports"
+          cmp examples/sdk_banked/cell-plugin-editor.html "$RUNNER_TEMP/banked-exports/cell-plugin-editor.html"
+          cmp examples/sdk_banked/cell-ui-bindings.hpp "$RUNNER_TEMP/banked-exports/cell-ui-bindings.hpp"
+      - name: Exercise the banked Designer panel with a native parameter snapshot
+        run: |
+          npm install --prefix "$RUNNER_TEMP/cell-browser" --no-save --no-package-lock playwright@1.62.1
+          chromium=$(command -v google-chrome || command -v chromium || true)
+          if [[ -z "$chromium" ]]; then
+            node "$RUNNER_TEMP/cell-browser/node_modules/playwright/cli.js" install chromium
+          fi
+          export CELL_CHROMIUM="$chromium"
+          export CELL_PLAYWRIGHT_MODULE="$RUNNER_TEMP/cell-browser/node_modules/playwright"
+          export CELL_BANKED_FIXTURE="$RUNNER_TEMP/cell-banked-build/project_banked_check"
+          node tests/ui_designer_browser_tests.cjs
       - name: Validate parameter events, conversions and preset discovery
         run: |
           rustup toolchain install 1.95.0 --profile minimal

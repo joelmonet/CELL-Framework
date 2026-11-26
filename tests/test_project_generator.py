@@ -1,4 +1,5 @@
 """Exercise the source or installed generator in an isolated directory."""
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -158,6 +159,22 @@ def test(script):
         failed = run(script, root, "InvalidAndroidId", "--format", "android", "--id", "com.example.1plug-in")
         assert failed.returncode != 0 and "Android app ID" in failed.stderr
         assert not (root / "InvalidAndroidId").exists() and not (output / "android").exists()
+
+        for template, format_name, files in (
+            ("banked", "clap", ("banked_check.cpp", "banked_clap_check.cpp", "editor/layout.json")),
+            ("instrument", "clap", ("processor.cpp", "main.cpp", "parameter-ids.tsv")),
+            ("mobile", "android", ("android/build.gradle", "editor/cell-plugin-editor.html")),
+        ):
+            name = template.capitalize() + "Starter"
+            generated = run(script, root, name, "--template", template, "--id", f"org.example.{template}")
+            assert generated.returncode == 0, generated.stderr
+            project = root / name
+            manifest = json.loads((project / "cell-project.json").read_text(encoding="utf-8"))
+            assert manifest["template"] == template and manifest["formats"] == [format_name]
+            assert manifest["plugin_id"] == f"org.example.{template}"
+            assert all((project / name).stat().st_size for name in files)
+        invalid = run(script, root, "NotBanked", "--template", "banked", "--format", "lv2")
+        assert invalid.returncode != 0 and not (root / "NotBanked").exists()
 
 
 if __name__ == "__main__":

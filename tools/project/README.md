@@ -1,4 +1,9 @@
-# Cell gain project
+# Cell project
+
+Run `cell run .` to build and open a generated CLAP project in a separate
+REAPER instance. The mobile starter takes
+`cell run . --android-cell-sdk /path/to/sdk-per-abi` and opens its debug app
+on a connected Android device or emulator. Add `--build-only` for automation.
 
 Build against an installed Cell SDK using CMake 3.24 or newer and a C++20 compiler.
 
@@ -8,12 +13,13 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-Run the executable named after the project with an input WAV, a new output WAV
+For a gain effect, run the executable named after the project with an input WAV, a new output WAV
 path, and gain in dB. It processes mono or stereo through the same processor
 used by the plug-in targets.
 
-For CLAP, set `CELL_PROJECT_CLAP=ON` and
-`CELL_PROJECT_CLAP_SDK=/path/to/clap`. For VST3, set `CELL_PROJECT_VST3=ON`
+For CLAP, set `CELL_PROJECT_CLAP=ON`. The installed SDK supplies pinned headers,
+and `CELL_PROJECT_CLAP_SDK=/path/to/clap` selects an alternate checkout.
+For VST3, set `CELL_PROJECT_VST3=ON`
 and `CELL_PROJECT_VST3_SDK=/path/to/vst3sdk` with its submodules initialized.
 For LV2, set `CELL_PROJECT_LV2=ON` and `CELL_PROJECT_LV2_SDK` to the SDK root
 or prefix such as `/usr`. On macOS, a project created with `--au-subtype` and

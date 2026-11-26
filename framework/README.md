@@ -146,9 +146,12 @@ example includes the complete processor and optional editor.
 
 ```cmake
 cell_add_clap_plugin(MyGain_CLAP
-    PROCESSOR my_processor ID com.example.gain NAME "My Gain"
-    CLAP_SDK /path/to/official/clap)
+    PROCESSOR my_processor ID com.example.gain NAME "My Gain")
 ```
+
+Cell uses its pinned CLAP headers by default. Set `CLAP_SDK` to an alternate
+official checkout when needed. Add `CLAP_INSTRUMENT` for a MIDI instrument
+with audio outputs and no audio inputs.
 
 For VST3, add the supported official SDK to the consuming project first and use
 `cell_add_vst3_plugin`. `examples/sdk_gain/CMakeLists.txt` shows the complete

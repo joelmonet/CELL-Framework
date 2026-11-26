@@ -17,7 +17,7 @@ Optional components retain their own terms:
 | Inter | Embedded UI font | `assets/OFL.txt` |
 | DejaVu Sans Mono | Embedded UI font | `assets/DejaVu-LICENSE.txt` |
 | ARA SDK 2.2.0 | Optional direct C source-access component; official headers supplied separately | Preserve the actual SDK ARA_API and ARA_Library license files; no SDK headers are redistributed in this independent archive |
-| CLAP SDK | Optional plugin ABI; supplied separately | `licenses/CLAP.txt` |
+| CLAP SDK | Plug-in ABI headers, pinned in `third_party/clap` | `licenses/CLAP.txt` and `third_party/clap/LICENSE` |
 | VST3 SDK | Optional plugin ABI; supplied separately | `licenses/VST3.txt` |
 | VST2.4 SDK | Optional legacy plugin ABI | Actual SDK and its license must be supplied separately; neither is redistributed here |
 | Avid AAX SDK/AAXLibrary | Optional AAX Native ABI, library and export entry points | Actual SDK/library and their licenses must be supplied separately; none is redistributed here |

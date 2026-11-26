@@ -1660,6 +1660,39 @@ async function download(page, id, directory) {
             assert.ok(tapeHtml.includes(control.artwork), `Export lost artwork for ${kind}`);
         }
 
+        if (process.env.CELL_BANKED_FIXTURE) {
+            const banked = await browser.newPage({viewport: {width: 850, height: 600}});
+            banked.on("pageerror", error => errors.push(error));
+            await banked.addInitScript(() => {
+                window.sent = [];
+                window.cell = {onMessage(callback) { window.receive = callback; }, postMessage(message) { window.sent.push(message); }};
+            });
+            const exported = await fs.readFile(path.join(__dirname, "../examples/sdk_banked/cell-plugin-editor.html"), "utf8");
+            await banked.route(origin + "/banked.html", route => route.fulfill({body: exported, contentType: "text/html"}));
+            await banked.goto(origin + "/banked.html");
+            const snapshot = JSON.parse(execFileSync(process.env.CELL_BANKED_FIXTURE, ["--parameters"], {encoding: "utf8"}));
+            await banked.evaluate(snapshot => window.receive(snapshot), snapshot);
+            const patch = banked.getByRole("status", {name: "Patch name"});
+            assert.equal(await patch.textContent(), "0 dB Trim");
+            await banked.getByRole("combobox", {name: "Bank", exact: true}).selectOption("2");
+            await banked.getByRole("combobox", {name: "Program", exact: true}).selectOption("4");
+            assert.equal(await patch.textContent(), "0 dB Trim");
+            await banked.evaluate(snapshot => {
+                snapshot.programs.active = {bank: 2, program: 4};
+                window.receive(snapshot);
+            }, snapshot);
+            assert.equal(await patch.textContent(), "-28 dB Trim");
+            const factory = banked.getByRole("button", {name: "Factory recall", exact: true});
+            await factory.focus();
+            await banked.keyboard.press("Space");
+            assert.deepEqual(await banked.evaluate(() => window.sent), [{type: "recall-program", bank: 2, program: 4}]);
+            await banked.keyboard.down("Space");
+            await banked.waitForFunction(() => window.sent.some(message => message.key === "factory-recall"));
+            await banked.keyboard.up("Space");
+            assert.deepEqual(await banked.evaluate(() => window.sent.at(-1)),
+                {type: "action", key: "factory-recall", phase: "invoke"});
+        }
+
         assert.deepEqual(errors, []);
         console.log("Designer passed layout editing, program recall, displays, actions, conditional panels, typography, detent placement, layer-order exports, hardware artwork, and indicator lamps.");
     } finally {

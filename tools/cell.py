@@ -4,8 +4,10 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +25,13 @@ def template_files():
         return script.parent / "project", source / "examples" / "sdk_gain", source
     installed = script.parent / relative
     return installed, installed, installed
+
+
+def installed_sdk():
+    relative = "@CELL_CLI_SDK_RELATIVE@"
+    if not relative.startswith("@"):
+        return (Path(__file__).resolve().parent / relative).resolve()
+    return None
 
 
 def designer_files(directory, html_name="cell-plugin-editor.html"):
@@ -58,7 +67,15 @@ def new_project(args):
     if args.ui and args.designer_dir is not None:
         raise ValueError("Choose either --ui or --designer-dir")
 
-    formats = args.format or ["standalone"]
+    defaults = {"effect": "clap", "banked": "clap", "instrument": "clap", "mobile": "android"}
+    formats = args.format or [defaults.get(args.template, "standalone")]
+    banked = args.template == "banked"
+    instrument = args.template == "instrument"
+    if (banked or instrument) and (set(formats) != {"clap"} or args.ui or args.designer_dir is not None
+                                  or args.au_subtype or args.au_manufacturer or args.lv2_uri):
+        raise ValueError("Use CLAP for the banked and instrument templates, with their supplied controls")
+    if args.template == "mobile" and "android" not in formats:
+        raise ValueError("The mobile template requires the Android format")
     android_app = "android" in formats
     if android_app and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", plugin_id):
         raise ValueError("Each Android app ID segment must start with a letter and contain only ASCII letters, digits, or underscores")
@@ -72,6 +89,11 @@ def new_project(args):
             raise ValueError("An Audio Unit bundle ID may contain letters, digits, hyphens, and periods")
 
     templates, gain, notices = template_files()
+    editor = args.designer_dir
+    if banked:
+        editor = templates / "banked" if templates == notices else notices / "examples/sdk_banked"
+    if instrument:
+        instrument_source = templates / "instrument" if templates == notices else notices / "examples/sdk_instrument"
     replacements = {
         "{{PROJECT_NAME}}": args.name,
         "{{PLUGIN_ID}}": plugin_id,
@@ -85,7 +107,9 @@ def new_project(args):
         "{{AU_SUBTYPE}}": args.au_subtype or "",
         "{{AU_MANUFACTURER}}": args.au_manufacturer or "",
         "{{BUILD_UI}}": "ON" if args.ui else "OFF",
-        "{{BUILD_DESIGNER}}": "ON" if args.designer_dir is not None else "OFF",
+        "{{BUILD_DESIGNER}}": "ON" if editor is not None else "OFF",
+        "{{BANKED_FIXTURE}}": "ON" if banked else "OFF",
+        "{{INSTRUMENT_TEMPLATE}}": "ON" if instrument else "OFF",
     }
     config = (templates / "CMakeLists.txt.in").read_text(encoding="utf-8")
     for marker, value in replacements.items():
@@ -95,6 +119,10 @@ def new_project(args):
         "CMakeLists.txt": config.encode("utf-8"),
         "plugin-id.txt": (plugin_id + "\n").encode("ascii"),
         "lv2-uri.txt": (lv2_uri + "\n").encode("ascii"),
+        "cell-project.json": (json.dumps({
+            "schema": "cell.project.v1", "name": args.name, "plugin_id": plugin_id,
+            "template": args.template or "effect", "formats": formats,
+        }, indent=2) + "\n").encode("utf-8"),
     }
     # The SDK configures this Python file on installation. Keep the Turtle
     # placeholder intact until CMake configures the generated project.
@@ -102,8 +130,12 @@ def new_project(args):
     files["plugin.lv2.ttl.in"] = ((gain / "gain.lv2.ttl").read_bytes()
         .replace(b"https://example.com/cell/gain", ttl_uri_placeholder)
         .replace(b"Cell Gain Example", args.name.encode("ascii")))
-    if args.designer_dir is not None:
-        files.update(designer_files(args.designer_dir))
+    if editor is not None:
+        files.update(designer_files(editor))
+    if banked:
+        files["editor/layout.json"] = (editor / "layout.json").read_bytes()
+        files["banked_check.cpp"] = (editor / "check.cpp").read_bytes()
+        files["banked_clap_check.cpp"] = (editor / "clap_check.cpp").read_bytes()
     if android_app:
         android_templates = templates / "android"
         android_example = notices / "examples" / "android_designer"
@@ -139,6 +171,11 @@ def new_project(args):
                 source = notices / source_path
             files[name] = source.read_bytes()
     for name in ("gain.hpp", "processor.cpp", "main.cpp", "editor.cpp"):
+        if instrument and name in ("processor.cpp", "main.cpp"):
+            files[name] = ((instrument_source / name).read_bytes()
+                .replace(b"com.example.cell.sine", plugin_id.encode("ascii"))
+                .replace(b"Cell Sine", args.name.encode("ascii")))
+            continue
         payload = (gain / name).read_bytes()
         files[name] = (payload.replace(b"com.example.cell.gain", plugin_id.encode("ascii"))
                               .replace(b"Cell Gain Example", args.name.encode("ascii"))
@@ -153,6 +190,8 @@ def new_project(args):
     files["legacy_effect_host.cpp"] = lv2_host.read_bytes()
     for name in ("render.cpp", "parameter_identity.cpp", "parameter-ids.tsv"):
         files[name] = (templates / name).read_bytes()
+    if instrument:
+        files["parameter-ids.tsv"] = (instrument_source / "parameter-ids.tsv").read_bytes()
     files["README.md"] = (templates / "README.md").read_bytes()
     files["LICENSE"] = (notices / "LICENSE").read_bytes()
     notice = notices / "THIRD_PARTY_NOTICES.md"
@@ -190,6 +229,8 @@ def new_project(args):
             pass
         raise
     print(f"Created {destination} ({plugin_id})")
+    if android_app or "clap" in formats:
+        print(f'Build and open: cell run "{destination}"')
 
 
 def run_stage(name, command, report_dir, timeout=None):
@@ -239,13 +280,8 @@ def test_summary(stage, junit):
 
 def validate_plugin(format_name, executable, build, config, report_dir, timeout):
     name = f"validate-{format_name}"
-    receipt = build / "cell-artifacts" / config / f"{format_name}.txt"
     try:
-        value = receipt.read_text(encoding="utf-8").rstrip("\r\n")
-        artifact = Path(value)
-        if (not artifact.is_absolute() or artifact.suffix.lower() != f".{format_name}" or
-                not artifact.exists()):
-            raise ValueError(f"No built {format_name.upper()} artifact in {receipt}")
+        artifact = artifact_path(build, config, format_name)
     except (OSError, ValueError) as error:
         log = report_dir / f"{name}.log"
         log.write_text(str(error) + "\n", encoding="utf-8")
@@ -256,6 +292,203 @@ def validate_plugin(format_name, executable, build, config, report_dir, timeout)
     stage = run_stage(name, [*command, str(artifact)], report_dir, timeout=timeout)
     stage["artifact"] = str(artifact)
     return stage
+
+
+def artifact_path(build, config, format_name):
+    receipt = build / "cell-artifacts" / config / f"{format_name}.txt"
+    artifact = Path(receipt.read_text(encoding="utf-8").strip())
+    if not artifact.is_absolute() or artifact.suffix.lower() != f".{format_name}" or not artifact.exists():
+        raise ValueError(f"No built {format_name.upper()} artifact in {receipt}")
+    return artifact
+
+
+def desktop_pipeline(args, project, build, junit):
+    configure = ["cmake", "-S", str(project), "-B", str(build), f"-DCMAKE_BUILD_TYPE={args.config}"]
+    sdk = args.sdk.resolve() if args.sdk else installed_sdk()
+    if sdk:
+        configure.append(f"-DCMAKE_PREFIX_PATH={sdk}")
+    configure.extend(args.cmake_arg)
+    return [
+        ("configure", configure),
+        ("build", ["cmake", "--build", str(build), "--config", args.config, "--parallel", str(args.jobs)]),
+        ("test", ["ctest", "--test-dir", str(build), "-C", args.config,
+                  "--output-on-failure", "--no-tests=error", "--output-junit", str(junit)]),
+    ]
+
+
+def run_pipeline(pipeline, report_dir):
+    stages = []
+    passed = True
+    for name, command in pipeline:
+        if passed:
+            stage = run_stage(name, command, report_dir)
+            if name == "test":
+                test_summary(stage, report_dir / "tests.xml")
+            passed = stage["status"] == "passed"
+        else:
+            stage = {"name": name, "status": "skipped", "reason": "Earlier stage failed"}
+        stages.append(stage)
+        print(f"{name}: {stage['status']}", flush=True)
+    return stages, passed
+
+
+def executable(value, name, defaults=()):
+    candidate = shutil.which(os.fspath(value) if value else name)
+    if not candidate and not value:
+        candidate = next((str(path) for path in defaults if path.is_file()), None)
+    if not candidate:
+        raise ValueError(f"Could not find {value or name}. Supply --{'host' if name == 'reaper' else name}.")
+    return Path(candidate).resolve()
+
+
+def open_reaper(host, artifact, manifest, report_dir):
+    stage = {"name": "open-reaper", "status": "failed", "log": "open-reaper.log"}
+    started = time.monotonic()
+    process = None
+    copied = report_dir / "clap"
+    log = report_dir / stage["log"]
+    try:
+        copied.mkdir()
+        destination = copied / artifact.name
+        if artifact.is_dir():
+            shutil.copytree(artifact, destination, symlinks=True)
+        else:
+            shutil.copy2(artifact, destination)
+        if any(char in str(copied) for char in ";\r\n"):
+            raise ValueError("REAPER's CLAP path cannot contain a semicolon or newline")
+        profile = report_dir / "reaper.ini"
+        profile.write_text(f"[REAPER]\nlinux_audio_mode=2\nlinux_audio_srate=48000\nclap_path={copied}\n",
+                           encoding="utf-8")
+        lua = template_files()[0] / "open-in-reaper.lua"
+        env = dict(os.environ, CLAP_PATH=str(copied), CELL_REFERENCE_RUN=str(report_dir),
+                   CELL_REFERENCE_PLUGIN=manifest["name"],
+                   CELL_REFERENCE_INSTRUMENT="1" if manifest["template"] == "instrument" else "0")
+        with log.open("wb") as output:
+            process = subprocess.Popen([host, "-newinst", "-nosplash", "-ignoreerrors", "-cfgfile", profile,
+                                        "-new", lua], env=env, stdout=output, stderr=subprocess.STDOUT)
+        result = report_dir / "host-result.txt"
+        while time.monotonic() - started < 45:
+            if result.is_file():
+                message = result.read_text(encoding="utf-8").strip()
+                if not message.startswith("PASS "):
+                    raise ValueError(message)
+                stage.update(status="passed", artifact=str(destination), host_pid=process.pid, result=message)
+                print(message, flush=True)
+                break
+            if process.poll() is not None:
+                raise ValueError(f"REAPER exited with code {process.returncode} before opening the editor")
+            time.sleep(.1)
+        else:
+            raise ValueError("REAPER did not confirm an open editor within 45 seconds")
+    except (OSError, ValueError) as error:
+        stage["reason"] = str(error)
+        with log.open("a", encoding="utf-8") as output:
+            output.write(str(error) + "\n")
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+    stage["elapsed_seconds"] = round(time.monotonic() - started, 3)
+    return stage
+
+
+def run_mobile(args, project, manifest, report_dir):
+    android = project / "android"
+    if not (android / "build.gradle").is_file():
+        raise ValueError(f"No generated Android app in {project}")
+    if args.android_cell_sdk is None:
+        raise ValueError("Supply --android-cell-sdk with the installed Cell SDK per Android ABI")
+    sdk = args.android_cell_sdk.resolve()
+    for abi in ("arm64-v8a", "x86_64"):
+        if not (sdk / abi / "lib/cmake/Cell/CellConfig.cmake").is_file():
+            raise ValueError(f"Missing installed Android Cell SDK for {abi} below {sdk}")
+    gradle = executable(args.gradle, "gradle")
+    adb = []
+    if not args.build_only:
+        android_sdk = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+        defaults = [Path(android_sdk) / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb")] if android_sdk else []
+        adb = [executable(args.adb, "adb", defaults)]
+        if args.serial:
+            adb.extend(["-s", args.serial])
+    stages, passed = run_pipeline([
+        ("build-apk", [gradle, "--project-dir", android, f"-PcellSdkRoot={sdk}", "assembleDebug"]),
+    ], report_dir)
+    if not passed:
+        return stages, passed
+    apk = android / "build/outputs/apk/debug/android-debug.apk"
+    if not apk.is_file():
+        candidates = list(apk.parent.glob("*.apk"))
+        if len(candidates) != 1:
+            raise ValueError(f"Expected a debug APK in {apk.parent}")
+        apk = candidates[0]
+    print(f"Built {apk}", flush=True)
+    stages[0]["artifact"] = str(apk)
+    if not args.build_only:
+        component = manifest["plugin_id"] + "/org.cell.examples.designer.MainActivity"
+        install = run_stage("install-apk", [*adb, "install", "-r", apk], report_dir, timeout=120)
+        stages.append(install)
+        print(f"install-apk: {install['status']}", flush=True)
+        if install["status"] != "passed":
+            return stages, False
+        launch = run_stage("open-android", [*adb, "shell", "am", "start", "-W", "-n", component],
+                           report_dir, timeout=60)
+        if launch["status"] == "passed" and "Status: ok" not in (report_dir / launch["log"]).read_text(encoding="utf-8"):
+            launch.update(status="failed", reason="Android did not confirm activity launch")
+        stages.append(launch)
+        passed = launch["status"] == "passed"
+        print(f"open-android: {launch['status']}", flush=True)
+    return stages, passed
+
+
+def run_project(args):
+    project = args.project.resolve()
+    manifest = json.loads((project / "cell-project.json").read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or manifest.get("schema") != "cell.project.v1":
+        raise ValueError("Expected a project generated by this SDK")
+    if (not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", str(manifest.get("name", "")))
+            or not isinstance(manifest.get("formats"), list)
+            or manifest.get("plugin_id") != (project / "plugin-id.txt").read_text(encoding="ascii").strip()):
+        raise ValueError("The generated project manifest and plug-in identity must agree")
+    mobile = manifest.get("template") == "mobile" or ("android" in manifest["formats"] and "clap" not in manifest["formats"])
+    if mobile and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", manifest["plugin_id"]):
+        raise ValueError("Invalid Android app ID in cell-project.json")
+    report_root = project / ".cell-run"
+    report_root.mkdir(exist_ok=True)
+    report_dir = Path(tempfile.mkdtemp(prefix="run-", dir=report_root))
+    print(f"Quickstart logs: {report_dir}", flush=True)
+    started = time.monotonic()
+    if mobile:
+        stages, passed = run_mobile(args, project, manifest, report_dir)
+    else:
+        if "clap" not in manifest["formats"]:
+            raise ValueError("The reference host needs a CLAP project. Generate with --format clap.")
+        fallback = (Path("/Applications/REAPER.app/Contents/MacOS/REAPER"),
+                    Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "REAPER (x64)/reaper.exe")
+        host = None if args.build_only else executable(args.host, "reaper", fallback)
+        build = args.build_dir.resolve() if args.build_dir else report_dir / "build"
+        if build == project:
+            raise ValueError("Use an out-of-source build directory")
+        stages, passed = run_pipeline(desktop_pipeline(args, project, build, report_dir / "tests.xml"), report_dir)
+        if passed:
+            artifact = artifact_path(build, args.config, "clap")
+            stages[1]["artifact"] = str(artifact)
+            print(f"Built {artifact}", flush=True)
+            if host:
+                stage = open_reaper(host, artifact, manifest, report_dir)
+                stages.append(stage)
+                passed = stage["status"] == "passed"
+    report = {"schema": "cell.run.v1", "status": "passed" if passed else "failed", "project": str(project),
+              "elapsed_seconds": round(time.monotonic() - started, 3), "stages": stages}
+    receipt = report_dir / "report.json"
+    receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    if not passed:
+        stage = next(stage for stage in stages if stage["status"] == "failed")
+        print(f"{stage['name']}: {stage.get('reason', 'see ' + stage['log'])}", file=sys.stderr)
+    print(f"Report: {receipt}")
+    return 0 if passed else 1
 
 
 def doctor(args):
@@ -277,31 +510,10 @@ def doctor(args):
     report_dir = Path(tempfile.mkdtemp(prefix="run-", dir=report_root))
     build = build or report_dir / "build"
 
-    configure = ["cmake", "-S", str(project), "-B", str(build),
-                 f"-DCMAKE_BUILD_TYPE={args.config}"]
-    if args.sdk:
-        configure.append(f"-DCMAKE_PREFIX_PATH={args.sdk.resolve()}")
-    configure.extend(args.cmake_arg)
     junit = report_dir / "tests.xml"
-    pipeline = [
-        ("configure", configure),
-        ("build", ["cmake", "--build", str(build), "--config", args.config]),
-        ("test", ["ctest", "--test-dir", str(build), "-C", args.config,
-                  "--output-on-failure", "--no-tests=error", "--output-junit", str(junit)]),
-    ]
+    pipeline = desktop_pipeline(args, project, build, junit)
     print(f"Doctor report directory: {report_dir}", flush=True)
-    stages = []
-    passed = True
-    for name, command in pipeline:
-        if passed:
-            stage = run_stage(name, command, report_dir)
-            if name == "test":
-                test_summary(stage, junit)
-            passed = stage["status"] == "passed"
-        else:
-            stage = {"name": name, "status": "skipped", "reason": "Earlier stage failed"}
-        stages.append(stage)
-        print(f"{name}: {stage['status']}", flush=True)
+    stages, passed = run_pipeline(pipeline, report_dir)
 
     tests_passed = passed
     for format_name, executable in validators.items():
@@ -329,11 +541,23 @@ def doctor(args):
     return 0 if passed else 1
 
 
+def build_options(parser):
+    parser.add_argument("project", nargs="?", type=Path, default=Path("."))
+    parser.add_argument("--sdk", type=Path, help="Installed desktop Cell SDK prefix")
+    parser.add_argument("--build-dir", type=Path, help="Optional reusable desktop build directory")
+    parser.add_argument("--config", default="Release", help="Desktop build configuration")
+    parser.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1), help="Parallel desktop build jobs")
+    parser.add_argument("--cmake-arg", action="append", default=[],
+                        help="Additional configure argument. Use --cmake-arg=-DNAME=VALUE.")
+
+
 def main():
     parser = argparse.ArgumentParser(prog="cell", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    new = commands.add_parser("new", help="Generate a gain effect and smoke test")
+    new = commands.add_parser("new", help="Generate a Cell effect, instrument or mobile app")
     new.add_argument("name")
+    new.add_argument("--template", choices=("effect", "banked", "instrument", "mobile"),
+                     help="Select a CLAP effect, banked CLAP effect, polyphonic CLAP instrument or Android app")
     new.add_argument("--id", help="Stable reverse-domain plug-in ID")
     new.add_argument("--output", type=Path, help="New directory to create")
     new.add_argument("--format", choices=("standalone", "clap", "vst3", "lv2", "au", "auv3", "android"), action="append",
@@ -345,20 +569,30 @@ def main():
     new.add_argument("--ui", action="store_true", help="Enable the Cell native plug-in editor")
     new.add_argument("--designer-dir", type=Path, help="Bundle the HTML and C++ bindings exported by Cell UI Designer")
     check = commands.add_parser("doctor", help="Configure, build, and test a project")
-    check.add_argument("project", nargs="?", type=Path, default=Path("."))
-    check.add_argument("--sdk", type=Path, help="Installed Cell SDK prefix")
-    check.add_argument("--build-dir", type=Path, help="Optional reusable build directory")
-    check.add_argument("--config", default="Release", help="Build configuration")
-    check.add_argument("--cmake-arg", action="append", default=[],
-                       help="Additional configure argument. Use --cmake-arg=-DNAME=VALUE.")
+    build_options(check)
     check.add_argument("--validator", nargs=2, action="append", default=[],
                        metavar=("FORMAT", "EXECUTABLE"),
                        help="Run clap-validator or Steinberg validator on a built bundle (repeatable)")
     check.add_argument("--validator-timeout", type=int, default=120, metavar="SECONDS")
+    launch = commands.add_parser("run", help="Build and open a generated project in REAPER or on Android")
+    build_options(launch)
+    launch.add_argument("--host", help="Path to the REAPER executable")
+    launch.add_argument("--build-only", action="store_true", help="Build and check without launching")
+    launch.add_argument("--android-cell-sdk", type=Path, help="Root containing the two installed Android Cell SDKs")
+    launch.add_argument("--gradle", help="Path to the Gradle executable")
+    launch.add_argument("--adb", help="Path to the Android Debug Bridge executable")
+    launch.add_argument("--serial", help="Select an Android device or emulator")
     args = parser.parse_args()
     try:
+        if args.command != "new":
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", args.config):
+                raise ValueError("Use a standard CMake configuration name")
+            if args.jobs < 1:
+                raise ValueError("--jobs must be positive")
         if args.command == "doctor":
             return doctor(args)
+        if args.command == "run":
+            return run_project(args)
         new_project(args)
     except (OSError, ValueError) as error:
         print(f"cell: {error}", file=sys.stderr)

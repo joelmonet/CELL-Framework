@@ -197,6 +197,7 @@ if(CELL_SDK_UI)
 endif()
 
 set_property(GLOBAL PROPERTY CELL_ADAPTER_SOURCE_DIR "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats")
+set_property(GLOBAL PROPERTY CELL_CLAP_HEADER_ROOT "${CELL_FRAMEWORK_SOURCE_ROOT}/third_party/clap")
 set_property(GLOBAL PROPERTY CELL_RESOURCE_EMBED_SCRIPT "${CELL_FRAMEWORK_SOURCE_ROOT}/tools/embed_resource.py")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/CellAddPlugin.cmake")
 if(CELL_SDK_AUV3_EXAMPLE)
@@ -686,6 +687,7 @@ install(FILES "${CMAKE_CURRENT_LIST_DIR}/PORTABLE-GRAPH.md" "${CMAKE_CURRENT_LIS
 set(CELL_CLI_TEMPLATE_DIR "${CMAKE_INSTALL_DATADIR}/cell/project")
 get_filename_component(cell_cli_template_full "${CELL_CLI_TEMPLATE_DIR}" ABSOLUTE BASE_DIR "${CMAKE_INSTALL_PREFIX}")
 file(RELATIVE_PATH CELL_CLI_TEMPLATE_RELATIVE "${CMAKE_INSTALL_FULL_BINDIR}" "${cell_cli_template_full}")
+file(RELATIVE_PATH CELL_CLI_SDK_RELATIVE "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_PREFIX}")
 configure_file("${CELL_FRAMEWORK_SOURCE_ROOT}/tools/cell.py" "${CMAKE_CURRENT_BINARY_DIR}/cell.py" @ONLY)
 if(WIN32)
     install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/cell.py" "${CELL_FRAMEWORK_SOURCE_ROOT}/tools/cell.cmd"
@@ -728,3 +730,17 @@ install(FILES "${android_default_editor}/Cell Gain Editor.html" "${android_defau
     DESTINATION "${CELL_CLI_TEMPLATE_DIR}/android/default-editor")
 install(FILES "${CMAKE_CURRENT_LIST_DIR}/PROJECT-GENERATOR.md" "${CMAKE_CURRENT_LIST_DIR}/SESSION-COMPATIBILITY.md"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/docs")
+install(DIRECTORY "${CELL_FRAMEWORK_SOURCE_ROOT}/third_party/clap/"
+    DESTINATION "${CELL_SDK_ADAPTER_DIR}/clap-sdk")
+install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_instrument/processor.cpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_instrument/main.cpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_instrument/parameter-ids.tsv"
+    DESTINATION "${CELL_CLI_TEMPLATE_DIR}/instrument")
+install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_banked/check.cpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_banked/clap_check.cpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_banked/layout.json"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_banked/cell-plugin-editor.html"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_banked/cell-ui-bindings.hpp"
+    DESTINATION "${CELL_CLI_TEMPLATE_DIR}/banked")
+install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/tools/project/open-in-reaper.lua"
+    DESTINATION "${CELL_CLI_TEMPLATE_DIR}")
