@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -193,6 +194,7 @@ public final class MainActivity extends Activity {
                         connected = true;
                         toneButton.setEnabled(true);
                         status.setText("Tone off");
+                        Log.i("CellDesigner", "Editor bridge connected");
                         resumeSnapshots();
                     } else if (connected && foreground && data != null && data.length() <= MAX_MESSAGE_BYTES) {
                         byte[] bytes = data.getBytes(StandardCharsets.UTF_8);
