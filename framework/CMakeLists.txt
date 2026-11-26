@@ -198,6 +198,17 @@ endif()
 
 set_property(GLOBAL PROPERTY CELL_ADAPTER_SOURCE_DIR "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats")
 set_property(GLOBAL PROPERTY CELL_CLAP_HEADER_ROOT "${CELL_FRAMEWORK_SOURCE_ROOT}/third_party/clap")
+set_property(GLOBAL PROPERTY CELL_ALLOCATION_WATCH_DIR "${CELL_FRAMEWORK_SOURCE_ROOT}/tests")
+if(NOT CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin|Windows)$")
+    add_executable(cell-doctor-clap "${CELL_FRAMEWORK_SOURCE_ROOT}/tools/doctor_clap.cpp")
+    target_include_directories(cell-doctor-clap PRIVATE
+        "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats" "${CELL_FRAMEWORK_SOURCE_ROOT}/third_party/clap/include")
+    target_link_libraries(cell-doctor-clap PRIVATE Cell::Core ${CMAKE_DL_LIBS})
+    if(MINGW)
+        target_link_options(cell-doctor-clap PRIVATE -municode)
+    endif()
+    install(TARGETS cell-doctor-clap RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
 set_property(GLOBAL PROPERTY CELL_RESOURCE_EMBED_SCRIPT "${CELL_FRAMEWORK_SOURCE_ROOT}/tools/embed_resource.py")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/CellAddPlugin.cmake")
 if(CELL_SDK_AUV3_EXAMPLE)
@@ -643,6 +654,8 @@ install(FILES "${CMAKE_CURRENT_LIST_DIR}/cmake/CellAAXInfo.plist.in"
     "${CMAKE_CURRENT_LIST_DIR}/cmake/CellAUv3Info.plist.in"
     "${CMAKE_CURRENT_LIST_DIR}/cmake/CellAUv3MacSandbox.entitlements" DESTINATION "${CELL_SDK_CMAKE_DIR}")
 install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/clap.cpp" "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/vst3.cpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/clap_trace.hpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/clap_trace_capture.hpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/webview2_plugin.hpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/cocoa_web_editor.hpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/vst2.cpp"
@@ -661,6 +674,7 @@ install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/clap.cpp" "${CELL_FRAME
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/audio_effect.hpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/ladspa.cpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/reaper_project.hpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/tests/allocation_watch.hpp"
     DESTINATION "${CELL_SDK_ADAPTER_DIR}")
 install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/LICENSE" "${CMAKE_CURRENT_LIST_DIR}/THIRD_PARTY_NOTICES.md"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/cell")

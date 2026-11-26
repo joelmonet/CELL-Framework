@@ -6,6 +6,10 @@
 #include <cell/plugin.hpp>
 #include <clap/clap.h>
 #include <clap/ext/context-menu.h>
+#include "clap_trace_capture.hpp"
+#if defined(CELL_CLAP_DOCTOR_ALLOCATIONS)
+#include "allocation_watch.hpp"
+#endif
 #if defined(CELL_CLAP_EXPOSE_PROGRAMS)
 #include <clap/ext/preset-load.h>
 #include <clap/factory/preset-discovery.h>
@@ -196,6 +200,11 @@ struct WebEditor {
 #endif
 
 struct Instance {
+    std::unique_ptr<clap_trace::Capture> trace;
+#if defined(CELL_CLAP_DOCTOR_ALLOCATIONS)
+    std::atomic<bool> countAllocations{};
+    std::atomic<std::uint64_t> lastAllocations{};
+#endif
     clap_plugin_t plugin{};
     const clap_host_t* host{};
     const clap_host_params_t* hostParams{};
@@ -403,6 +412,17 @@ void publishTail(Instance& instance, bool audioThread) noexcept {
 
 bool CLAP_ABI init(const clap_plugin_t* p) {
     auto& i=Instance::get(p);
+    i.trace = clap_trace::Capture::open(p->desc->id);
+    if (i.trace) i.engine.setUiEditObserver(i.trace.get(), [](void* context, std::span<const ParameterEdit> edits) noexcept {
+        auto* capture = static_cast<clap_trace::Capture*>(context);
+        // Preset or state calls can emit edits that replay will regenerate.
+        if (capture->isCallingHere()) return;
+        clap_trace::Capture::Call(capture)
+            .record(clap_trace::Op::editor, [&](auto& writer) {
+                writer(static_cast<std::uint32_t>(edits.size()));
+                for (const auto& edit : edits) writer(edit.id, static_cast<std::uint8_t>(edit.type), edit.value);
+            });
+    });
     i.hostParams=static_cast<const clap_host_params_t*>(i.host->get_extension(i.host,CLAP_EXT_PARAMS));
     i.hostContextMenu=static_cast<const clap_host_context_menu_t*>(i.host->get_extension(i.host,CLAP_EXT_CONTEXT_MENU));
     if(!i.hostContextMenu)i.hostContextMenu=static_cast<const clap_host_context_menu_t*>(i.host->get_extension(i.host,CLAP_EXT_CONTEXT_MENU_COMPAT));
@@ -448,6 +468,8 @@ bool CLAP_ABI activate(const clap_plugin_t* p,double sampleRate,std::uint32_t mi
         if(changed&&i.hostLatency&&i.hostLatency->changed)i.hostLatency->changed(i.host);
         i.restartRequested=false;
         i.active=true;
+        clap_trace::Capture::Call(i.trace.get()).write(clap_trace::Op::activate,
+                                                       sampleRate, minFrames, maxFrames, i.channels);
         return true;
     } catch(...) { return false; }
 }
@@ -455,12 +477,20 @@ void CLAP_ABI deactivate(const clap_plugin_t* p) {
     auto& i = Instance::get(p);
     i.processing = false;
     i.active = false;
+    clap_trace::Capture::Call(i.trace.get()).write(clap_trace::Op::deactivate);
     try { refreshPresentation(i); } catch (...) {}
 }
-bool CLAP_ABI start(const clap_plugin_t* p) {auto& i=Instance::get(p);if(!i.active||i.processing)return false;i.processing=true;return true;}
+bool CLAP_ABI start(const clap_plugin_t* p) {
+    auto& i = Instance::get(p);
+    if (!i.active || i.processing) return false;
+    i.processing = true;
+    clap_trace::Capture::Call(i.trace.get()).write(clap_trace::Op::start);
+    return true;
+}
 void CLAP_ABI stop(const clap_plugin_t* p) {
     auto& i=Instance::get(p);
     i.processing=false;
+    clap_trace::Capture::Call(i.trace.get()).write(clap_trace::Op::stop);
     i.midiDelivery.reset();
 #if defined(CELL_CLAP_WEB_EDITOR)
     i.clearEditorMeters();
@@ -468,6 +498,8 @@ void CLAP_ABI stop(const clap_plugin_t* p) {
 }
 void CLAP_ABI reset(const clap_plugin_t* p) {
     auto& i=Instance::get(p);
+    clap_trace::Capture::Call call(i.trace.get());
+    call.write(clap_trace::Op::reset);
     i.engine.reset();
     i.midiDelivery.reset();
 #if defined(CELL_CLAP_WEB_EDITOR)
@@ -582,7 +614,7 @@ struct MidiOutput final:midi::Output {
         return destination->try_push(destination,&event.header);
     }
 };
-clap_process_status CLAP_ABI process(const clap_plugin_t* p,const clap_process_t* block) {
+clap_process_status processBlock(const clap_plugin_t* p,const clap_process_t* block) {
     auto& i=Instance::get(p);
     if(!i.processing||!block||block->frames_count>i.maxFrames||block->audio_outputs_count!=1||!block->audio_outputs||block->audio_outputs[0].channel_count!=i.channels||!block->audio_outputs[0].data32)
         return CLAP_PROCESS_ERROR;
@@ -658,6 +690,51 @@ clap_process_status CLAP_ABI process(const clap_plugin_t* p,const clap_process_t
     if(!sendsMidi)i.outputEdits(block->out_events);
     block->audio_outputs[0].constant_mask=0;
     return CLAP_PROCESS_CONTINUE;
+}
+
+clap_process_status CLAP_ABI process(const clap_plugin_t* p, const clap_process_t* block) {
+    auto& instance = Instance::get(p);
+    clap_trace::Capture::Call call(instance.trace.get());
+    call.record(clap_trace::Op::process, [&](clap_trace::Writer& out) {
+        if (!block || block->frames_count > instance.maxFrames || block->frames_count > clap_trace::maxFrames ||
+            block->audio_inputs_count > 2 || (block->audio_inputs_count && !block->audio_inputs) ||
+            block->audio_outputs_count != 1 || !block->audio_outputs) {
+            out.invalidate();
+            return;
+        }
+        out(block->frames_count, block->steady_time, std::uint8_t(block->transport != nullptr),
+            std::uint8_t(call.audio()));
+        if (block->transport) clap_trace::transportFields(out, *block->transport);
+        out(block->audio_outputs[0].channel_count, block->audio_inputs_count);
+        for (std::uint32_t port = 0; port < block->audio_inputs_count; ++port) {
+            const auto& bus = block->audio_inputs[port];
+            const auto width = bus.data32 ? bus.channel_count : 0;
+            out(width, bus.constant_mask, bus.latency);
+            if (width > 64) { out.invalidate(); return; }
+            for (std::uint32_t c = 0; c < width; ++c) {
+                const auto* channel = bus.data32[c];
+                out(std::uint8_t(channel != nullptr));
+                if (call.audio() && channel) out.raw(channel, sizeof(float) * block->frames_count);
+            }
+        }
+        clap_trace::events(out, block->in_events);
+    });
+#if defined(CELL_CLAP_DOCTOR_ALLOCATIONS)
+    const bool count = instance.countAllocations.load(std::memory_order_relaxed);
+    if (count) {
+        cell_test::allocations = 0;
+        cell_test::audio = true;
+    }
+#endif
+    const auto result = processBlock(p, block);
+#if defined(CELL_CLAP_DOCTOR_ALLOCATIONS)
+    if (count) {
+        cell_test::audio = false;
+        instance.lastAllocations.store(cell_test::allocations, std::memory_order_relaxed);
+    }
+#endif
+    call.write(clap_trace::Op::result, result);
+    return result;
 }
 
 std::uint32_t audioPortCount(bool input) {
@@ -866,6 +943,8 @@ const clap_plugin_params_t params{
     },
     [](const clap_plugin_t* p,const clap_input_events_t* in,const clap_output_events_t* out){
         auto& i = Instance::get(p);
+        clap_trace::Capture::Call call(i.trace.get());
+        call.record(clap_trace::Op::flush, [&](auto& writer) { clap_trace::events(writer, in); });
         i.outputEdits(out);
         bool applied{};
         const auto count = in && in->size && in->get ? in->size(in) : 0;
@@ -885,18 +964,33 @@ const clap_plugin_params_t params{
 const clap_plugin_state_t state{
     [](const clap_plugin_t* p,const clap_ostream_t* stream)->bool{
         if(!stream||!stream->write)return false;
-        try{const auto bytes=Instance::get(p).engine.saveState();std::size_t offset{};
-            while(offset<bytes.size()){const auto written=stream->write(stream,bytes.data()+offset,bytes.size()-offset);if(written<=0||std::uint64_t(written)>bytes.size()-offset)return false;offset+=std::size_t(written);}return true;
+        auto& instance = Instance::get(p);
+        clap_trace::Capture::Call call(instance.trace.get());
+        try{const auto bytes=instance.engine.saveState();std::size_t offset{};
+            while(offset<bytes.size()){const auto written=stream->write(stream,bytes.data()+offset,bytes.size()-offset);if(written<=0||std::uint64_t(written)>bytes.size()-offset)return false;offset+=std::size_t(written);}
+            call.record(clap_trace::Op::save, [&](auto& writer) { writer.blob(bytes.data(), bytes.size()); });
+            return true;
         }catch(...){return false;}
     },
     [](const clap_plugin_t* p,const clap_istream_t* stream)->bool{
         if(!stream||!stream->read)return false;
-        if(Instance::get(p).processing&&Instance::get(p).engine.stateRequiresStoppedProcessing())return false;
+        auto& i = Instance::get(p);
+        clap_trace::Capture::Call call(i.trace.get());
+        if (i.processing && i.engine.stateRequiresStoppedProcessing()) {
+            call.record(clap_trace::Op::load, [](auto& writer) {
+                writer(std::uint8_t(0)); writer.blob(nullptr, 0);
+            });
+            return false;
+        }
         try{std::vector<std::byte> bytes;std::array<std::byte,4096> chunk;
             for(;;){const auto read=stream->read(stream,chunk.data(),chunk.size());if(read<0||read>std::int64_t(chunk.size()))return false;if(!read)break;
                 if(bytes.size()+std::size_t(read)>128*1024*1024)return false;
                 bytes.insert(bytes.end(),chunk.begin(),chunk.begin()+read);}
-            auto& i=Instance::get(p);if(!i.engine.loadState(bytes))return false;
+            const auto loaded = i.engine.loadState(bytes);
+            call.record(clap_trace::Op::load, [&](auto& writer) {
+                writer(std::uint8_t(loaded)); writer.blob(bytes.data(), bytes.size());
+            });
+            if (!loaded) return false;
             if(!i.active)publishTail(i,false);
             try { refreshPresentation(i, true); } catch (...) {}
             return true;
@@ -919,6 +1013,7 @@ std::optional<ProgramAddress> presetAddress(std::string_view key) noexcept {
 const clap_plugin_preset_load_t presetLoad{
     [](const clap_plugin_t* plugin, std::uint32_t kind, const char* location, const char* key) {
         auto& instance = Instance::get(plugin);
+        clap_trace::Capture::Call call(instance.trace.get());
         auto* memory = dynamic_cast<ProgramMemory*>(&instance.engine.processor());
         if (!memory || kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || location || !key ||
             instance.engine.activeGestures()) return false;
@@ -935,6 +1030,7 @@ const clap_plugin_preset_load_t presetLoad{
         if (!hostLoad) hostLoad = static_cast<const clap_host_preset_load_t*>(
             instance.host->get_extension(instance.host, CLAP_EXT_PRESET_LOAD_COMPAT));
         if (hostLoad && hostLoad->loaded) hostLoad->loaded(instance.host, kind, location, key);
+        call.record(clap_trace::Op::preset, [&](auto& writer) { writer.string(key); });
         return true;
     }
 };
@@ -1350,10 +1446,35 @@ const clap_plugin_gui_t webGui{
 
 const clap_plugin_render_t renderMode{
     [](const clap_plugin_t*)->bool{return false;},
-    [](const clap_plugin_t* p,clap_plugin_render_mode mode)->bool{if(mode!=CLAP_RENDER_REALTIME&&mode!=CLAP_RENDER_OFFLINE)return false;Instance::get(p).offline=mode==CLAP_RENDER_OFFLINE;return true;}
+    [](const clap_plugin_t* p,clap_plugin_render_mode mode)->bool {
+        if (mode != CLAP_RENDER_REALTIME && mode != CLAP_RENDER_OFFLINE) return false;
+        auto& instance = Instance::get(p);
+        clap_trace::Capture::Call call(instance.trace.get());
+        instance.offline = mode == CLAP_RENDER_OFFLINE;
+        call.write(clap_trace::Op::render, mode);
+        return true;
+    }
 };
 const void* CLAP_ABI extension(const clap_plugin_t*,const char* id) {
     if(!id)return nullptr;
+    static const clap_trace::EditorProbe editorProbe{
+        [](const clap_plugin_t* p, clap_id parameter, std::uint8_t type, double value) {
+            if (type > static_cast<std::uint8_t>(EditType::end)) return false;
+            return Instance::get(p).engine.edit({static_cast<EditType>(type), parameter, value});
+        }
+    };
+    if (!std::strcmp(id, clap_trace::editorExtension)) return &editorProbe;
+#if defined(CELL_CLAP_DOCTOR_ALLOCATIONS)
+    static const clap_trace::AllocationProbe allocationProbe{
+        [](const clap_plugin_t* p, bool enabled) {
+            Instance::get(p).countAllocations.store(enabled, std::memory_order_relaxed);
+        },
+        [](const clap_plugin_t* p) {
+            return Instance::get(p).lastAllocations.load(std::memory_order_relaxed);
+        }
+    };
+    if (!std::strcmp(id, clap_trace::allocationExtension)) return &allocationProbe;
+#endif
     if(!std::strcmp(id,CLAP_EXT_RENDER))return &renderMode;
     if(!std::strcmp(id,CLAP_EXT_AUDIO_PORTS))return &ports;
     if(portWidths().size()>1) {

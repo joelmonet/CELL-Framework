@@ -1,10 +1,14 @@
 // Original Cell Framework implementation; see LICENSE.
 #include <cell/dynamic_library.hpp>
+#include "clap_trace.hpp"
 #include <clap/clap.h>
 #include <clap/ext/preset-load.h>
 #include <array>
 #include <algorithm>
 #include <iostream>
+#include <cstring>
+#include <vector>
+#include <span>
 
 namespace {
 void expect(bool accepted, const char* reason) {
@@ -34,6 +38,15 @@ int main(int argc, char** argv) try {
            presets->from_location(plugin, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, nullptr, "2:4") &&
            params->get_value(plugin, info.id, &value) && value == -28,
            "CLAP preset recall did not select the requested bank and slot");
+    const auto* state = static_cast<const clap_plugin_state_t*>(plugin->get_extension(plugin, CLAP_EXT_STATE));
+    std::vector<std::byte> snapshot;
+    const clap_ostream_t save{&snapshot, [](const clap_ostream_t* stream, const void* ptr, std::uint64_t size) {
+        auto& bytes = *static_cast<std::vector<std::byte>*>(stream->ctx);
+        const auto* source = static_cast<const std::byte*>(ptr);
+        bytes.insert(bytes.end(), source, source + size);
+        return static_cast<std::int64_t>(size);
+    }};
+    expect(state && state->save(plugin, &save) && !snapshot.empty(), "Could not save banked fixture state");
     expect(plugin->activate(plugin, 48000, 1, 32) &&
            plugin->start_processing(plugin), "Could not start the banked CLAP plug-in");
 
@@ -72,7 +85,15 @@ int main(int argc, char** argv) try {
     float* dry[]{dryLeft.data(), dryRight.data()};
     clap_audio_buffer_t out{channels, nullptr, 2};
     clap_audio_buffer_t in{dry, nullptr, 2};
-    clap_process_t block{0, 32, nullptr, &in, &out, 1, 1, &input, &output};
+    clap_event_transport_t transport{};
+    transport.header = {sizeof(transport), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT, 0};
+    transport.flags = CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_HAS_BEATS_TIMELINE |
+                      CLAP_TRANSPORT_HAS_TIME_SIGNATURE | CLAP_TRANSPORT_IS_PLAYING;
+    transport.tempo = 137.5;
+    transport.song_pos_beats = 3 * CLAP_BEATTIME_FACTOR;
+    transport.tsig_num = 7;
+    transport.tsig_denom = 8;
+    clap_process_t block{0, 32, &transport, &in, &out, 1, 1, &input, &output};
     const auto processed = plugin->process(plugin, &block);
     const bool recalled = params->get_value(plugin, info.id, &value) && value == -44;
     plugin->reset(plugin);
@@ -81,10 +102,15 @@ int main(int argc, char** argv) try {
     automation.param_id = info.id;
     automation.note_id = automation.port_index = automation.channel = automation.key = -1;
     automation.value = -6;
-    const clap_input_events_t edits{&automation,
-        [](const clap_input_events_t*) -> std::uint32_t { return 1; },
-        [](const clap_input_events_t* events, std::uint32_t) -> const clap_event_header_t* {
-            return &static_cast<clap_event_param_value_t*>(events->ctx)->header;
+    clap_event_param_gesture_t begin{{sizeof(begin), 4, CLAP_CORE_EVENT_SPACE_ID,
+                                       CLAP_EVENT_PARAM_GESTURE_BEGIN, 0}, info.id};
+    clap_event_param_gesture_t end{{sizeof(end), 20, CLAP_CORE_EVENT_SPACE_ID,
+                                     CLAP_EVENT_PARAM_GESTURE_END, 0}, info.id};
+    std::array<const clap_event_header_t*, 3> gesture{&begin.header, &automation.header, &end.header};
+    const clap_input_events_t edits{&gesture,
+        [](const clap_input_events_t*) -> std::uint32_t { return 3; },
+        [](const clap_input_events_t* events, std::uint32_t index) -> const clap_event_header_t* {
+            return (*static_cast<decltype(gesture)*>(events->ctx))[index];
         }};
     block.steady_time = 32;
     block.in_events = &edits;
@@ -94,6 +120,25 @@ int main(int argc, char** argv) try {
            "CLAP automation did not reach the processor at its sample offset");
     plugin->stop_processing(plugin);
     plugin->deactivate(plugin);
+    std::span<const std::byte> read = snapshot;
+    const clap_istream_t load{&read, [](const clap_istream_t* stream, void* ptr, std::uint64_t size) {
+        auto& remaining = *static_cast<std::span<const std::byte>*>(stream->ctx);
+        const auto count = std::min<std::uint64_t>(remaining.size(), size);
+        if (count) std::memcpy(ptr, remaining.data(), count);
+        remaining = remaining.subspan(static_cast<std::size_t>(count));
+        return static_cast<std::int64_t>(count);
+    }};
+    expect(state->load(plugin, &load) && params->get_value(plugin, info.id, &value) && value == -28,
+           "CLAP snapshot did not restore the banked preset");
+    // Emulate a plug-in editor's gesture producer and flush it over the ABI.
+    const auto* editor = static_cast<const cell::clap_trace::EditorProbe*>(
+        plugin->get_extension(plugin, cell::clap_trace::editorExtension));
+    expect(editor && editor->edit(plugin, info.id, 0, 0) && editor->edit(plugin, info.id, 1, -18) &&
+           editor->edit(plugin, info.id, 2, 0), "CLAP editor gesture failed");
+    params->flush(plugin, nullptr, &output);
+    snapshot.clear();
+    expect(params->get_value(plugin, info.id, &value) && value == -18 && state->save(plugin, &save),
+           "Editor gesture did not reach the saved CLAP state");
     plugin->destroy(plugin);
     entry->deinit();
     expect(processed != CLAP_PROCESS_ERROR && recalled, "CLAP SysEx recall did not reach gain");

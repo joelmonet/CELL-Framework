@@ -42,7 +42,9 @@ jobs:
           cell="$RUNNER_TEMP/cell-sdk/bin/cell"
           "$cell" new BankedTrim --template banked --output "$RUNNER_TEMP/BankedTrim"
           "$cell" new PolySine --template instrument --output "$RUNNER_TEMP/PolySine"
-          "$cell" run "$RUNNER_TEMP/BankedTrim" --build-only --build-dir "$RUNNER_TEMP/cell-banked-build"
+          "$cell" run "$RUNNER_TEMP/BankedTrim" --build-only --build-dir "$RUNNER_TEMP/cell-banked-build" \
+            --cmake-arg=-DCELL_PROJECT_DOCTOR_ALLOCATIONS=ON
+          python3 tests/test_doctor_clap.py "$cell" "$RUNNER_TEMP/cell-banked-build" --instrumented
           "$cell" run "$RUNNER_TEMP/PolySine" --build-only --build-dir "$RUNNER_TEMP/cell-instrument-build"
           python3 tests/test_project_generator.py "$cell"
           node examples/sdk_banked/export.cjs "$RUNNER_TEMP/banked-exports"

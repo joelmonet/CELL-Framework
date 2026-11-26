@@ -268,6 +268,8 @@ and test steps execute project code.
 The generated gain smoke test checks sample-offset automation, smoothing,
 and state recall across three sample rates, five block sizes, and mono and
 stereo. Doctor runs the project's own tests and optional plug-in validators.
+Use [host replay](HOST-REPLAY.md) to capture an issue from a DAW and opt
+into a paced replay with callback timings, deadline misses, and allocations.
 
 ### Audio-thread allocation checks
 
@@ -277,8 +279,8 @@ state recall. If a check fails, the test log names the phase, sample rate,
 block size, channel count and operation counts. The executable checks the
 instrumentation itself before running the processor. The smoke test also checks
 subnormal input flushing on supported CPU architectures and denormal flag
-restoration on SSE targets. Only the test executable
-links the allocation hooks.
+restoration on SSE targets. Run [host replay](HOST-REPLAY.md) with
+`--realtime` to count C++ allocations in a diagnostic plug-in build.
 
 Coverage is for the executing thread and calls that reach the replaceable C++
 allocation operators. Direct `malloc`/`free` calls, worker threads, lock

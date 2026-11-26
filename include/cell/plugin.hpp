@@ -231,6 +231,12 @@ public:
     bool pollEdit(ParameterEdit& edit) noexcept { return pollUiEdit(edit)||pollGenerated(edit); }
     // Adapters with separate GUI and audio delivery paths consume each queue
     // from exactly one thread; they must not also call the combined pollEdit.
+    // Diagnostic observer for batches emitted by the editor thread.
+    void setUiEditObserver(void* context,
+                           void (*observe)(void*, std::span<const ParameterEdit>) noexcept) noexcept {
+        uiEditContext_ = context;
+        uiEditObserver_ = observe;
+    }
     bool pollUiEdit(ParameterEdit& edit) noexcept { return edits_.pop(edit); }
     bool pollGenerated(ParameterEdit& edit) noexcept { return generated_.pop(edit); }
     std::vector<std::byte> saveState() const;
@@ -258,6 +264,9 @@ private:
     std::unique_ptr<Processor> processor_;
     ProcessSpec spec_{};
     bool prepared_{};
+    bool publishUiEdits(std::span<const ParameterEdit>) noexcept;
+    void* uiEditContext_{};
+    void (*uiEditObserver_)(void*, std::span<const ParameterEdit>) noexcept {};
     SpscQueue<ParameterEdit, 2048> edits_;
     SpscQueue<ParameterEdit, 256> generated_;
     std::array<ParamId,maxConcurrentGestures> gestureIds_{}; // GUI producer only
