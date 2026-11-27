@@ -135,6 +135,9 @@ below. DSP stays in the native processor.
 
 ## Design a parameter editor
 
+See [Theme packs and native skin previews](VISUAL-SKINS.md) to style the same
+controls with reusable materials and artwork and render the result through Cell::UI.
+
 Open `examples/ui_designer/index.html` in a browser. Drag knobs, faders,
 sliders, steppers, toggles, menus, meters, readouts and labels onto the grid. Select
 a control to edit its size, position, style and binding. Drag the selected

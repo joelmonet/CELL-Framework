@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cell UI theme pack v1",
+  "type": "object",
+  "required": ["schema", "themes"],
+  "properties": {
+    "schema": {"const": "cell.ui-theme-pack.v1"},
+    "assets": {
+      "type": "object",
+      "maxProperties": 512,
+      "propertyNames": {"$ref": "#/$defs/id"},
+      "additionalProperties": {"$ref": "#/$defs/asset"}
+    },
+    "themes": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {"$ref": "#/$defs/id"},
+      "additionalProperties": {"$ref": "#/$defs/theme"}
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 80},
+    "role": {"enum": ["background", "surface", "text", "accent", "edge", "muted", "metal", "highlight", "shadow"]},
+    "color": {
+      "anyOf": [
+        {"type": "string", "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"},
+        {"$ref": "#/$defs/role"}
+      ]
+    },
+    "asset": {
+      "type": "object",
+      "required": ["name", "data"],
+      "properties": {
+        "name": {"$ref": "#/$defs/name"},
+        "data": {"type": "string", "maxLength": 1398136, "pattern": "^data:image/(png|webp|jpeg|svg[+]xml);base64,[A-Za-z0-9+/]+={0,2}$"}
+      }
+    },
+    "effect": {
+      "type": "object",
+      "required": ["color"],
+      "properties": {
+        "color": {"$ref": "#/$defs/color"},
+        "sigma": {"type": "number", "minimum": 0, "maximum": 18},
+        "x": {"type": "number", "minimum": -16, "maximum": 16},
+        "y": {"type": "number", "minimum": -16, "maximum": 16}
+      }
+    },
+    "material": {
+      "type": "object",
+      "properties": {
+        "fill": {"$ref": "#/$defs/color"},
+        "end": {"$ref": "#/$defs/color"},
+        "edge": {"$ref": "#/$defs/color"},
+        "highlight": {"$ref": "#/$defs/color"},
+        "edgeWidth": {"type": "number", "minimum": 0, "maximum": 6},
+        "radius": {"type": "number", "minimum": 0, "maximum": 48},
+        "opacity": {"type": "number", "minimum": 0, "maximum": 1},
+        "shape": {"enum": ["rounded", "ellipse"]},
+        "asset": {"$ref": "#/$defs/id"},
+        "mask": {"$ref": "#/$defs/id"},
+        "shadow": {"$ref": "#/$defs/effect"},
+        "innerShadow": {"$ref": "#/$defs/effect"},
+        "glow": {"$ref": "#/$defs/effect"},
+        "vector": {
+          "type": "object",
+          "required": ["path"],
+          "properties": {
+            "path": {"type": "string", "maxLength": 1024, "pattern": "^[MLHVCSAZ][MLHVCSAZeE0-9+., -]*$"},
+            "stroke": {"type": "number", "minimum": 0.1, "maximum": 6}
+          }
+        }
+      }
+    },
+    "kind": {"enum": ["knob", "slider", "fader", "button", "meter", "panel", "dropdown", "tab", "icon-button"]},
+    "layers": {
+      "type": "object",
+      "propertyNames": {"enum": ["background", "track", "face", "pointer", "highlight", "indicator", "foreground"]},
+      "additionalProperties": {"$ref": "#/$defs/id"}
+    },
+    "component": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "name": {"$ref": "#/$defs/name"},
+        "kind": {"$ref": "#/$defs/kind"},
+        "layers": {"$ref": "#/$defs/layers"},
+        "states": {
+          "type": "object",
+          "propertyNames": {"enum": ["enabled", "hover", "pressed", "selected", "focus", "disabled"]},
+          "additionalProperties": {"$ref": "#/$defs/layers"}
+        }
+      }
+    },
+    "typeface": {
+      "type": "object",
+      "properties": {
+        "family": {"enum": ["panel-sans", "panel-condensed", "system-sans", "system-serif", "system-mono"]},
+        "size": {"type": "number", "minimum": 8, "maximum": 96},
+        "weight": {"type": "integer", "minimum": 100, "maximum": 900},
+        "tracking": {"type": "number", "minimum": -2, "maximum": 12},
+        "alignment": {"enum": ["left", "center", "right"]},
+        "letterCase": {"enum": ["none", "uppercase", "lowercase"]}
+      }
+    },
+    "theme": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {"$ref": "#/$defs/name"},
+        "colors": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/role"},
+          "additionalProperties": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"}
+        },
+        "typography": {
+          "type": "object",
+          "propertyNames": {"enum": ["label", "value"]},
+          "additionalProperties": {"$ref": "#/$defs/typeface"}
+        },
+        "materials": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {"$ref": "#/$defs/id"},
+          "additionalProperties": {"$ref": "#/$defs/material"}
+        },
+        "components": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {"$ref": "#/$defs/id"},
+          "additionalProperties": {"$ref": "#/$defs/component"}
+        },
+        "defaults": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/kind"},
+          "additionalProperties": {"$ref": "#/$defs/id"}
+        }
+      }
+    }
+  }
+}

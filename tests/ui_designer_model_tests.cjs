@@ -5,7 +5,7 @@ const vm = require("node:vm");
 
 const root = path.join(__dirname, "../examples/ui_designer");
 const context = vm.createContext({ assert, TextEncoder });
-for (const name of ["model.js", "fonts.js", "artwork.js", "runtime.js"])
+for (const name of ["model.js", "fonts.js", "artwork.js", "theme_examples.js", "runtime.js"])
     vm.runInContext(fs.readFileSync(path.join(root, name), "utf8"), context);
 
 vm.runInContext(`
@@ -338,6 +338,35 @@ assert.throws(() => model.readClipboard(model.writeClipboard([{...metered, showG
 assert.throws(() => model.readClipboard(model.writeClipboard([{...lamp, showGainReduction: true}])), /Invalid settings/);
 assert.equal(model.readClipboard(model.writeClipboard([{...metered, showGainReduction: false}]))[0].showGainReduction, undefined);
 
+const appearance = model.readThemePack(JSON.stringify(CellDesignerThemeExamples));
+appearance.activeTheme = "hdr";
+const hdrLook = model.resolveAppearance(cap, appearance);
+assert.equal(hdrLook.layers.pointer.fill, "#ece1c8");
+const sharedSkin = model.readProject(model.serialize([cap, {...cap, label:"Second encoder"}],
+    {...panelTheme, backgroundArtwork: cap.artwork}, null, undefined, appearance));
+const savedSkin = JSON.parse(model.serialize(sharedSkin.controls, sharedSkin.theme, null, undefined, sharedSkin.presentation));
+assert.equal(Object.keys(savedSkin.presentation.assets).length, 1);
+assert.equal(savedSkin.controls[0].assetId, savedSkin.controls[1].assetId);
+assert.equal(savedSkin.theme.backgroundAsset, savedSkin.controls[0].assetId);
+assert.equal(sharedSkin.controls[0].artwork, cap.artwork);
+assert.ok(!Object.hasOwn(savedSkin.controls[0], "artwork"));
+const otherTheme = {...sharedSkin.presentation, activeTheme:"modern"};
+assert.notEqual(model.resolveAppearance(cap, otherTheme).layers.pointer.fill, hdrLook.layers.pointer.fill);
+const switched = model.readProject(model.serialize(sharedSkin.controls, sharedSkin.theme, null, undefined, otherTheme));
+assert.deepEqual(switched.controls, sharedSkin.controls);
+assert.deepEqual(model.bindingContract(switched.controls), model.bindingContract(sharedSkin.controls));
+assert.equal(model.cppBindings(switched.controls), model.cppBindings(sharedSkin.controls));
+const reusable = model.readThemePack(model.writeThemePack(appearance), appearance);
+assert.ok(reusable.themes["hdr-2"]);
+assert.throws(() => model.readThemePack(JSON.stringify({schema: model.themePackSchema,
+    assets: {panel: {name:"Detached", data:"https://example.org/panel.svg"}}, themes:{}})), /embedded asset/);
+assert.throws(() => model.readProject(JSON.stringify({...savedSkin, controls:[{...savedSkin.controls[0],
+    assetId:"missing"}]})), /unknown reference/);
+assert.throws(() => model.readPresentation({...appearance, themes:{invalid:{name:"Invalid",
+    materials:{bad:{fill:"url(external-image)"}}}}}), /invalid color token/);
+const modernHtml = CellDesignerRuntime.html(sharedSkin.controls, sharedSkin.theme, undefined, otherTheme);
+assert.ok(modernHtml.includes("#63d5eb"));
+assert.equal(modernHtml.split(cap.artwork).length - 1, 2, "one inline reference table plus the background");
 const hostileLabel = "<" + "/script>";
 const html = CellDesignerRuntime.html([{...project.controls[1], label: hostileLabel}], project.theme);
 assert.ok(!html.includes('"' + hostileLabel + '"'));

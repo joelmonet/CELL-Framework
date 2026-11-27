@@ -2,7 +2,7 @@
 
 const CellDesignerRuntime = (() => {
     // Serialized into the standalone document along with the selected controls.
-    function mount(controls, background, phoneBreakpoint, stepCount, maxDetentLabels, isPanelArt, isProgramControl, hasDisplayArtwork, hasSwitchArtwork, isMeterBinding, readPrograms, led, compareValue, paintType, families) {
+    function mount(controls, background, phoneBreakpoint, stepCount, maxDetentLabels, isPanelArt, isProgramControl, hasDisplayArtwork, hasSwitchArtwork, isMeterBinding, readPrograms, led, compareValue, paintType, families, addLayers) {
         const stage = document.querySelector("main");
         const items = [];
         const states = new Map();
@@ -767,6 +767,10 @@ const CellDesignerRuntime = (() => {
         for (const control of controls) {
             const item = document.createElement("div");
             item.className = "control " + control.kind;
+            if (control.lookIndex !== undefined) {
+                item.dataset.lookIndex = control.lookIndex;
+                addLayers(item);
+            }
             item.style.zIndex = control.layer;
             item.dataset.skin = control.skin;
             if (control.typography) paintType(item, control.typography, families);
@@ -1216,6 +1220,13 @@ body{margin:0;background:var(--background);color:var(--text);font:15px system-ui
 main{position:relative;isolation:isolate;display:grid;padding:12px;gap:8px;min-height:100dvh;grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(64px,auto))}
 .control{min-width:0;padding:8px;border-radius:10px;background:var(--surface);display:flex;flex-direction:column;gap:3px}
 .control[data-rule-disabled]{opacity:.55}
+.control[data-look-index]{position:relative}
+.cell-look-highlight,.cell-look-foreground{position:absolute;inset:0;pointer-events:none;visibility:hidden;z-index:1}
+.cell-look-highlight{inset:1px}
+.cell-look-icon,.cell-look-indicator{position:absolute;visibility:hidden;pointer-events:none;z-index:1}
+.cell-look-icon{right:15px;top:calc(50% - 9px);width:18px;height:18px}
+.cell-look-indicator{height:3px;bottom:8px;left:12px;right:12px}
+[data-look-index] select:has(~ .cell-look-icon){appearance:none}
 .panel-background,.panel-art img{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .control.panel-art{position:relative;padding:0;border:0;border-radius:0;background:transparent;overflow:hidden;pointer-events:none}
 .panel-art.rectangle::before,.panel-art.line::before{content:"";position:absolute;inset:0;background:var(--accent)}
@@ -1401,9 +1412,141 @@ main[data-layout=phone] .meter-face{min-height:62px}
         }).join("\n");
     }
 
+    // Scoped selectors repaint presentation only. The range inputs, gesture
+    // owners, reading order and control geometry stay in the existing runtime.
+    function appearanceCss(controls, presentation, scope = "") {
+        const model = CellDesignerModel;
+        const looks = controls.map(control => model.resolveAppearance(control, presentation));
+        if (!looks.some(Boolean)) return "";
+        const assets = new Map();
+        const image = id => {
+            if (!assets.has(id)) assets.set(id, assets.size);
+            return `var(--cell-look-asset-${assets.get(id)})`;
+        };
+        const layers = {
+            background: [""],
+            track: [" .meter-face", " .dial::before", " input[type=range]::-webkit-slider-runnable-track",
+                " input[type=range]::-moz-range-track"],
+            face: [" :is(.dial,button,select)", " input[type=range]::-webkit-slider-thumb",
+                " input[type=range]::-moz-range-thumb"],
+            pointer: [" .dial::after", " .cell-look-icon"],
+            highlight: [" > .cell-look-highlight"],
+            indicator: [" > .cell-look-indicator", " .indicator-lens", " meter::-webkit-meter-optimum-value", " meter::-moz-meter-bar",
+                " input[type=range]::-moz-range-progress"],
+            foreground: [" > .cell-look-foreground"]
+        };
+        const stateConditions = {
+            enabled: "", hover: ":hover", pressed: ":is(:active,:has([data-held],.dragging))",
+            selected: ":has([aria-pressed=true],[aria-selected=true])",
+            focus: ":is(:focus-visible,:has(:focus-visible))",
+            disabled: ":is([data-rule-disabled],:has(:disabled))"
+        };
+        function material(m, layer, visualSlot) {
+            const isOverlay = layer === "highlight" || layer === "foreground" ||
+                visualSlot.includes(".cell-look-icon") || visualSlot.includes(".cell-look-indicator");
+            const shadows = [];
+            for (const kind of ["innerShadow", "shadow", "glow"]) {
+                const effect = m[kind];
+                if (effect) shadows.push(`${kind === "innerShadow" ? "inset " : ""}${effect.x}px ${effect.y}px ${effect.sigma * 2}px ${effect.color}`);
+            }
+            if (m.highlight !== "#00000000") shadows.push(`inset 0 1px ${m.highlight}`);
+            const painted = m.asset ? `${image(m.asset)},` : "";
+            if (m.vector) {
+                const mark = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="${m.vector.path}" fill="none" stroke="${m.fill}" stroke-width="${m.vector.stroke}" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+                return `background:url("data:image/svg+xml,${encodeURIComponent(mark)}") center/contain no-repeat;opacity:${m.opacity};visibility:visible;`;
+            }
+            // Specify border color/width without adding box metrics to interactive controls.
+            if (m.edgeWidth) shadows.push(`inset 0 0 0 ${m.edgeWidth}px ${m.edge}`);
+            const tint = color => isOverlay || m.opacity === 1 ? color : `color-mix(in srgb, ${color} ${100 * m.opacity}%, transparent)`;
+            return `background:${painted}linear-gradient(${tint(m.fill)},${tint(m.end)});` +
+                "background-position:center;background-size:contain;background-repeat:no-repeat;" +
+                `border-radius:${m.shape === "ellipse" ? "50%" : m.radius + "px"};box-shadow:${shadows.join(",") || "none"};` +
+                (m.mask ? `mask:${image(m.mask)} center/100% 100% no-repeat;` : "mask:none;") +
+                (isOverlay ? `opacity:${m.opacity};visibility:visible;` : "");
+        }
+        function typography(selector, settings) {
+            if (!settings) return "";
+            const family = model.typographyFamilies[settings.family]?.stack;
+            const declarations = [family && `font-family:${family}`, settings.size && `font-size:${settings.size}px`,
+                settings.weight && `font-weight:${settings.weight}`, settings.tracking !== undefined && `letter-spacing:${settings.tracking}px`,
+                settings.alignment && `text-align:${settings.alignment}`,
+                settings.letterCase && `text-transform:${settings.letterCase === "normal" ? "none" : settings.letterCase}`];
+            return `${selector}{${declarations.filter(Boolean).join(";")}}`;
+        }
+        const css = looks.map((look, index) => {
+            if (!look) return "";
+            const control = controls[index];
+            const selector = `${scope}[data-look-index="${index}"][data-look-index]`;
+            function rules(state, record) {
+                return model.appearanceLayers.flatMap(layer => {
+                    const layerMaterial = record[layer];
+                    if (!layerMaterial || (control.artwork && (layer === "face" || layer === "track")) ||
+                        (control.artworkMode === "pointer-cap" && layer === "pointer")) return [];
+                    return layers[layer].filter(suffix =>
+                        (!suffix.includes(".cell-look-indicator") || look.kind === "tab") &&
+                        (!suffix.includes(".cell-look-icon") || ["dropdown", "icon-button"].includes(look.kind)))
+                        .map(suffix => {
+                        const extra = suffix === " .dial::before" ? 'content:"";position:absolute;inset:-4px;z-index:-1;' :
+                            suffix === " .dial::after" ? "background-size:4px 23%;background-position:center top;" : "";
+                        return `${selector}${stateConditions[state]}${suffix}{${material(layerMaterial, layer, suffix)}${extra}}`;
+                    });
+                }).join("\n");
+            }
+            const stateCss = model.appearanceStates.map(state => rules(state, look.states[state] ?? {})).join("\n");
+            const label = control.typography ? "" : typography(`${selector} :is(.control-title,.tile-label,button)`, look.typography.label);
+            const chrome = scope ? "" : `${selector}{color:var(--text);--accent:${control.accent || "var(--cell-theme-accent)"};border-color:transparent}
+${selector} .dial{isolation:isolate}${selector} .face>button,${selector} .face>select{border-color:transparent}
+${selector} input[type=range]{appearance:none;background:transparent}
+${selector} input[type=range]::-webkit-slider-thumb{appearance:none;width:18px;height:18px}
+${selector} input[type=range]::-moz-range-thumb{width:18px;height:18px;border:0}
+${selector}.fader input[type=range]::-webkit-slider-thumb{width:32px;height:15px}
+${selector}.fader input[type=range]::-moz-range-thumb{width:32px;height:15px}
+${selector}.slider input[type=range]::-webkit-slider-runnable-track{height:18px}
+${selector}.fader input[type=range]::-webkit-slider-runnable-track{height:100%;width:12px}
+${selector}.fader input[type=range]::-moz-range-track{height:100%;width:12px}
+${selector}.rectangle::before{content:none}
+`;
+            return chrome + rules("enabled", look.layers) + stateCss + label + typography(`${selector} output`, look.typography.value);
+        }).join("\n");
+        const vars = [...assets].map(([id, n]) => `--cell-look-asset-${n}:url(${JSON.stringify(presentation.assets[id].data)})`);
+        return `:root{${vars.join(";")}}\n` + css;
+    }
+
+    function addAppearanceLayers(item) {
+        for (const layer of ["highlight", "foreground", "icon", "indicator"]) {
+            const overlay = document.createElement("span");
+            overlay.className = "cell-look-" + layer;
+            overlay.setAttribute("aria-hidden", "true");
+            item.append(overlay);
+        }
+    }
+
+    function presentationCss(controls, theme, presentation) {
+        const model = CellDesignerModel;
+        const palette = model.displayTheme(theme, presentation);
+        const colors = Object.keys(model.defaultTheme).map(name => `--${name}:${palette[name]}`).join(";");
+        return `:root{${colors};--cell-theme-accent:${palette.accent}}
+` +
+            appearanceCss(controls, presentation);
+    }
+
+    function presentationFonts(presentation) {
+        const theme = presentation?.themes[presentation.activeTheme];
+        return fontCss(Object.values(theme?.typography ?? {}).filter(Boolean));
+    }
+
+    function updatePreviewAppearance(message) {
+        if (message.source !== window.parent || message.data?.type !== "cell-preview-appearance" ||
+            typeof message.data.css !== "string" || message.data.css.length > 4 * 1024 * 1024) return;
+        const fonts = document.querySelector("#cell-appearance-fonts");
+        if (typeof message.data.fonts === "string" && message.data.fonts.length <= 1024 * 1024 &&
+            fonts.textContent !== message.data.fonts) fonts.textContent = message.data.fonts;
+        document.querySelector("#cell-appearance").textContent = message.data.css;
+    }
+
     const json = value => JSON.stringify(value).replace(/</g, "\\u003c");
 
-    function html(controls, theme, preview) {
+    function html(controls, theme, preview, presentation) {
         const {phoneGrid, phonePlacements, readingOrder, layerOrder, layerPriority, stepCount, maxDetentLabels, isPanelArt, isProgramControl, hasDisplayArtwork, hasSwitchArtwork, isMeterBinding,
             readPrograms, defaultTheme, ledGlyphs, displayCode, numericLedCode, actionBindings,
             conditionRules, compareValue, parameterKeys, meterKeys, typographyFamilies} = CellDesignerModel;
@@ -1412,31 +1555,38 @@ main[data-layout=phone] .meter-face{min-height:62px}
         // For older layouts, equal default priorities continue to follow the grid's reading order.
         const ranks = controls.some(control => control.layer !== undefined)
             ? new Map(layerOrder(controls).map((control, index) => [control, index + 1])) : null;
-        const sorted = controls.map((control, index) => ({...control, phone: phone[index],
+        const artwork = [...new Set(controls.map(control => control.artwork).filter(Boolean))];
+        const sorted = controls.map((control, index) => ({...control,
+            artwork: undefined, artworkIndex: control.artwork ? artwork.indexOf(control.artwork) : undefined,
+            lookIndex: index, phone: phone[index],
             layer: ranks?.get(control) ?? layerPriority(control),
             visibleRules: conditionRules(control.visibleWhen), enabledRules: conditionRules(control.enabledWhen)})).sort(readingOrder);
         const simulation = preview
             ? `(${simulate.toString()})(controls,${json(preview.catalog)},${json(preview.programs ?? null)},${json(preview.values)},${preview.generation},isProgramControl,isPanelArt,${isMeterBinding.toString()},${json(actionBindings(controls))},${json(parameterKeys(controls))},${json(meterKeys(controls))});` : "";
-        const colors = Object.keys(defaultTheme).map(name => `--${name}:${theme[name]}`).join(";");
         const background = {artwork: theme.backgroundArtwork, fit: theme.backgroundFit ?? "cover"};
         const rows = Math.ceil(sorted.reduce((maximum, control) => Math.max(maximum, control.y + control.height), 1));
         const fonts = fontCss(sorted.flatMap(control => control.typography ? [control.typography] : []));
+        const lookCss = presentationCss(controls, theme, presentation);
         return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Cell plug-in editor</title>
 <style>${fonts}
-:root{${colors};--rows:${rows};--phone-columns:${phoneGrid.columns}}${css}${typographyCss}</style></head>
-<body><main></main><script>const controls = ${json(sorted)};
+:root{--rows:${rows};--phone-columns:${phoneGrid.columns}}${css}${typographyCss}</style>
+<style id="cell-appearance-fonts">${presentationFonts(presentation)}</style>
+<style id="cell-appearance">${lookCss}</style></head>
+<body><main></main><script>const controls = ${json(sorted)}, artwork = ${json(artwork)};
+for (const control of controls) if (control.artworkIndex !== undefined) control.artwork = artwork[control.artworkIndex];
 const isProgramControl = ${isProgramControl.toString()}, isPanelArt = ${isPanelArt.toString()};
 ${simulation}(${mount.toString()})(controls,${json(background)},${phoneGrid.breakpoint},${stepCount.toString()},${maxDetentLabels},isPanelArt,isProgramControl,${hasDisplayArtwork.toString()},${hasSwitchArtwork.toString()},${isMeterBinding.toString()},${readPrograms.toString()},
 {glyphs:${json(ledGlyphs)},codeForValue:${displayCode.toString()},numericCode:${numericLedCode.toString()}},${compareValue.toString()},
-${paintTypography.toString()},${json(typographyFamilies)});</script></body></html>`;
+${paintTypography.toString()},${json(typographyFamilies)},${addAppearanceLayers.toString()});
+${preview ? `window.addEventListener("message", ${updatePreviewAppearance.toString()});` : ""}</script></body></html>`;
     }
 
-    function liveHtml(controls, theme) {
+    function liveHtml(controls, theme, presentation) {
         const contract = json(CellDesignerModel.bindingContract(controls)).replace(/>/g, "\\u003e");
-        return "<!-- cell.designer.live.v1 " + contract + "-->\n" + html(controls, theme);
+        return "<!-- cell.designer.live.v1 " + contract + "-->\n" + html(controls, theme, undefined, presentation);
     }
 
-    return {html, liveHtml, fontCss, paintTypography, typographyCss};
+    return {html, liveHtml, fontCss, paintTypography, typographyCss, appearanceCss, presentationCss, presentationFonts, addAppearanceLayers};
 })();

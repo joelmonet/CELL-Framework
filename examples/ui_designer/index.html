@@ -97,10 +97,19 @@ summary{cursor:pointer;font-weight:600}
 #preview-panel iframe{display:block;margin:0 auto;width:max(100%,540px);height:clamp(320px,64vh,640px);background:#111b20;border:1px solid #577076;border-radius:8px}
 #preview-panel iframe[data-size=phone]{width:min(100%,390px)}
 @media(max-width:850px){main{padding:12px}.workspace{grid-template-columns:1fr}}
+#appearance-results{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;max-height:240px;overflow:auto}
+#appearance-results button{display:flex;align-items:center;gap:6px;text-align:left;font-size:12px}
+#appearance-results img{width:26px;height:24px;object-fit:contain}
+#appearance-fields label{font-size:12px}
+#appearance-fields input,#appearance-fields select{width:100%;min-width:0}
+#canvas[data-themed] .tile{color:var(--text)}
+.cell-look-icon,.cell-look-indicator{display:none}
+.cell-look-highlight,.cell-look-foreground{position:absolute;inset:0;visibility:hidden;pointer-events:none;border-radius:inherit}
 </style>
 <script src="model.js" defer></script>
 <script src="fonts.js" defer></script>
 <script src="artwork.js" defer></script>
+<script src="theme_examples.js" defer></script>
 <script src="runtime.js" defer></script>
 <script src="designer.js" defer></script>
 </head>
@@ -330,6 +339,34 @@ aria-describedby="display-code-help"></textarea></label>
 <label>Accent<input type="color" name="accent"></label>
 </div>
 <button type="button" id="reset-theme">Reset colors</button>
+</form>
+</details>
+<details id="appearance-library">
+<summary>Theme and asset library</summary>
+<label>Theme<select id="appearance-theme"></select></label>
+<div class="action-row">
+<button id="appearance-demo" type="button">Load HDR / MODERN comparison</button>
+<button id="appearance-import" type="button">Import theme pack</button>
+<button id="appearance-export" type="button">Export theme pack</button>
+<button id="appearance-asset" type="button">Import asset</button>
+<button id="appearance-native" type="button">Export native preview</button>
+</div>
+<input id="appearance-pack-file" type="file" accept=".json,application/json" hidden>
+<input id="appearance-asset-file" type="file" accept=".svg,image/svg+xml,image/png,image/webp" hidden>
+<label>Search assets and styles<input id="appearance-search" type="search"></label>
+<div id="appearance-results" aria-label="Theme assets and styles"></div>
+<label>Selected control style<select id="appearance-style"></select></label>
+<label>Material<select id="appearance-material"></select></label>
+<form id="appearance-fields" hidden>
+<div class="theme-grid">
+<label>Fill<input name="fill"></label><label>Gradient end<input name="end"></label>
+<label>Border color<input name="edge"></label><label>Border stroke<input name="edgeWidth" type="number" min="0" max="6" step=".1"></label>
+<label>Edge highlight<input name="highlight"></label><label>Radius<input name="radius" type="number" min="0" max="48" step=".1"></label>
+<label>Opacity<input name="opacity" type="number" min="0" max="1" step=".01"></label>
+<label>Shape<select name="shape"><option value="rounded">Rounded</option><option value="ellipse">Ellipse</option></select></label>
+<label>Artwork<select name="asset"></select></label><label>Alpha mask<select name="mask"></select></label>
+<label>Drop shadow color<input name="shadow-color" placeholder="None"></label><label>Blur<input name="shadow-sigma" type="number" min="0" max="18" step=".1" value="3"></label><label>X offset<input name="shadow-x" type="number" min="-16" max="16" step=".1" value="0"></label><label>Y offset<input name="shadow-y" type="number" min="-16" max="16" step=".1" value="0"></label><label>Inner shadow color<input name="innerShadow-color" placeholder="None"></label><label>Blur<input name="innerShadow-sigma" type="number" min="0" max="18" step=".1" value="3"></label><label>X offset<input name="innerShadow-x" type="number" min="-16" max="16" step=".1" value="0"></label><label>Y offset<input name="innerShadow-y" type="number" min="-16" max="16" step=".1" value="0"></label><label>Glow color<input name="glow-color" placeholder="None"></label><label>Blur<input name="glow-sigma" type="number" min="0" max="18" step=".1" value="3"></label><label>X offset<input name="glow-x" type="number" min="-16" max="16" step=".1" value="0"></label><label>Y offset<input name="glow-y" type="number" min="-16" max="16" step=".1" value="0"></label></div>
+<button type="submit">Apply material</button>
 </form>
 </details>
 <details>

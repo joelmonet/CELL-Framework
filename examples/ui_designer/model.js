@@ -425,6 +425,296 @@ const CellDesignerModel = (() => {
         return {type: "program-memory", banks, active};
     }
 
+    const themePackSchema = "cell.ui-theme-pack.v1";
+    const presentationSchema = "cell.ui-presentation.v1";
+    const assetIdPattern = /^[a-z][a-z0-9_-]{0,63}$/;
+    const appearanceKinds = ["knob", "slider", "fader", "button", "meter", "panel", "dropdown", "tab", "icon-button"];
+    const appearanceLayers = ["background", "track", "face", "pointer", "highlight", "indicator", "foreground"];
+    const appearanceStates = ["enabled", "hover", "pressed", "selected", "focus", "disabled"];
+    const appearanceRoles = [...Object.keys(defaultTheme), "edge", "muted", "metal", "highlight", "shadow"];
+    const appearanceColors = {...defaultTheme, edge: "#46565d", muted: "#a8b5bb", metal: "#35444a",
+        highlight: "#9aabb4", shadow: "#101417"};
+    const validId = value => typeof value === "string" && assetIdPattern.test(value);
+    const appearanceError = cause => { throw new Error("Presentation: " + cause + "."); };
+    const objectEntries = (input, max) => {
+        if (input === undefined) return [];
+        if (input === null || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length > max)
+            appearanceError("invalid or oversized table");
+        return Object.entries(input);
+    };
+    const table = (input, max, read) => Object.fromEntries(objectEntries(input, max).map(([id, value]) => {
+        if (!validId(id)) appearanceError("invalid ID");
+        return [id, read(value, id)];
+    }));
+    const bounded = (value, min, max, fallback) => {
+        if (value === undefined) return fallback;
+        if (!Number.isFinite(value) || value < min || value > max) appearanceError("number outside its supported range");
+        return value;
+    };
+    const displayName = value => {
+        if (!validText(value)) appearanceError("expected a descriptive name");
+        return value.trim();
+    };
+    const dictionaryHas = (dictionary, key) => typeof key === "string" && Object.hasOwn(dictionary, key);
+    const checkReference = (dictionary, id) => {
+        if (!dictionaryHas(dictionary, id)) appearanceError("unknown reference " + String(id));
+        return id;
+    };
+    const colorToken = value => {
+        if (typeof value !== "string" || (!/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(value) &&
+            !appearanceRoles.includes(value))) appearanceError("invalid color token");
+        return value.toLowerCase();
+    };
+
+    function readAssets(input) {
+        return table(input, 512, asset => {
+            if (!validArtwork(asset?.data, maxPanelAssetBytes)) appearanceError("invalid embedded asset");
+            const {name, data} = asset;
+            return {name: displayName(name), data};
+        });
+    }
+
+    function readMaterials(input, assets) {
+        return table(input, 64, value => {
+            if (!value || typeof value !== "object") appearanceError("invalid material");
+            if (!["rounded", "ellipse"].includes(value.shape ?? "rounded")) appearanceError("invalid corner geometry");
+            const effects = {};
+            for (const kind of ["shadow", "innerShadow", "glow"]) {
+                const effect = value[kind];
+                if (effect === undefined) continue;
+                if (!effect || typeof effect !== "object") appearanceError("invalid effect");
+                effects[kind] = {color: colorToken(effect.color), sigma: bounded(effect.sigma, 0, 18, 3),
+                    x: bounded(effect.x, -16, 16, 0), y: bounded(effect.y, -16, 16, 0)};
+            }
+            const vector = value.vector;
+            if (vector !== undefined && (!vector || typeof vector.path !== "string" ||
+                vector.path.length > 1024 || !/^[MLHVCSAZ][MLHVCSAZeE0-9+., \-]*$/.test(vector.path)))
+                appearanceError("invalid 24-unit vector path");
+            return {fill: colorToken(value.fill ?? "#00000000"), end: colorToken(value.end ?? value.fill ?? "#00000000"),
+                edge: colorToken(value.edge ?? "#00000000"), edgeWidth: bounded(value.edgeWidth, 0, 6, 0),
+                highlight: colorToken(value.highlight ?? "#00000000"), radius: bounded(value.radius, 0, 48, 8),
+                opacity: bounded(value.opacity, 0, 1, 1), shape: value.shape ?? "rounded",
+                asset: value.asset === undefined ? undefined : checkReference(assets, value.asset),
+                mask: value.mask === undefined ? undefined : checkReference(assets, value.mask),
+                vector: vector ? {path: vector.path, stroke: bounded(vector.stroke, .1, 6, 1.8)} : undefined, ...effects};
+        });
+    }
+
+    function readVisualLayers(input, materials) {
+        return Object.fromEntries(objectEntries(input, appearanceLayers.length).map(([layer, material]) => {
+            if (!appearanceLayers.includes(layer)) appearanceError("unknown visual layer");
+            return [layer, checkReference(materials, material)];
+        }));
+    }
+
+    function readThemeDefinition(value, assets) {
+        const colors = {...appearanceColors};
+        for (const [role, token] of objectEntries(value?.colors, appearanceRoles.length)) {
+            if (!appearanceRoles.includes(role) || !/^#[0-9a-f]{6}$/i.test(token)) appearanceError("invalid semantic color");
+            colors[role] = token.toLowerCase();
+        }
+        const typography = {};
+        for (const [role, settings] of objectEntries(value?.typography, 2)) {
+            if (!["label", "value"].includes(role)) appearanceError("unknown typography role");
+            typography[role] = typographySettings(settings);
+        }
+        const materials = readMaterials(value?.materials, assets);
+        const components = table(value?.components, 64, (style, id) => {
+            if (!appearanceKinds.includes(style?.kind)) appearanceError("unknown component kind");
+            const states = Object.fromEntries(objectEntries(style.states, appearanceStates.length).map(([state, layers]) => {
+                if (!appearanceStates.includes(state)) appearanceError("unknown visual state");
+                return [state, readVisualLayers(layers, materials)];
+            }));
+            return {name: displayName(style.name ?? id), kind: style.kind, layers: readVisualLayers(style.layers, materials), states};
+        });
+        const defaults = Object.fromEntries(objectEntries(value?.defaults, appearanceKinds.length).map(([kind, id]) => {
+            if (!appearanceKinds.includes(kind) || components[checkReference(components, id)].kind !== kind)
+                appearanceError("component default has the wrong kind");
+            return [kind, id];
+        }));
+        return {name: displayName(value?.name), colors, typography, materials, components, defaults};
+    }
+
+    function readPresentation(value) {
+        if (value === undefined) return {schema: presentationSchema, assets: {}, themes: {}, activeTheme: ""};
+        if (value?.schema !== presentationSchema) appearanceError("unsupported schema");
+        const assets = readAssets(value.assets);
+        const themes = table(value.themes, 16, value => readThemeDefinition(value, assets));
+        const activeTheme = value.activeTheme ?? "";
+        if (typeof activeTheme !== "string") appearanceError("invalid active theme ID");
+        if (activeTheme) checkReference(themes, activeTheme);
+        return {schema: presentationSchema, assets, themes, activeTheme};
+    }
+
+    function readThemePack(text, presentation = readPresentation()) {
+        if (new TextEncoder().encode(text).length > maxProjectBytes) appearanceError("theme pack exceeds 2 MiB");
+        const pack = JSON.parse(text);
+        if (pack?.schema !== themePackSchema) appearanceError("unsupported theme pack schema");
+        const assets = readAssets(pack.assets);
+        const themes = table(pack.themes, 16, value => readThemeDefinition(value, assets));
+        if (!Object.keys(themes).length) appearanceError("theme pack is empty");
+        const next = readPresentation(presentation);
+        const rename = new Map();
+        for (const [id, asset] of Object.entries(assets)) {
+            const existing = Object.keys(next.assets).find(key => next.assets[key].data === asset.data);
+            const key = existing ?? availableId(next.assets, id);
+            if (!existing) next.assets[key] = asset;
+            rename.set(id, key);
+        }
+        for (const [id, theme] of Object.entries(themes)) {
+            for (const material of Object.values(theme.materials)) {
+                for (const field of ["asset", "mask"])
+                    if (material[field]) material[field] = rename.get(material[field]);
+            }
+            const key = availableId(next.themes, id);
+            next.themes[key] = theme;
+            if (!next.activeTheme) next.activeTheme = key;
+        }
+        return readPresentation(next);
+    }
+
+    function availableId(dictionary, proposal) {
+        const base = proposal.slice(0, 56);
+        if (!Object.hasOwn(dictionary, proposal)) return proposal;
+        let counter = 2;
+        while (Object.hasOwn(dictionary, base + "-" + counter)) ++counter;
+        return base + "-" + counter;
+    }
+
+    function registerAsset(assets, data, name) {
+        const previous = Object.keys(assets).find(key => assets[key].data === data);
+        if (previous) return previous;
+        name = name.replace(/[\x00-\x1f\x7f]+/g, " ").trim() || "Artwork";
+        const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48);
+        const id = availableId(assets, slug && /^[a-z]/.test(slug) ? slug : "artwork");
+        assets[id] = {name: name.slice(0, 80), data};
+        return id;
+    }
+
+    function appearanceKind(kind) {
+        if (["knob", "slider", "fader", "meter"].includes(kind)) return kind;
+        if (["choice", "bank", "program"].includes(kind)) return "dropdown";
+        if (["toggle", "momentary", "action", "action-pair", "stepper", "program-grid"].includes(kind)) return "button";
+        return "panel";
+    }
+
+    function matchesAppearance(kind, style) {
+        return kind === style.kind || (kind === "button" && ["tab", "icon-button"].includes(style.kind));
+    }
+
+    function resolveAppearance(control, presentation) {
+        const theme = presentation && presentation.themes[presentation.activeTheme];
+        if (!theme) return null;
+        const kind = appearanceKind(control.kind);
+        const picked = theme.components[control.visualStyle];
+        const style = picked && matchesAppearance(kind, picked) ? picked : theme.components[theme.defaults[kind]];
+        if (!style) return null;
+        const colors = {...theme.colors, accent: control.accent || theme.colors.accent};
+        const color = token => tokensHas(token) ? colors[token] : token;
+        function resolve(layers) {
+            return Object.fromEntries(Object.entries(layers ?? {}).map(([layer, id]) => {
+                const material = {...theme.materials[id]};
+                for (const field of ["fill", "end", "edge", "highlight"]) material[field] = color(material[field]);
+                for (const effect of ["shadow", "innerShadow", "glow"])
+                    if (material[effect]) material[effect] = {...material[effect], color: color(material[effect].color)};
+                return [layer, material];
+            }));
+        }
+        return {kind: style.kind, layers: resolve(style.layers),
+            states: Object.fromEntries(Object.entries(style.states).map(([state, layers]) => [state, resolve(layers)])),
+            typography: theme.typography};
+    }
+
+    const tokensHas = token => appearanceRoles.includes(token);
+    const displayTheme = (legacy, presentation) => {
+        const active = presentation?.themes[presentation.activeTheme];
+        return active ? {...legacy, ...active.colors} : legacy;
+    };
+
+    function writeThemePack(presentation) {
+        const {themes, assets} = readPresentation(presentation);
+        if (!Object.keys(themes).length) appearanceError("theme pack is empty");
+        const dependencies = new Set();
+        for (const theme of Object.values(themes))
+            for (const material of Object.values(theme.materials))
+                for (const id of [material.asset, material.mask]) if (id) dependencies.add(id);
+        return JSON.stringify({schema: themePackSchema, themes, assets: Object.fromEntries(
+            [...dependencies].map(id => [id, assets[id]]))}, null, 2) + "\n";
+    }
+
+    // The native backend consumes only resolved colors, material indices,
+    // geometry and static bitmap resources. No browser is needed at runtime.
+    async function nativeScene(controls, legacyTheme, presentation, {phone = false, values = [], catalog = []} = {}, bake) {
+        if (!presentation?.activeTheme) appearanceError("choose a theme for native preview");
+        const colors = displayTheme(legacyTheme, presentation);
+        const positions = phone ? phonePlacements(controls) : controls;
+        const columns = phone ? phoneGrid.columns : wideGrid.columns;
+        const rows = Math.max(1, Math.ceil(positions.reduce((bottom, box) => Math.max(bottom, box.y + box.height), 0)));
+        const width = columns * 76, height = rows * 76;
+        if (height > 4096) appearanceError("the native preview is taller than 4096 logical pixels");
+        const materials = [], instances = [], materialIds = new Map(), images = new Map(), assetIds = new Map();
+        const parameters = new Map((catalog ?? []).map(parameter => [parameter.key, parameter]));
+        const current = new Map(values);
+        const rank = new Map(layerOrder(controls).map((control, i) => [control, i]));
+        function imageIndex(data) {
+            if (!images.has(data)) images.set(data, images.size);
+            return images.get(data);
+        }
+        function layerIndices(layers, control) {
+            return Object.fromEntries(Object.entries(layers).map(([role, source]) => {
+                const material = {...source};
+                for (const property of ["asset", "mask"]) {
+                    if (material[property] === undefined) continue;
+                    material[property] = imageIndex(presentation.assets[material[property]].data);
+                }
+                if (control.artwork && (control.kind === "image" ? role === "background" : role === "face"))
+                    material.asset = imageIndex(control.artwork);
+                const key = JSON.stringify(material);
+                if (!materialIds.has(key)) {
+                    materialIds.set(key, materials.length);
+                    materials.push(material);
+                }
+                return [role, materialIds.get(key)];
+            }));
+        }
+        function matchingRules(expression) {
+            const groups = conditionRules(expression);
+            return !groups.length || groups.some(group => group.every(({key, operator, value}) =>
+                compareValue(current.get(key) ?? parameters.get(key)?.value, operator, value)));
+        }
+        for (const [index, control] of controls.entries()) {
+            if (!matchingRules(control.visibleWhen)) continue;
+            const look = resolveAppearance(control, presentation);
+            if (!look) continue;
+            const {x, y, width, height} = positions[index];
+            const param = parameters.get(control.key);
+            const raw = current.get(control.key) ?? param?.value;
+            const value = control.kind === "meter" ? .64 : Number.isFinite(raw) && param?.maximum > param.minimum
+                ? clamp((raw - param.minimum) / (param.maximum - param.minimum), 1) : .5;
+            const label = control.typography ?? look.typography.label ?? {};
+            instances.push({id: index, rank: rank.get(control), kind: look.kind,
+                label: control.hideHeading || isPanelArt(control.kind) ? "" : control.label,
+                rotation: control.rotation ?? 0, indicator: control.showGainReduction ? .25 : undefined,
+                display: param?.choices?.[Math.round(raw - param.minimum)],
+                rect: [x * 76 + 4, y * 76 + 4, width * 76 - 8, height * 76 - 8], value,
+                selected: control.kind === "toggle" && value === 1, disabled: Boolean(param?.readonly) || !matchingRules(control.enabledWhen),
+                typography: label, layers: layerIndices(look.layers, control), states:
+                    Object.fromEntries(Object.entries(look.states).map(([state, layers]) => [state, layerIndices(layers, control)]))});
+        }
+        if (legacyTheme.backgroundArtwork) assetIds.set("backgroundAsset", imageIndex(legacyTheme.backgroundArtwork));
+        if (images.size > 48) appearanceError("the native preview supports up to 48 referenced bitmaps");
+        let encodedBytes = 0;
+        const assets = [];
+        for (const data of images.keys()) {
+            const png = await bake(data);
+            encodedBytes += png.length;
+            if (encodedBytes > 10 * 1024 * 1024) appearanceError("native preview bitmap budget exceeded");
+            assets.push(png);
+        }
+        return JSON.stringify({schema: "cell.ui-skin-scene.v1", width, height, colors, ...Object.fromEntries(assetIds),
+            materials, assets, controls: instances.sort((a, b) => a.rank - b.rank)}, null, 2) + "\n";
+    }
+
     function readTheme(input) {
         const theme = {...defaultTheme};
         for (const key of Object.keys(theme)) {
@@ -449,9 +739,22 @@ const CellDesignerModel = (() => {
         if (![schema, "cell.ui-layout.v2", "cell.ui-layout.v1"].includes(value?.schema) ||
             !Array.isArray(value.controls) || value.controls.length > maxControls)
             throw new Error("Choose a supported Cell UI layout.");
-        const controls = value.controls.map((control, index) => readControl(control, index, value.schema === schema));
+        if (new TextEncoder().encode(text).length > maxProjectBytes) appearanceError("layout exceeds 2 MiB");
+        const presentation = readPresentation(value.presentation);
+        const artwork = (id, inline) => {
+            if (id === undefined) return inline;
+            if (inline) appearanceError("ambiguous inline artwork and asset reference");
+            return presentation.assets[checkReference(presentation.assets, id)].data;
+        };
+        const controls = value.controls.map((control, index) => {
+            if (!control) return readControl(control, index, value.schema === schema);
+            const {assetId, ...fields} = control;
+            return readControl({...fields, artwork: artwork(assetId, fields.artwork)}, index, value.schema === schema);
+        });
+        const {backgroundAsset, ...theme} = value.theme ?? {};
+        theme.backgroundArtwork = artwork(backgroundAsset, theme.backgroundArtwork);
         const legacy = value.schema === "cell.ui-layout.v1";
-        return {controls, theme: readTheme(value.theme), programs: legacy ? undefined : readPrograms(value.programs),
+        return {controls, presentation, theme: readTheme(theme), programs: legacy ? undefined : readPrograms(value.programs),
             catalog: legacy ? undefined : value.catalog === null || value.catalog === undefined
                 ? null : readCatalog({type: "parameters", parameters: value.catalog})};
     }
@@ -492,6 +795,10 @@ const CellDesignerModel = (() => {
                 !Number.isInteger(thickness) || thickness < 1 || thickness > 16)))
             throw new Error(`Invalid settings for control ${index + 1}.`);
         const result = {kind, label: normalizedLabel, key: hasBinding(kind) ? key : "", x, y, width, height, accent, artwork, skin};
+        if (control.visualStyle !== undefined) {
+            if (!validId(control.visualStyle)) appearanceError("invalid component style ID");
+            result.visualStyle = control.visualStyle;
+        }
         if (artworkMode) result.artworkMode = artworkMode;
         if (layer !== undefined) {
             if (!Number.isInteger(layer) || layer < 1 || layer > maxControls)
@@ -583,8 +890,23 @@ const CellDesignerModel = (() => {
         });
     }
 
-    function serialize(controls, theme, catalog, programs) {
-        return JSON.stringify({schema, controls, theme, catalog, programs: programs ?? undefined}, null, 2) + "\n";
+    function serialize(controls, theme, catalog, programs, presentation) {
+        const packageData = {...readPresentation(), ...presentation, assets: {...presentation?.assets}};
+        const projectControls = controls.map(control => {
+            if (!control.artwork || typeof control.artwork !== "string" ||
+                !imageData.test(control.artwork)) return control;
+            const {artwork, ...fields} = control;
+            return {...fields, assetId: registerAsset(packageData.assets, artwork, control.label)};
+        });
+        const {backgroundArtwork, ...projectTheme} = theme;
+        if (backgroundArtwork) {
+            if (typeof backgroundArtwork === "string" && imageData.test(backgroundArtwork))
+                projectTheme.backgroundAsset = registerAsset(packageData.assets, backgroundArtwork, "Panel background");
+            else projectTheme.backgroundArtwork = backgroundArtwork;
+        }
+        const hasPresentation = packageData.activeTheme || Object.keys(packageData.assets).length || Object.keys(packageData.themes).length;
+        return JSON.stringify({schema, controls: projectControls, theme: projectTheme, catalog, programs: programs ?? undefined,
+            presentation: hasPresentation ? packageData : undefined}, null, 2) + "\n";
     }
 
     function validBox(box, grid) {
@@ -876,7 +1198,9 @@ inline cell::web::ParameterBridge bind(cell::Engine& engine) {
 `;
     }
 
-    return {wideGrid, phoneGrid, kinds, skins, defaultTheme, showcase, maxControls, maxAssetBytes, maxPanelAssetBytes,
+    return {readPresentation, readThemePack, writeThemePack, nativeScene, presentationSchema, themePackSchema,
+        appearanceStates, appearanceLayers, appearanceKind, matchesAppearance, registerAsset, resolveAppearance, displayTheme,
+        wideGrid, phoneGrid, kinds, skins, defaultTheme, showcase, maxControls, maxAssetBytes, maxPanelAssetBytes,
         maxProjectBytes, imageType, validArtwork, isPanelArt, isProgramControl, clamp, validText, hasArtwork, hasDisplayArtwork, hasCapArtwork, hasSwitchArtwork, hasParameter,
         hasDisplayCodes, isMeterBinding, indicatorSettings, ledGlyphs, ledSettings, parseDisplayCodes, displayCode, numericLedCode, hasParameterBinding,
         maxDetentLabels, readDetentLabels, readRotation,

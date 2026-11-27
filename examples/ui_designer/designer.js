@@ -55,6 +55,7 @@ let previewProgram;
 const encoder = new TextEncoder();
 const historyLimit = 64;
 let theme = {...model.defaultTheme};
+let presentation = model.readPresentation();
 let catalog = null;
 let programs = null;
 let selected;
@@ -108,7 +109,7 @@ function controlsOnly() {
 }
 
 function documentText() {
-    return model.serialize(controlsOnly(), theme, catalog, programs);
+    return model.serialize(controlsOnly(), theme, catalog, programs, presentation);
 }
 
 function paintImage(image, artwork, fit) {
@@ -167,13 +168,13 @@ function applyArtwork(action) {
     catch (error) { status.textContent = error.message; }
 }
 
-function refreshProject() {
+function refreshProject(presentationOnly = false) {
     undoButton.disabled = !undoStack.length;
     redoButton.disabled = !redoStack.length;
     query("#project-state").textContent = documentText() === saved ? "" : "Unsaved changes";
     refreshCanvas();
     for (const name of Object.keys(model.defaultTheme)) {
-        const value = theme[name];
+        const value = model.displayTheme(theme, presentation)[name];
         themeForm.elements.namedItem(name).value = value;
         canvas.style.setProperty("--" + name, value);
     }
@@ -188,20 +189,22 @@ function refreshProject() {
         ? `${programs.banks.length} banks, ${programs.banks.reduce((count, bank) => count + bank.programs.length, 0)} programs`
         : "";
     query("#clear-parameters").disabled = !catalog;
-    if (!previewPanel.hidden) renderPreview();
+    refreshAppearance(presentationOnly);
+    refreshAppearanceBrowser();
+    if (!previewPanel.hidden && !presentationOnly) renderPreview();
     queueLivePage();
 }
 
 function snapshot() {
-    return {layout: controlsOnly(), theme, catalog, programs, selection: selection.map(control => controls.indexOf(control))};
+    return {layout: controlsOnly(), theme, presentation, catalog, programs, selection: selection.map(control => controls.indexOf(control))};
 }
 
-function record(before) {
-    if (model.serialize(before.layout, before.theme, before.catalog, before.programs) === documentText()) return;
+function record(before, presentationOnly = false) {
+    if (model.serialize(before.layout, before.theme, before.catalog, before.programs, before.presentation) === documentText()) return;
     undoStack.push(before);
     if (undoStack.length > historyLimit) undoStack.shift();
     redoStack.length = 0;
-    refreshProject();
+    refreshProject(presentationOnly);
 }
 
 function refreshBindingSource(control) {
@@ -283,6 +286,7 @@ function select(items) {
     field("thickness").disabled = control.kind !== "line";
     query("#artwork").hidden = !model.hasArtwork(control.kind);
     refreshControlArtwork(control);
+    refreshAppearanceBrowser();
 }
 
 function refreshRulePicker() {
@@ -454,7 +458,10 @@ function refreshCanvas() {
     canvas.style.setProperty("--columns", grid.columns);
     canvas.style.setProperty("--rows", visibleRows);
     canvasFrame.dataset.size = phone ? "phone" : "wide";
-    boxes.forEach((box, index) => position(controls[index].tile, box));
+    boxes.forEach((box, index) => {
+        controls[index].tile.dataset.lookIndex = index;
+        position(controls[index].tile, box);
+    });
     const functionalBoxes = boxes.flatMap((box, index) =>
         model.isPanelArt(controls[index].kind) ? [] : [{box, rule: controls[index].visibleWhen}]);
     query("#overlap-status").hidden = !functionalBoxes.some((entry, i) =>
@@ -566,6 +573,7 @@ function add(data) {
     tile.dataset.kind = data.kind;
     tile.toggleAttribute("data-panel-art", model.isPanelArt(data.kind));
     tile.innerHTML = '<img alt="" hidden><span class="tile-label"></span><span class="tile-kind"></span>';
+    runtime.addAppearanceLayers(tile);
     const control = {...data, ...model.constrain(data, wideGrid), tile};
     controls.push(control);
     canvas.append(tile);
@@ -901,7 +909,15 @@ canvas.ondrop = event => {
     const kind = event.dataTransfer.getData("text/plain");
     const point = cellAt(event);
     const quantize = snapPlacement.checked ? Math.floor : finePosition;
-    if (Object.hasOwn(kinds, kind)) addControl(kind, {x: quantize(point.x), y: quantize(point.y)});
+    const target = {x: quantize(point.x), y: quantize(point.y)};
+    const payload = event.dataTransfer.getData(assetDrag);
+    if (payload) {
+        applyArtwork(() => {
+            const [type, id] = JSON.parse(payload);
+            if (["asset", "stock", "style"].includes(type)) placeAppearance(type, id,
+                controls.find(control => control.tile === event.target.closest(".tile")), target);
+        });
+    } else if (Object.hasOwn(kinds, kind)) addControl(kind, target);
 };
 canvas.onclick = event => { if (event.target === canvas) select([]); };
 editArt.onclick = () => {
@@ -1048,22 +1064,26 @@ form.onsubmit = event => {
     record(before);
     status.textContent = "Control updated.";
 };
-themeForm.onchange = () => {
-    const before = snapshot();
-    theme = {...theme, ...Object.fromEntries(new FormData(themeForm))};
-    record(before);
-};
-query("#reset-theme").onclick = () => {
-    const before = snapshot();
-    theme = {...theme, ...model.defaultTheme};
-    record(before);
-};
+function applyPalette(colors) {
+    const active = presentation.themes[presentation.activeTheme];
+    if (active) {
+        const themes = {...presentation.themes, [presentation.activeTheme]: {...active, colors: {...active.colors, ...colors}}};
+        setPresentation({...presentation, themes}, true);
+    } else {
+        const before = snapshot();
+        theme = {...theme, ...colors};
+        record(before);
+    }
+}
+themeForm.onchange = () => applyArtwork(() => applyPalette(Object.fromEntries(new FormData(themeForm))));
+query("#reset-theme").onclick = () => applyArtwork(() => applyPalette(model.defaultTheme));
 
 function restore(state) {
     ++layoutVersion;
     controls.length = 0;
     canvas.replaceChildren(backgroundImage);
     theme = state.theme;
+    presentation = state.presentation ?? model.readPresentation();
     catalog = state.catalog;
     programs = state.programs;
     previewProgram = undefined;
@@ -1089,11 +1109,11 @@ query("#reset-phone-layout").onclick = () => {
     record(before);
     status.textContent = "Phone layout reset to automatic placement.";
 };
-function loadShowcase(layout, colors, parameters, selection, message) {
+function loadShowcase(layout, colors, parameters, selection, message, looks) {
     const before = snapshot();
-    const project = model.readProject(model.serialize(layout, colors, parameters));
+    const project = model.readProject(model.serialize(layout, colors, parameters, null, looks));
     previewValues.clear();
-    restore({layout: project.controls, theme: project.theme, catalog: project.catalog, programs: null, selection});
+    restore({layout: project.controls, theme: project.theme, presentation: project.presentation, catalog: project.catalog, programs: null, selection});
     record(before);
     togglePreview(true);
     status.textContent = message;
@@ -1240,7 +1260,7 @@ bindFile(query("#open"), query("#layout-file"), async file => {
     if (documentText() !== saved && !window.confirm("Replace the layout and discard unsaved changes?")) return;
     undoStack.length = redoStack.length = 0;
     previewValues.clear();
-    restore({layout: project.controls, theme: project.theme,
+    restore({layout: project.controls, theme: project.theme, presentation: project.presentation,
         catalog: project.catalog === undefined ? catalog : project.catalog,
         programs: project.programs === undefined ? programs : project.programs, selection: [0]});
     saved = documentText();
@@ -1293,12 +1313,20 @@ async function readArtwork(file, panel) {
 }
 
 function setControlArtwork(control, artwork, artworkMode, message) {
+    if (artwork && !model.validArtwork(artwork, control.kind === "image" ? model.maxPanelAssetBytes : model.maxAssetBytes))
+        throw new Error("Artwork is invalid or too large for that control.");
     const before = snapshot();
     const priorArtwork = control.artwork;
     const priorMode = control.artworkMode;
     Object.assign(control, {artwork, artworkMode});
+    if (artwork) {
+        const assets = {...presentation.assets};
+        model.registerAsset(assets, artwork, control.label);
+        presentation = {...presentation, assets};
+    }
     if (encoder.encode(documentText()).length > model.maxProjectBytes) {
         Object.assign(control, {artwork: priorArtwork, artworkMode: priorMode});
+        presentation = before.presentation;
         throw new Error("This artwork would take the layout over 2 MiB.");
     }
     paint(control);
@@ -1311,7 +1339,7 @@ function setBackgroundArtwork(backgroundArtwork, message) {
     const next = {...theme};
     if (backgroundArtwork) next.backgroundArtwork = backgroundArtwork;
     else delete next.backgroundArtwork;
-    if (encoder.encode(model.serialize(controlsOnly(), next, catalog, programs)).length > model.maxProjectBytes)
+    if (encoder.encode(model.serialize(controlsOnly(), next, catalog, programs, presentation)).length > model.maxProjectBytes)
         throw new Error("This artwork would take the layout over 2 MiB.");
     const before = snapshot();
     theme = next;
@@ -1349,7 +1377,7 @@ clearBackground.onclick = () => setBackgroundArtwork("", "Background removed.");
 function renderPreview() {
     previewFrame.srcdoc = CellDesignerRuntime.html(controlsOnly(), theme,
         {catalog, programs: programs && {...programs, active: previewProgram ?? programs.active},
-            values: [...previewValues], generation: ++generation});
+            values: [...previewValues], generation: ++generation}, presentation);
 }
 
 function togglePreview(show) {
@@ -1411,7 +1439,7 @@ function liveContent() {
     const layout = controlsOnly();
     if (model.parameterKeys(layout).length > 128 || model.actionBindings(layout).length > 128)
         throw new Error("Live pages can contain up to 128 parameters and 128 actions.");
-    return runtime.liveHtml(layout, theme);
+    return runtime.liveHtml(layout, theme, presentation);
 }
 
 async function publishLivePage() {
@@ -1461,6 +1489,230 @@ liveButton.onclick = async () => {
         if (error.name !== "AbortError") liveStatus.textContent = error.message;
     }
 };
+const themeSelection = query("#appearance-theme");
+const assetResults = query("#appearance-results");
+const materialFields = query("#appearance-fields");
+const assetDrag = "application/x-cell-appearance";
+const stockArtwork = new Map(Object.entries(CellDesignerArtwork).flatMap(([group, entries]) =>
+    entries.map((asset, index) => [`stock-${group}-${index + 1}`, {...asset, group}])));
+let libraryPreview;
+const appearanceStyle = document.createElement("style");
+document.head.append(appearanceStyle);
+
+function refreshAppearance(onlyPreview = false) {
+    const colors = model.displayTheme(theme, presentation);
+    for (const name of Object.keys(model.defaultTheme)) canvas.style.setProperty("--" + name, colors[name]);
+    const css = runtime.appearanceCss(controls, presentation, "#canvas > ");
+    if (appearanceStyle.textContent !== css) appearanceStyle.textContent = css;
+    canvas.toggleAttribute("data-themed", Boolean(presentation.activeTheme));
+    if (onlyPreview && !previewPanel.hidden && previewFrame.contentWindow) {
+        previewFrame.contentWindow.postMessage({type: "cell-preview-appearance",
+            css: runtime.presentationCss(controlsOnly(), theme, presentation),
+            fonts: runtime.presentationFonts(presentation)}, "*");
+    }
+}
+
+function refreshAppearanceBrowser() {
+    const active = presentation.themes[presentation.activeTheme];
+    const term = query("#appearance-search").value.trim().toLowerCase();
+    themeSelection.replaceChildren(new Option("Layout colors", ""),
+        ...Object.entries(presentation.themes).map(([id, theme]) => new Option(theme.name, id)));
+    themeSelection.value = presentation.activeTheme;
+    query("#appearance-export").disabled = !Object.keys(presentation.themes).length;
+    query("#appearance-native").disabled = !active;
+    if (query("#appearance-library").open && (term !== libraryPreview?.term ||
+        presentation.assets !== libraryPreview.assets || active !== libraryPreview.active)) {
+        libraryPreview = {term, assets: presentation.assets, active};
+        const registered = new Set(Object.values(presentation.assets).map(asset => asset.data));
+        const entries = [
+            ...Object.entries(presentation.assets).map(([id, asset]) => ({id, name: asset.name, type: "asset", asset})),
+            ...Object.entries(active?.components ?? {}).map(([id, style]) => ({id, name: style.name, type: "style", style})),
+            ...[...stockArtwork].filter(([, asset]) => !registered.has(asset.artwork))
+                .map(([id, asset]) => ({id, name: asset.name, type: "stock", asset: {...asset, data: asset.artwork}}))
+        ].filter(entry => (entry.name + " " + entry.id + " " + (entry.style?.kind ?? "artwork"))
+            .toLowerCase().includes(term));
+        assetResults.replaceChildren(...entries.map(entry => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.draggable = true;
+            button.textContent = entry.name + (entry.style ? ` · ${entry.style.kind}` : "");
+            if (entry.asset) {
+                const image = document.createElement("img");
+                image.alt = "";
+                image.loading = "lazy";
+                image.src = entry.asset.data;
+                button.prepend(image);
+            }
+            button.onclick = () => applyArtwork(() => placeAppearance(entry.type, entry.id, selected));
+            button.ondragstart = event => event.dataTransfer.setData(assetDrag, JSON.stringify([entry.type, entry.id]));
+            return button;
+        }));
+    }
+    const selectedStyle = selected && active ?
+        (active.components[selected.visualStyle] ?? active.components[active.defaults[model.appearanceKind(selected.kind)]]) : undefined;
+    const styleSelect = query("#appearance-style");
+    styleSelect.replaceChildren(new Option("Theme default", ""), ...Object.entries(active?.components ?? {})
+        .filter(([, style]) => selected && model.matchesAppearance(model.appearanceKind(selected.kind), style))
+        .map(([id, style]) => new Option(style.name, id)));
+    styleSelect.disabled = !selected || !active;
+    styleSelect.value = selected?.visualStyle ?? "";
+    const materialSelect = query("#appearance-material");
+    const material = materialSelect.value;
+    const materialIds = new Set(selectedStyle ? [
+        ...Object.values(selectedStyle.layers), ...Object.values(selectedStyle.states).flatMap(Object.values)
+    ] : Object.keys(active?.materials ?? {}));
+    materialSelect.replaceChildren(new Option("Choose a material", ""),
+        ...[...materialIds].map(id => new Option(id, id)));
+    materialSelect.value = materialIds.has(material) ? material : "";
+    readMaterialFields();
+}
+
+function readMaterialFields() {
+    const current = presentation.themes[presentation.activeTheme]?.materials[query("#appearance-material").value];
+    materialFields.hidden = !current;
+    if (!current) return;
+    for (const name of ["fill", "end", "edge", "edgeWidth", "highlight", "radius", "opacity", "shape"])
+        materialFields.elements.namedItem(name).value = current[name];
+    for (const kind of ["shadow", "innerShadow", "glow"]) {
+        for (const key of ["color", "sigma", "x", "y"])
+            materialFields.elements.namedItem(kind + "-" + key).value = current[kind]?.[key] ?? "";
+    }
+    for (const name of ["asset", "mask"]) {
+        const menu = materialFields.elements.namedItem(name);
+        menu.replaceChildren(new Option("None", ""), ...Object.entries(presentation.assets).map(([id, asset]) => new Option(asset.name, id)));
+        menu.value = current[name] ?? "";
+    }
+}
+
+function placeAppearance(type, id, target, point) {
+    if (type === "asset" || type === "stock") {
+        const stock = type === "stock" ? stockArtwork.get(id) : undefined;
+        const asset = stock ? {name: stock.name, data: stock.artwork} :
+            Object.hasOwn(presentation.assets, id) ? presentation.assets[id] : undefined;
+        if (!asset) return;
+        if (target && model.hasArtwork(target.kind)) {
+            setControlArtwork(target, asset.data, model.hasCapArtwork(target.kind) ? target.artworkMode ?? "cap" : undefined,
+                asset.name + " applied.");
+        } else {
+            placeNew({...starter("image"), label: asset.name, artwork: asset.data}, point, model.phoneSize("image"));
+        }
+        return;
+    }
+    const pack = presentation.themes[presentation.activeTheme];
+    const style = pack?.components[id];
+    if (!style || !Object.hasOwn(pack.components, id)) return;
+    if (target) {
+        if (!model.matchesAppearance(model.appearanceKind(target.kind), style)) throw new Error("Choose a compatible control.");
+        const before = snapshot();
+        target.visualStyle = id;
+        record(before);
+    } else {
+        const kind = {panel: "rectangle", button: "toggle", dropdown: "choice", tab: "toggle", "icon-button": "action"}[style.kind] ?? style.kind;
+        placeNew({...starter(kind), visualStyle: id}, point, model.phoneSize(kind));
+    }
+}
+
+function setPresentation(next, previewOnly = false) {
+    if (encoder.encode(model.serialize(controlsOnly(), theme, catalog, programs, next)).length > model.maxProjectBytes)
+        throw new Error("The theme dependencies would take this layout over 2 MiB.");
+    const before = snapshot();
+    presentation = next;
+    record(before, previewOnly);
+}
+
+themeSelection.onchange = () => applyArtwork(() => setPresentation({...presentation, activeTheme: themeSelection.value}, true));
+query("#appearance-search").oninput = refreshAppearanceBrowser;
+query("#appearance-library").ontoggle = refreshAppearanceBrowser;
+query("#appearance-style").onchange = event => {
+    if (!selected) return;
+    const before = snapshot();
+    if (event.target.value) selected.visualStyle = event.target.value;
+    else delete selected.visualStyle;
+    record(before, true);
+};
+query("#appearance-material").onchange = readMaterialFields;
+materialFields.onsubmit = event => {
+    event.preventDefault();
+    applyArtwork(() => {
+        const id = query("#appearance-material").value;
+        if (!id) return;
+        const next = structuredClone(presentation);
+        const material = next.themes[next.activeTheme].materials[id];
+        for (const name of ["fill", "end", "edge", "edgeWidth", "highlight", "radius", "opacity", "shape", "asset", "mask"]) {
+            const field = materialFields.elements.namedItem(name);
+            const value = field.type === "number" ? field.valueAsNumber : field.value;
+            material[name] = value === "" ? undefined : value;
+        }
+        for (const kind of ["shadow", "innerShadow", "glow"]) {
+            const color = materialFields.elements.namedItem(kind + "-color").value;
+            const value = name => materialFields.elements.namedItem(kind + "-" + name).valueAsNumber;
+            material[kind] = color ? {color, sigma: value("sigma") || 0, x: value("x") || 0, y: value("y") || 0} : undefined;
+        }
+        setPresentation(model.readPresentation(next), true);
+    });
+};
+bindFile(query("#appearance-import"), query("#appearance-pack-file"), async file => {
+    if (file.size > model.maxProjectBytes) throw new Error("The theme pack exceeds 2 MiB.");
+    const importVersion = layoutVersion;
+    const next = model.readThemePack(await file.text(), presentation);
+    if (importVersion === layoutVersion) setPresentation(next, true);
+});
+bindFile(query("#appearance-asset"), query("#appearance-asset-file"), async file => {
+    const importVersion = layoutVersion;
+    const data = await readArtwork(file, true);
+    if (importVersion !== layoutVersion) return;
+    const assets = {...presentation.assets};
+    model.registerAsset(assets, data, file.name);
+    setPresentation(model.readPresentation({...presentation, assets}));
+});
+query("#appearance-export").onclick = () => applyArtwork(() =>
+    download(model.writeThemePack(presentation), "application/json", "cell-theme-pack.json"));
+query("#appearance-native").onclick = async () => {
+    const button = query("#appearance-native");
+    button.disabled = true;
+    try {
+        const name = presentation.activeTheme;
+        const layout = grid === phoneGrid ? "portrait" : "wide";
+        const scene = await model.nativeScene(controlsOnly(), theme, presentation,
+            {phone: grid === phoneGrid, catalog, values: [...previewValues]}, async data => {
+                const image = new Image();
+                image.src = data;
+                await image.decode();
+                const scale = Math.min(1, 768 / Math.max(image.naturalWidth, image.naturalHeight));
+                const bitmap = document.createElement("canvas");
+                bitmap.width = Math.max(1, Math.round(image.naturalWidth * scale));
+                bitmap.height = Math.max(1, Math.round(image.naturalHeight * scale));
+                bitmap.getContext("2d").drawImage(image, 0, 0, bitmap.width, bitmap.height);
+                return bitmap.toDataURL("image/png").split(",")[1];
+            });
+        download(scene, "application/json", `cell-${name}-${layout}.cellskin.json`);
+        status.textContent = "Run cell_skin_preview to render this scene through the native Canvas.";
+    } catch (error) {
+        status.textContent = error.message;
+    } finally {
+        button.disabled = !presentation.activeTheme;
+    }
+};
+query("#appearance-demo").onclick = () => {
+    const looks = model.readThemePack(JSON.stringify(CellDesignerThemeExamples));
+    const gain = {key: "gain", name: "Gain", value: .62, minimum: 0, maximum: 1, step: .01, choices: []};
+    const demo = [
+        {kind: "rectangle", label: "Backplate", x: 0, y: 0, width: 12, height: 6},
+        {kind: "knob", label: "Drive", key: "gain", x: 0, y: 0, width: 4, height: 4, showGainReduction: true},
+        {kind: "fader", label: "Level", key: "gain", x: 4, y: 0, width: 3, height: 5},
+        {kind: "meter", label: "Output", key: "output-peak", x: 7, y: 0, width: 5, height: 2},
+        {kind: "slider", label: "Mix", key: "gain", x: 0, y: 4, width: 4, height: 1},
+        {kind: "choice", label: "Mode", key: "mode", x: 7, y: 2, width: 5, height: 2},
+        {kind: "toggle", label: "Active", key: "bypass", x: 0, y: 5, width: 4, height: 1},
+        {kind: "toggle", label: "Alternate", key: "bypass", visualStyle: "tab", x: 4, y: 5, width: 4, height: 1},
+        {kind: "action", label: "Reset", action: "reset", visualStyle: "icon-button", x: 8, y: 5, width: 4, height: 1}
+    ];
+    const parameters = [gain, {key: "mode", name: "Mode", value: 1, minimum: 0, maximum: 2, step: 1, choices: ["Clean", "Warm", "Hot"]},
+        {key: "bypass", name: "Bypass", value: 0, minimum: 0, maximum: 1, step: 1, choices: ["On", "Off"]}]
+        .map(parameter => ({unit: "", readonly: false, ...parameter}));
+    loadShowcase(demo, model.defaultTheme, parameters, [1], "Theme comparison loaded.", looks);
+};
+
 query("#export-live").onclick = () => applyArtwork(() =>
     download(liveContent(), "text/html", "cell-designer-live.html"));
 
@@ -1479,7 +1731,7 @@ function exportEditor(bindings) {
     }
     const layout = controlsOnly();
     if (bindings) download(model.cppBindings(layout), "text/plain", "cell-ui-bindings.hpp");
-    else download(CellDesignerRuntime.html(layout, theme), "text/html", "cell-plugin-editor.html");
+    else download(CellDesignerRuntime.html(layout, theme, undefined, presentation), "text/html", "cell-plugin-editor.html");
     const issues = exportIssues();
     status.textContent = (bindings ? "C++ bindings exported." : "WebView HTML exported.") +
         (issues.length ? " " + issues.join(". ") + "." : "");

@@ -13,6 +13,9 @@ const project = {type: "parameters", parameters: [
     {key: "mode", name: "Mode", minimum: 0, maximum: 2, step: 1, value: 1, unit: "", choices: ["Clean", "Warm", "Bright"]}
 ]};
 
+const savedArtwork = (layout, control) => layout.presentation?.assets[control.assetId]?.data ?? control.artwork;
+const savedBackground = layout => layout.presentation?.assets[layout.theme.backgroundAsset]?.data ?? layout.theme.backgroundArtwork;
+
 async function download(page, id, directory) {
     const pending = page.waitForEvent("download");
     await page.locator(id).click();
@@ -34,7 +37,7 @@ async function download(page, id, directory) {
         page.on("dialog", dialog => dialog.accept());
         const serveDesigner = async route => {
             const name = new URL(route.request().url()).pathname.slice(1);
-            if (!["index.html", "model.js", "fonts.js", "artwork.js", "runtime.js", "designer.js"].includes(name)) return route.abort();
+            if (!["index.html", "model.js", "fonts.js", "artwork.js", "theme_examples.js", "runtime.js", "designer.js"].includes(name)) return route.abort();
             await route.fulfill({body: await fs.readFile(path.join(source, name)),
                 contentType: name.endsWith(".js") ? "text/javascript" : "text/html; charset=utf-8"});
         };
@@ -223,7 +226,7 @@ async function download(page, id, directory) {
         assert.equal(saved.catalog.length, 3);
         assert.deepEqual(saved.controls.find(control => control.kind === "knob").phone, {x:2, y:1, width:2, height:3});
         assert.deepEqual(saved.controls.find(control => control.kind === "fader").phone, {x:0, y:1, width:2, height:3});
-        assert.equal(saved.controls.find(control => control.kind === "knob").artwork.startsWith("data:image/png;"), true);
+        assert.equal(savedArtwork(saved, saved.controls.find(control => control.kind === "knob")).startsWith("data:image/png;"), true);
         const header = await download(page, "#export-cpp", temp);
         assert.match(header, /std::array<cell::ParamId, 3>/);
         assert.match(header, /std::array<std::string_view, 2>/);
@@ -296,7 +299,7 @@ async function download(page, id, directory) {
         const copied = await page.evaluate(() => navigator.clipboard.readText());
         const copiedControls = JSON.parse(copied).controls;
         assert.deepEqual(copiedControls.map(control => control.label), ["Field level", "Studio Fader"]);
-        assert.equal(copiedControls[0].artwork, saved.controls.find(control => control.kind === "knob").artwork);
+        assert.equal(copiedControls[0].artwork, savedArtwork(saved, saved.controls.find(control => control.kind === "knob")));
         await page.getByRole("button", {name: "Copy selection"}).click();
         await page.getByText("Selection copied to the clipboard.", {exact: true}).waitFor();
 
@@ -312,7 +315,9 @@ async function download(page, id, directory) {
         await recipient.keyboard.press("Control+v");
         await recipient.getByText("2 controls pasted.", {exact: true}).waitFor();
         const transplant = JSON.parse(await download(recipient, "#save", temp));
-        assert.deepEqual(transplant.controls, copiedControls);
+        assert.deepEqual(transplant.controls.map(({assetId, ...control}) => ({
+            ...control, ...(assetId ? {artwork: transplant.presentation.assets[assetId].data} : {})
+        })), copiedControls);
         assert.equal(transplant.catalog, null);
 
         await paste.click();
@@ -556,7 +561,7 @@ async function download(page, id, directory) {
 
         const artLayout = await download(artwork, "#save", temp);
         const settings = JSON.parse(artLayout);
-        assert.equal(settings.controls[3].artwork, "data:image/svg+xml;base64," + logo.buffer.toString("base64"));
+        assert.equal(savedArtwork(settings, settings.controls[3]), "data:image/svg+xml;base64," + logo.buffer.toString("base64"));
         assert.equal(settings.theme.backgroundFit, "contain");
         await loadLayout(artLayout);
         await artwork.getByText("Layout opened.", {exact: true}).waitFor();
@@ -576,6 +581,7 @@ async function download(page, id, directory) {
         await standalone.screenshot({path: path.join(temp, "panel-artwork-phone.png")});
 
         const active = svg("script.svg", "<script>throw 1</script>");
+        delete settings.theme.backgroundAsset;
         settings.theme.backgroundArtwork = "data:image/svg+xml;base64," + active.buffer.toString("base64");
         await loadLayout(JSON.stringify(settings));
         await artwork.getByText("The layout has invalid background artwork.", {exact: true}).waitFor();
@@ -1516,7 +1522,7 @@ async function download(page, id, directory) {
         await hardwarePreview.locator(".knob-reduction-ring").waitFor();
         assert.match(await hardwarePreview.locator(".knob-reduction-reading").textContent(), /^GR [0-9.]+ dB$/);
         const savedHardware = JSON.parse(await download(hardware, "#save", temp));
-        assert.match(savedHardware.theme.backgroundArtwork, /^data:image\/webp;base64,/);
+        assert.match(savedBackground(savedHardware), /^data:image\/webp;base64,/);
         assert.equal(savedHardware.controls[0].artworkMode, "cap");
         assert.equal(savedHardware.controls[0].showGainReduction, true);
         assert.equal(savedHardware.controls[2].artworkMode, "cap");
@@ -1539,7 +1545,7 @@ async function download(page, id, directory) {
         await hardwareExport.goto(origin + "/hardware.html");
         await hardwareExport.evaluate(parameters => window.receive({type: "parameters", parameters}), savedHardware.catalog);
         await hardwareExport.locator('main[data-layout="phone"] .fader[data-hardware-artwork=cap]').waitFor();
-        assert.equal(await hardwareExport.locator("main > .panel-background").getAttribute("src"), savedHardware.theme.backgroundArtwork);
+        assert.equal(await hardwareExport.locator("main > .panel-background").getAttribute("src"), savedBackground(savedHardware));
         assert.equal(await hardwareExport.locator(".stepper .led-code").textContent(), "A1");
         const reductionRing = hardwareExport.locator(".knob-reduction-ring");
         const reductionReading = hardwareExport.getByRole("meter", {name: "Input trim gain reduction"});
@@ -1680,14 +1686,70 @@ async function download(page, id, directory) {
         await jogWheel.click();
         const tapeLayout = JSON.parse(await download(hardware, "#save", temp));
         const tapeKnob = tapeLayout.controls.find(control => control.kind === "knob");
-        assert.equal(tapeKnob.artwork, await jogWheel.locator("img").getAttribute("src"));
+        assert.equal(savedArtwork(tapeLayout, tapeKnob), await jogWheel.locator("img").getAttribute("src"));
         assert.equal(tapeKnob.artworkMode, "cap");
         const tapeHtml = await download(hardware, "#export", temp);
         for (const kind of ["knob", "fader", "meter", "momentary", "indicator"]) {
             const control = tapeLayout.controls.find(control => control.kind === kind);
-            assert.match(control.artwork, /^data:image\/webp;base64,/);
-            assert.ok(tapeHtml.includes(control.artwork), `Export lost artwork for ${kind}`);
+            assert.match(savedArtwork(tapeLayout, control), /^data:image\/webp;base64,/);
+            assert.ok(tapeHtml.includes(savedArtwork(tapeLayout, control)), `Export lost artwork for ${kind}`);
         }
+
+        // The same controls remain mounted while the theme and materials change.
+        const skinPage = await context.newPage();
+        skinPage.on("pageerror", error => errors.push(error));
+        await skinPage.route(origin + "/**", serveDesigner);
+        await skinPage.goto(origin + "/index.html");
+        await skinPage.locator("#appearance-library summary").click();
+        await skinPage.locator("#appearance-demo").click();
+        await skinPage.getByText("Theme comparison loaded.", {exact: true}).waitFor();
+        const skinEditor = skinPage.frameLocator("#preview-panel iframe");
+        const drive = skinEditor.getByRole("slider", {name: "Drive"});
+        await drive.waitFor();
+        await drive.press("ArrowUp");
+        const driveValue = await drive.inputValue();
+        const originalDrive = await drive.elementHandle();
+        const hdrColor = await skinEditor.locator("body").evaluate(body => getComputedStyle(body).backgroundColor);
+        const hdrBinding = await download(skinPage, "#export-cpp", temp);
+        const hdr = JSON.parse(await download(skinPage, "#appearance-native", temp));
+        await skinPage.locator("#appearance-theme").selectOption("modern");
+        await skinEditor.locator("body").evaluate((body, before) => new Promise(resolve => {
+            const next = () => getComputedStyle(body).backgroundColor !== before ? resolve() : requestAnimationFrame(next);
+            next();
+        }), hdrColor);
+        assert.equal(await originalDrive.evaluate(element => element.isConnected), true);
+        assert.equal(await drive.inputValue(), driveValue);
+        assert.equal(await download(skinPage, "#export-cpp", temp), hdrBinding);
+        const modern = JSON.parse(await download(skinPage, "#appearance-native", temp));
+        const geometry = scene => scene.controls.map(({id, kind, rect, value}) => ({id, kind, rect, value}));
+        assert.deepEqual(geometry(hdr), geometry(modern));
+        assert.notEqual(hdr.colors.accent, modern.colors.accent);
+        await skinPage.locator("#appearance-search").fill("knurled graphite");
+        await skinPage.locator("#appearance-results").getByRole("button", {name: "Knurled graphite knob"}).click();
+        const durable = JSON.parse(await download(skinPage, "#save", temp));
+        assert.ok(durable.presentation.assets[durable.controls.find(control => control.kind === "knob").assetId].data);
+        await skinPage.locator("#appearance-asset-file").setInputFiles({
+            name: "Round mask.svg", mimeType: "image/svg+xml",
+            buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><circle cx="64" cy="64" r="55" fill="white"/></svg>')
+        });
+        await skinPage.locator("#appearance-material").selectOption("dial");
+        await skinPage.locator('#appearance-fields select[name="mask"]').selectOption({label: "Round mask.svg"});
+        await skinPage.getByRole("button", {name: "Apply material"}).click();
+        await skinPage.getByLabel("Edit layout").selectOption("phone");
+        const portrait = JSON.parse(await download(skinPage, "#appearance-native", temp));
+        assert.notEqual(portrait.width, hdr.width);
+        assert.equal(portrait.controls.length, hdr.controls.length);
+        assert.equal(portrait.assets.length, 2, "WebP face and SVG mask did not bake to native images");
+        if (process.env.CELL_SKIN_PREVIEW) {
+            for (const [name, scene] of Object.entries({hdr, modern, portrait})) {
+                const input = path.join(temp, `${name}.cellskin.json`);
+                await fs.writeFile(input, JSON.stringify(scene));
+                const image = path.join(temp, `${name}-native.png`);
+                execFileSync(process.env.CELL_SKIN_PREVIEW, [input, image, "2"]);
+                assert.ok((await fs.stat(image)).size > 1000, "native image missing");
+            }
+        }
+        await skinPage.close();
 
         if (process.env.CELL_BANKED_FIXTURE) {
             const banked = await browser.newPage({viewport: {width: 850, height: 600}});
