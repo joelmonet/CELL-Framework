@@ -582,7 +582,12 @@ the bundled assets and keeps external connections disabled.
 
 CLAP meters publish `input-peak`, `input-rms`, `output-peak` and
 `output-rms`. A processor implementing `GainReductionSource` also
-publishes `gain-reduction` in positive dB.
+publishes `gain-reduction` in positive dB. In the Designer, select a knob
+and turn on **Show gain reduction**. The ring follows the meter's range
+and the GR readout shows the attenuation in dB. The knob pointer, readout,
+and automation still follow its bound parameter. Designer preview simulates
+the meter. A hosted editor shows the ring and GR value when a valid
+`gain-reduction` meter is available.
 
 For a native macOS check, choose **Load showcase** in the designer before
 exporting both files. With the gain example configured, build and run the

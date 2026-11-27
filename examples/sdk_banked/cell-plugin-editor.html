@@ -36,6 +36,10 @@ button[data-held]{border-color:var(--accent);box-shadow:inset 0 0 0 2px var(--ac
 .knob input{position:absolute;inset:0;opacity:0;height:100%;cursor:ns-resize;touch-action:none}
 .dial{position:relative;width:min(100%,70px);aspect-ratio:1;border-radius:50%;border:1px solid currentColor;pointer-events:none}
 .dial::after{content:"";position:absolute;inset:7%;background:linear-gradient(var(--accent),var(--accent)) center top/4px 23% no-repeat;transform:rotate(var(--angle,-135deg))}
+.knob-reduction-ring{position:absolute;z-index:1;inset:-4px;border-radius:50%;pointer-events:none;
+background:conic-gradient(from 225deg,var(--accent) 0 var(--reduction-sweep,0deg),#80808055 0 270deg,transparent 0);
+mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 2px))}
+.knob-reduction-reading{font-size:.8em;font-variant-numeric:tabular-nums;align-self:center;overflow-wrap:anywhere}
 .detents{position:absolute;inset:-9px;pointer-events:none}
 .detents span{position:absolute;inset:0;transform:rotate(var(--detent-angle))}
 .detents span::before{content:"";position:absolute;top:0;left:calc(50% - 1px);width:2px;height:5px;border-radius:2px;background:currentColor;opacity:.58}
@@ -169,6 +173,7 @@ const isProgramControl = kind => ["bank", "program", "patch-name", "program-grid
         const states = new Map();
         const bindings = new Map();
         const meters = new Map();
+        const reductionMeters = [];
         const indicatorMeters = new Map(), indicatorParameters = new Map();
         const parameters = new Map();
         const owners = new Map();
@@ -1049,6 +1054,20 @@ const isProgramControl = kind => ["bank", "program", "patch-name", "program-grid
                 binding.detentCaptions.className = "detent-captions";
                 binding.dial.append(binding.detentMarks, binding.detentCaptions);
                 face.append(binding.dial);
+                if (control.showGainReduction) {
+                    const ring = document.createElement("span");
+                    ring.className = "knob-reduction-ring";
+                    ring.hidden = true;
+                    binding.dial.prepend(ring);
+                    const reading = document.createElement("span");
+                    reading.className = "knob-reduction-reading";
+                    reading.setAttribute("role", "meter");
+                    reading.setAttribute("aria-live", "off");
+                    nameElement(control, reading, "aria-label", label => label + " gain reduction");
+                    reading.hidden = true;
+                    item.append(reading);
+                    reductionMeters.push({ring, reading});
+                }
             }
             const buttonKind = control.kind === "toggle" || control.kind === "momentary";
             const input = document.createElement(control.kind === "choice" ? "select" : buttonKind ? "button" : "input");
@@ -1170,10 +1189,12 @@ const isProgramControl = kind => ["bank", "program", "patch-name", "program-grid
         let pendingSnapshot, receivedSnapshot, receiving = false, requestedDeltas = false;
         bridge.onMessage(message => {
             if (message.type === "meters" && Array.isArray(message.meters)) {
+                let reduction;
                 for (const signal of message.meters) {
                     if (!signal || ![signal.value, signal.minimum, signal.maximum].every(Number.isFinite) ||
                         signal.minimum >= signal.maximum) continue;
                     const value = Math.min(Math.max(signal.value, signal.minimum), signal.maximum);
+                    if (signal.key === "gain-reduction") reduction = {minimum: signal.minimum, maximum: signal.maximum, value};
                     for (const indicator of indicatorMeters.get(signal.key) ?? []) updateIndicator(indicator, value);
                     for (const {output, gauge, face, marks} of meters.get(signal.key) ?? []) {
                         gauge.min = signal.minimum;
@@ -1184,6 +1205,19 @@ const isProgramControl = kind => ["bank", "program", "patch-name", "program-grid
                         marks.forEach((mark, i) => { mark.textContent = String(Math.round(levels[i])); });
                         face.style.setProperty("--needle", `${-50 + 100 * (value - signal.minimum) / (signal.maximum - signal.minimum)}deg`);
                     }
+                }
+                for (const {ring, reading} of reductionMeters) {
+                    ring.hidden = reading.hidden = !reduction;
+                    if (!reduction) continue;
+                    const {minimum, maximum, value} = reduction;
+                    const sweep = 270 * (value - minimum) / (maximum - minimum);
+                    ring.style.setProperty("--reduction-sweep", sweep + "deg");
+                    const text = value.toFixed(1) + " dB";
+                    reading.setAttribute("aria-valuemin", minimum);
+                    reading.setAttribute("aria-valuemax", maximum);
+                    reading.setAttribute("aria-valuenow", value);
+                    reading.setAttribute("aria-valuetext", text);
+                    reading.textContent = "GR " + text;
                 }
                 return;
             }

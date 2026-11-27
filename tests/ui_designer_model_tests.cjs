@@ -327,6 +327,17 @@ assert.ok(shared.includes("array<cell::ParamId, 0> readOnlyParameters"));
 for (const override of [{indicatorSource: "action"}, {threshold: "1"}, {threshold: null}, {kind: "toggle", threshold: 1}])
     assert.throws(() => model.readClipboard(model.writeClipboard([{...lamp, ...override}])), /lamp source/);
 
+const meteredKnob = {...cap, label: "Saturation", showGainReduction: true};
+const metered = model.readProject(model.serialize([meteredKnob], panelTheme, null)).controls[0];
+assert.equal(metered.showGainReduction, true);
+assert.deepEqual(model.readClipboard(model.writeClipboard([metered])), [metered]);
+assert.deepEqual(model.parameterKeys([metered]), [metered.key]);
+assert.deepEqual(model.meterKeys([metered, {...metered}, {...meterLamp, key: "gain-reduction"}]), ["gain-reduction"]);
+assert.ok(model.cppBindings([metered]).includes('array<std::string_view, 1> meters'));
+assert.throws(() => model.readClipboard(model.writeClipboard([{...metered, showGainReduction: "true"}])), /Invalid settings/);
+assert.throws(() => model.readClipboard(model.writeClipboard([{...lamp, showGainReduction: true}])), /Invalid settings/);
+assert.equal(model.readClipboard(model.writeClipboard([{...metered, showGainReduction: false}]))[0].showGainReduction, undefined);
+
 const hostileLabel = "<" + "/script>";
 const html = CellDesignerRuntime.html([{...project.controls[1], label: hostileLabel}], project.theme);
 assert.ok(!html.includes('"' + hostileLabel + '"'));

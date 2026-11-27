@@ -236,6 +236,8 @@ function select(items) {
         field(key).value = control[key];
     inspectPlacement(control);
     field("rotation").value = control.rotation ?? "";
+    query("#knob-meter-settings").hidden = control.kind !== "knob";
+    field("show-gain-reduction").checked = control.showGainReduction === true;
     query("#detent-settings").hidden = control.kind !== "knob";
     field("detent-label-mode").value = Array.isArray(control.detentLabels) ? "custom" : control.detentLabels ?? "none";
     field("detent-labels").value = Array.isArray(control.detentLabels) ? control.detentLabels.join("\n") : "";
@@ -1033,6 +1035,8 @@ form.onsubmit = event => {
     }
     if (displayCodes?.length) selected.displayCodes = displayCodes;
     else delete selected.displayCodes;
+    if (kind === "knob" && field("show-gain-reduction").checked) selected.showGainReduction = true;
+    else delete selected.showGainReduction;
     if (detentLabels) selected.detentLabels = detentLabels;
     else delete selected.detentLabels;
     if (rotation) selected.rotation = rotation;

@@ -8,6 +8,7 @@ const CellDesignerRuntime = (() => {
         const states = new Map();
         const bindings = new Map();
         const meters = new Map();
+        const reductionMeters = [];
         const indicatorMeters = new Map(), indicatorParameters = new Map();
         const parameters = new Map();
         const owners = new Map();
@@ -888,6 +889,20 @@ const CellDesignerRuntime = (() => {
                 binding.detentCaptions.className = "detent-captions";
                 binding.dial.append(binding.detentMarks, binding.detentCaptions);
                 face.append(binding.dial);
+                if (control.showGainReduction) {
+                    const ring = document.createElement("span");
+                    ring.className = "knob-reduction-ring";
+                    ring.hidden = true;
+                    binding.dial.prepend(ring);
+                    const reading = document.createElement("span");
+                    reading.className = "knob-reduction-reading";
+                    reading.setAttribute("role", "meter");
+                    reading.setAttribute("aria-live", "off");
+                    nameElement(control, reading, "aria-label", label => label + " gain reduction");
+                    reading.hidden = true;
+                    item.append(reading);
+                    reductionMeters.push({ring, reading});
+                }
             }
             const buttonKind = control.kind === "toggle" || control.kind === "momentary";
             const input = document.createElement(control.kind === "choice" ? "select" : buttonKind ? "button" : "input");
@@ -1009,10 +1024,12 @@ const CellDesignerRuntime = (() => {
         let pendingSnapshot, receivedSnapshot, receiving = false, requestedDeltas = false;
         bridge.onMessage(message => {
             if (message.type === "meters" && Array.isArray(message.meters)) {
+                let reduction;
                 for (const signal of message.meters) {
                     if (!signal || ![signal.value, signal.minimum, signal.maximum].every(Number.isFinite) ||
                         signal.minimum >= signal.maximum) continue;
                     const value = Math.min(Math.max(signal.value, signal.minimum), signal.maximum);
+                    if (signal.key === "gain-reduction") reduction = {minimum: signal.minimum, maximum: signal.maximum, value};
                     for (const indicator of indicatorMeters.get(signal.key) ?? []) updateIndicator(indicator, value);
                     for (const {output, gauge, face, marks} of meters.get(signal.key) ?? []) {
                         gauge.min = signal.minimum;
@@ -1023,6 +1040,19 @@ const CellDesignerRuntime = (() => {
                         marks.forEach((mark, i) => { mark.textContent = String(Math.round(levels[i])); });
                         face.style.setProperty("--needle", `${-50 + 100 * (value - signal.minimum) / (signal.maximum - signal.minimum)}deg`);
                     }
+                }
+                for (const {ring, reading} of reductionMeters) {
+                    ring.hidden = reading.hidden = !reduction;
+                    if (!reduction) continue;
+                    const {minimum, maximum, value} = reduction;
+                    const sweep = 270 * (value - minimum) / (maximum - minimum);
+                    ring.style.setProperty("--reduction-sweep", sweep + "deg");
+                    const text = value.toFixed(1) + " dB";
+                    reading.setAttribute("aria-valuemin", minimum);
+                    reading.setAttribute("aria-valuemax", maximum);
+                    reading.setAttribute("aria-valuenow", value);
+                    reading.setAttribute("aria-valuetext", text);
+                    reading.textContent = "GR " + text;
                 }
                 return;
             }
@@ -1106,11 +1136,10 @@ const CellDesignerRuntime = (() => {
         }
     }
 
-    function simulate(controls, catalog, memory, values, generation, isProgramControl, isPanelArt, isMeterBinding, actions, keys) {
+    function simulate(controls, catalog, memory, values, generation, isProgramControl, isPanelArt, isMeterBinding, actions, keys, meterKeys) {
         const byKey = new Map((catalog ?? []).map(parameter => [parameter.key, parameter]));
         const parameters = new Map();
         const prior = new Map(values);
-        const meterKeys = new Set();
         const stepperKeys = new Set(controls.filter(control => control.kind === "stepper").map(control => control.key));
         function addParameter(key, fallback) {
             if (parameters.has(key) || (catalog && !byKey.has(key))) return;
@@ -1121,7 +1150,7 @@ const CellDesignerRuntime = (() => {
         }
         for (const control of controls) {
             const {kind, key} = control;
-            if (isMeterBinding(control)) { meterKeys.add(key); continue; }
+            if (isMeterBinding(control)) continue;
             if (["text", "action", "action-pair"].includes(kind) || (kind === "led" && !key) ||
                 isProgramControl(kind) || isPanelArt(kind) || parameters.has(key)) continue;
             const fallback = stepperKeys.has(key) ? {minimum: 0, maximum: 99, step: 1, unit: ""} :
@@ -1137,13 +1166,13 @@ const CellDesignerRuntime = (() => {
             onMessage(callback) {
                 listener = callback;
                 publish();
-                if (meterKeys.size) {
+                if (meterKeys.length) {
                     const signal = () => {
                         const time = performance.now() / 690;
-                        listener({type: "meters", meters: [...meterKeys].map((key, index) => ({
-                            key, minimum: -60, maximum: 0, unit: "dBFS",
-                            value: -24 - (key.endsWith("rms") ? 9 : 0) + 9 * Math.sin(time + index) + 4 * Math.sin(time * 2.3)
-                        }))});
+                        listener({type: "meters", meters: meterKeys.map((key, index) => key === "gain-reduction"
+                            ? {key, minimum: 0, maximum: 60, unit: "dB", value: 9 + 7 * Math.sin(time)}
+                            : {key, minimum: -60, maximum: 0, unit: "dBFS",
+                                value: -24 - (key.endsWith("rms") ? 9 : 0) + 9 * Math.sin(time + index) + 4 * Math.sin(time * 2.3)})});
                     };
                     signal();
                     setInterval(signal, 100);
@@ -1213,6 +1242,10 @@ button[data-held]{border-color:var(--accent);box-shadow:inset 0 0 0 2px var(--ac
 .knob input{position:absolute;inset:0;opacity:0;height:100%;cursor:ns-resize;touch-action:none}
 .dial{position:relative;width:min(100%,70px);aspect-ratio:1;border-radius:50%;border:1px solid currentColor;pointer-events:none}
 .dial::after{content:"";position:absolute;inset:7%;background:linear-gradient(var(--accent),var(--accent)) center top/4px 23% no-repeat;transform:rotate(var(--angle,-135deg))}
+.knob-reduction-ring{position:absolute;z-index:1;inset:-4px;border-radius:50%;pointer-events:none;
+background:conic-gradient(from 225deg,var(--accent) 0 var(--reduction-sweep,0deg),#80808055 0 270deg,transparent 0);
+mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 2px))}
+.knob-reduction-reading{font-size:.8em;font-variant-numeric:tabular-nums;align-self:center;overflow-wrap:anywhere}
 .detents{position:absolute;inset:-9px;pointer-events:none}
 .detents span{position:absolute;inset:0;transform:rotate(var(--detent-angle))}
 .detents span::before{content:"";position:absolute;top:0;left:calc(50% - 1px);width:2px;height:5px;border-radius:2px;background:currentColor;opacity:.58}
@@ -1373,7 +1406,7 @@ main[data-layout=phone] .meter-face{min-height:62px}
     function html(controls, theme, preview) {
         const {phoneGrid, phonePlacements, readingOrder, layerOrder, layerPriority, stepCount, maxDetentLabels, isPanelArt, isProgramControl, hasDisplayArtwork, hasSwitchArtwork, isMeterBinding,
             readPrograms, defaultTheme, ledGlyphs, displayCode, numericLedCode, actionBindings,
-            conditionRules, compareValue, parameterKeys, typographyFamilies} = CellDesignerModel;
+            conditionRules, compareValue, parameterKeys, meterKeys, typographyFamilies} = CellDesignerModel;
         const phone = phonePlacements(controls);
         // Authored stacks stay in the same order as the canvas across both responsive layouts.
         // For older layouts, equal default priorities continue to follow the grid's reading order.
@@ -1383,7 +1416,7 @@ main[data-layout=phone] .meter-face{min-height:62px}
             layer: ranks?.get(control) ?? layerPriority(control),
             visibleRules: conditionRules(control.visibleWhen), enabledRules: conditionRules(control.enabledWhen)})).sort(readingOrder);
         const simulation = preview
-            ? `(${simulate.toString()})(controls,${json(preview.catalog)},${json(preview.programs ?? null)},${json(preview.values)},${preview.generation},isProgramControl,isPanelArt,${isMeterBinding.toString()},${json(actionBindings(controls))},${json(parameterKeys(controls))});` : "";
+            ? `(${simulate.toString()})(controls,${json(preview.catalog)},${json(preview.programs ?? null)},${json(preview.values)},${preview.generation},isProgramControl,isPanelArt,${isMeterBinding.toString()},${json(actionBindings(controls))},${json(parameterKeys(controls))},${json(meterKeys(controls))});` : "";
         const colors = Object.keys(defaultTheme).map(name => `--${name}:${theme[name]}`).join(";");
         const background = {artwork: theme.backgroundArtwork, fit: theme.backgroundFit ?? "cover"};
         const rows = Math.ceil(sorted.reduce((maximum, control) => Math.max(maximum, control.y + control.height), 1));

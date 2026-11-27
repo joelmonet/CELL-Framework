@@ -474,13 +474,14 @@ const CellDesignerModel = (() => {
             throw new Error(`Control ${index + 1} has an unsupported "cells" field. Segmented displays use exactly two cells.`);
         const {kind, label, key = "", x, y, width = kinds[kind]?.width, height = 1,
             accent = "", artwork = "", artworkMode, skin = "modern", phone, fit = "contain",
-            direction = "horizontal", thickness = 2, displayCodes, segmented, detentLabels, rotation = 0, layer} = control ?? {};
+            direction = "horizontal", thickness = 2, displayCodes, segmented, detentLabels, showGainReduction, rotation = 0, layer} = control ?? {};
         const normalizedLabel = readLabel(label);
         if (typeof kind !== "string" || !Object.hasOwn(kinds, kind) || !normalizedLabel ||
             (hasBinding(kind) && !(kind === "led" && key === "") && !validText(key)) ||
             typeof skin !== "string" || !Object.hasOwn(skins, skin) ||
             !validBox({x, y, width, height}, wideGrid) ||
             (detentLabels !== undefined && kind !== "knob") ||
+            (showGainReduction !== undefined && (kind !== "knob" || typeof showGainReduction !== "boolean")) ||
             typeof accent !== "string" || (accent && !color.test(accent)) ||
             (artwork !== "" && (!hasArtwork(kind) || !validArtwork(artwork, kind === "image" ? maxPanelAssetBytes : maxAssetBytes))) ||
             (artworkMode !== undefined && (!artwork || !validArtworkMode(kind, artworkMode))) ||
@@ -500,6 +501,7 @@ const CellDesignerModel = (() => {
         const angle = readRotation(rotation);
         if (angle) result.rotation = angle;
         if (detentLabels !== undefined) result.detentLabels = readDetentLabels(detentLabels);
+        if (showGainReduction) result.showGainReduction = true;
         Object.assign(result, buttonSettings(kind, control));
         Object.assign(result, ruleSettings(control));
         Object.assign(result, ledSettings(control));
@@ -752,7 +754,10 @@ const CellDesignerModel = (() => {
     }
 
     function meterKeys(controls) {
-        return [...new Set(controls.filter(isMeterBinding).map(control => control.key))];
+        return [...new Set(controls.flatMap(control => {
+            if (isMeterBinding(control)) return [control.key];
+            return control.kind === "knob" && control.showGainReduction ? ["gain-reduction"] : [];
+        }))];
     }
 
     function actionBindings(controls) {

@@ -1511,14 +1511,20 @@ async function download(page, id, directory) {
         await dial.waitFor();
         await hardware.locator("#panel-artwork-options").locator("..").locator("summary").click();
         await hardware.getByRole("button", {name: "Slate powder coat"}).click();
+        await hardware.getByLabel("Show gain reduction").check();
+        await hardware.getByRole("button", {name: "Apply", exact: true}).click();
+        await hardwarePreview.locator(".knob-reduction-ring").waitFor();
+        assert.match(await hardwarePreview.locator(".knob-reduction-reading").textContent(), /^GR [0-9.]+ dB$/);
         const savedHardware = JSON.parse(await download(hardware, "#save", temp));
         assert.match(savedHardware.theme.backgroundArtwork, /^data:image\/webp;base64,/);
         assert.equal(savedHardware.controls[0].artworkMode, "cap");
+        assert.equal(savedHardware.controls[0].showGainReduction, true);
         assert.equal(savedHardware.controls[2].artworkMode, "cap");
         await hardware.locator("#layout-file").setInputFiles({name: "hardware.json", mimeType: "application/json",
             buffer: Buffer.from(JSON.stringify(savedHardware))});
         await hardware.getByText("Layout opened.", {exact: true}).waitFor();
         assert.equal(await hardware.getByRole("button", {name: "Slate powder coat"}).getAttribute("aria-pressed"), "true");
+        assert.equal(await hardware.getByLabel("Show gain reduction").isChecked(), true);
 
         const hardwareHtml = await download(hardware, "#export", temp);
         const hardwareExport = await browser.newPage({viewport: {width: 390, height: 600}});
@@ -1535,6 +1541,29 @@ async function download(page, id, directory) {
         await hardwareExport.locator('main[data-layout="phone"] .fader[data-hardware-artwork=cap]').waitFor();
         assert.equal(await hardwareExport.locator("main > .panel-background").getAttribute("src"), savedHardware.theme.backgroundArtwork);
         assert.equal(await hardwareExport.locator(".stepper .led-code").textContent(), "A1");
+        const reductionRing = hardwareExport.locator(".knob-reduction-ring");
+        const reductionReading = hardwareExport.getByRole("meter", {name: "Input trim gain reduction"});
+        const knobValue = hardwareExport.getByRole("slider", {name: "Input trim"});
+        const knobPosition = await knobValue.inputValue();
+        assert.equal(await reductionRing.isVisible(), false);
+        const sendReduction = value => hardwareExport.evaluate(value => window.receive({type: "meters",
+            meters: value === null ? [] : [{key: "gain-reduction", value, minimum: 0, maximum: 60, unit: "dB"}]}), value);
+        await sendReduction(15);
+        assert.equal(await reductionReading.textContent(), "GR 15.0 dB");
+        assert.equal(await reductionReading.getAttribute("aria-valuetext"), "15.0 dB");
+        assert.equal(await reductionRing.evaluate(node => node.style.getPropertyValue("--reduction-sweep")), "67.5deg");
+        assert.match(await reductionRing.evaluate(node => getComputedStyle(node).backgroundImage), /conic-gradient/);
+        assert.equal(await knobValue.inputValue(), knobPosition);
+        await knobValue.press("ArrowUp");
+        assert.notEqual(await knobValue.inputValue(), knobPosition);
+        assert.equal(await reductionReading.getAttribute("aria-valuenow"), "15");
+        await hardwareExport.locator(".control.knob").screenshot({path: path.join(temp, "knob-gain-reduction.png")});
+        await sendReduction(80);
+        assert.equal(await reductionReading.getAttribute("aria-valuenow"), "60");
+        await sendReduction(0);
+        assert.equal(await reductionReading.getAttribute("aria-valuenow"), "0");
+        await sendReduction(null);
+        assert.equal(await reductionRing.isVisible(), false);
         await hardwareExport.screenshot({path: path.join(temp, "hardware-export-phone.png"), fullPage: true});
         await fs.writeFile(path.join(temp, "hardware-editor.html"), hardwareHtml);
         const hostedModes = ["Mono", "Tape", "Symphonic", "Studio"];
