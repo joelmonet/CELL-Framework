@@ -1,4 +1,5 @@
 #include <cell/text.hpp>
+#include <cell/ui_palette.hpp>
 #include <cell/ui.hpp>
 #include <blend2d/blend2d.h>
 #include "cell_font.hpp"
@@ -16,7 +17,7 @@
 namespace cell::ui {
 namespace {
 BLContext& ctx(void* p) { return *static_cast<BLContext*>(p); }
-BLRgba32 rgba(Color c) { return BLRgba32(c.argb); }
+BLRgba32 rgba(Color c) { return BLRgba32(PaletteScope::map(c).argb); }
 BLRect rect(Rect r) { return {r.x,r.y,r.width,r.height}; }
 }
 

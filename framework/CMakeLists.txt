@@ -262,6 +262,7 @@ if(CELL_SDK_EXAMPLES)
         target_link_libraries(cell_popup_menu_layout_tests PRIVATE Cell::UI)
         add_test(NAME cell_popup_menu_layout COMMAND cell_popup_menu_layout_tests)
         add_subdirectory("${CELL_FRAMEWORK_SOURCE_ROOT}/examples/control_gallery" "${CMAKE_CURRENT_BINARY_DIR}/control-gallery")
+        add_subdirectory("${CELL_FRAMEWORK_SOURCE_ROOT}/examples/native_theme_editor" "${CMAKE_CURRENT_BINARY_DIR}/native-theme-editor")
         add_subdirectory("${CELL_FRAMEWORK_SOURCE_ROOT}/examples/effects_gallery" "${CMAKE_CURRENT_BINARY_DIR}/effects-gallery")
     endif()
 endif()
@@ -561,6 +562,10 @@ if(CELL_SDK_TESTS)
         add_executable(cell_ui_components_tests "${CELL_FRAMEWORK_SOURCE_ROOT}/tests/ui_components_tests.cpp")
         target_link_libraries(cell_ui_components_tests PRIVATE Cell::UI)
         add_test(NAME cell_ui_components COMMAND cell_ui_components_tests)
+        add_executable(cell_ui_theme_tests "${CELL_FRAMEWORK_SOURCE_ROOT}/tests/ui_theme_tests.cpp")
+        target_link_libraries(cell_ui_theme_tests PRIVATE Cell::UI)
+        add_test(NAME cell_ui_theme_system COMMAND cell_ui_theme_tests "${CMAKE_CURRENT_BINARY_DIR}/theme-test-data")
+        set_tests_properties(cell_ui_theme_system PROPERTIES TIMEOUT 90)
     endif()
     if(TARGET cell_web_bridge_example)
         add_test(NAME cell_web_bridge_example COMMAND cell_web_bridge_example)
@@ -700,6 +705,14 @@ install(FILES "${CMAKE_CURRENT_LIST_DIR}/AUTOMATION.md" "${CMAKE_CURRENT_LIST_DI
 install(FILES "${CMAKE_CURRENT_LIST_DIR}/FONTS-AND-LOCALIZATION.md" "${CMAKE_CURRENT_LIST_DIR}/FILES-AND-STREAMS.md" "${CMAKE_CURRENT_LIST_DIR}/MIDI-OUTPUT.md" "${CMAKE_CURRENT_LIST_DIR}/MIDI-FILES.md" "${CMAKE_CURRENT_LIST_DIR}/PROJECT-STATE.md"
     "${CMAKE_CURRENT_LIST_DIR}/GOG-FORMAT.md" "${CMAKE_CURRENT_LIST_DIR}/TCI-FORMAT.md"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/docs")
+
+if(CELL_SDK_UI)
+    install(FILES
+        "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/native_theme_editor/CMakeLists.txt"
+        "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/native_theme_editor/main.cpp"
+        "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/native_theme_editor/theme_editor_integration.hpp"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/examples/native_theme_editor")
+endif()
 
 file(GLOB CELL_SDK_GUIDES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/*.md")
 install(FILES ${CELL_SDK_GUIDES} DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/docs")

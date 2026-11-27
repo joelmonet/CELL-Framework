@@ -121,7 +121,7 @@ target_link_libraries(my_processor PUBLIC Cell::Core Cell::DSP)
 | --- | --- | --- |
 | `CELL_SDK_STATE` | ON | Standard-library legacy readers, migration and project state |
 | `CELL_SDK_KSP` | ON | Independent bounded script-subset compiler/runtime |
-| `CELL_SDK_UI` | OFF | Separately installed Blend2D; platform window libraries; Python 3 at build time for font embedding |
+| `CELL_SDK_UI` | OFF | Separately installed Blend2D; platform window libraries; Python 3 at build time for font embedding  [Native Theme Editor](THEME-FORMAT.md) |
 | `CELL_SDK_WEBVIEW` | OFF | System browser runtime; Windows additionally needs `CELL_WEBVIEW2_INCLUDE_DIR` |
 | `CELL_SDK_AUDIO_DEVICE` | OFF | Supplied `CELL_MINIAUDIO_INCLUDE_DIR` containing `miniaudio.h` |
 | `CELL_SDK_NETWORK_AUTH` | OFF | OpenSSL Crypto for paired UDP audio sessions in `Cell::NetworkAudio` |

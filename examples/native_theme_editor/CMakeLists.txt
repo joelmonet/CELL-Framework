@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.24)
+project(CellNativeThemeEditor LANGUAGES CXX)
+if(NOT TARGET Cell::UI)
+    find_package(Cell CONFIG REQUIRED COMPONENTS UI)
+endif()
+add_executable(cell_native_theme_editor main.cpp)
+target_link_libraries(cell_native_theme_editor PRIVATE Cell::UI)
