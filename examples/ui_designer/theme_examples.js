@@ -15,8 +15,9 @@ const CellDesignerThemeExamples = (() => {
             "dial-track": {shape: "ellipse", fill: "shadow", edge: "edge", edgeWidth: edging},
             cap: {...face, shape: "rounded", radius: 7, edgeWidth: edging},
             pointer: {fill: "text", radius: 2}, fill: {fill: "accent", radius: 4},
-            arrow: {fill: "text", vector: {path: "M5 9 L12 16 L19 9", stroke: 1.8}},
-            reset: {fill: "text", vector: {path: "M5 11 A7 7 0 1 1 8 18 M5 5 L5 11 L11 11", stroke: 1.8}},
+            arrow: {icon: "chevron"},
+            reset: {icon: "reset"},
+            warning: {fill: "#5b302b", edge: "#e38e75", edgeWidth: 2, radius: 8},
             shine: {fill: "#ffffff12", end: "#ffffff00", radius: 8},
             selected: {fill: "surface", edge: "accent", edgeWidth: 1, radius: 8,
                 glow: {sigma: 4, color: colors.accent + "3d"}},
@@ -38,18 +39,37 @@ const CellDesignerThemeExamples = (() => {
         };
         const components = Object.fromEntries(kinds.map(kind => [kind, {name: kind, kind, layers: layers[kind], states: {
             hover: {background: "hover"}, pressed: {background: "pressed"}, selected: {background: "selected"},
-            focus: {foreground: "focus"}, disabled: {foreground: "disabled"}
+            focus: {foreground: "focus"}, disabled: {foreground: "disabled"}, warning: {background: "warning"}
         }}]));
+        components.knob.geometry = {angles: [-140, 140], pivot: [.5, .5], arc: "bipolar", origin: .5, ticks: 13};
+        components.fader.geometry = {orientation: "vertical", origin: 0, unity: .62, ticks: 9};
+        components.analysis = {name: "Response panel", kind: "panel", layers: {background: "card"}, analysis: "response"};
+        const displays = {response: {background: "background", major: "edge", minor: "#839da123",
+            axes: {range: [-18, 6], precision: 0, unit: "dB"},
+            traces: {"frequency-response": {color: "accent", width: 2}, sidechain: {color: "highlight", width: 1}}}};
         return {name, colors, typography: {label: {family: "panel-sans", weight: 600, tracking: .35},
-            value: {family: "system-mono"}}, materials, components,
+            value: {family: "system-mono"}}, materials, components, displays,
             defaults: Object.fromEntries(kinds.map(kind => [kind, kind]))};
     }
+    const hdr = definition("HDR", {
+        background: "#171615", surface: "#282624", text: "#ece1c8", accent: "#c7a46b",
+        edge: "#645b4b", muted: "#ac9f87", metal: "#4a4742", highlight: "#baa68a", shadow: "#161514"
+    }, 1, 4, "graphite-face");
+    hdr.materials.card.bevel = {kind: "raised", width: 1.5, angle: 160, light: "#ffffff19", dark: "#00000058"};
+    const modern = {
+        name: "MODERN", parent: "hdr",
+        colors: {background: "#151e25", surface: "#202c36", text: "#e0eef4", accent: "#63d5eb",
+            edge: "#354654", muted: "#93aab8", metal: "#3b4a57", highlight: "#607684", shadow: "#111a22"},
+        materials: {card: {bevel: null, edgeWidth: .5, corners: [13, 13, 9, 9]},
+            dial: {asset: null, edgeWidth: .5, gradient: {kind: "radial", center: [.44, .35],
+                stops: [{at: 0, color: "metal"},{at: .55, color: "surface"},{at: 1, color: "shadow"}]}},
+            "dial-track": {edgeWidth: .5}, cap: {edgeWidth: .5}, selected: {glow: {color: "#63d5eb3d"}}}
+    };
     return {schema: "cell.ui-theme-pack.v1", assets: {
         "graphite-face": {name: CellDesignerArtwork.knob[0].name, data: CellDesignerArtwork.knob[0].artwork}
-    }, themes: {
-        hdr: definition("HDR", {background: "#171615", surface: "#282624", text: "#ece1c8", accent: "#c7a46b",
-            edge: "#645b4b", muted: "#ac9f87", metal: "#4a4742", highlight: "#baa68a", shadow: "#161514"}, 1, 4, "graphite-face"),
-        modern: definition("MODERN", {background: "#151e25", surface: "#202c36", text: "#e0eef4", accent: "#63d5eb",
-            edge: "#354654", muted: "#93aab8", metal: "#3b4a57", highlight: "#607684", shadow: "#111a22"}, .5, 3)
-    }};
+    }, icons: {
+        chevron: {name: "Disclosure chevron", category: "toolbar", keywords: ["open", "menu"], path: "M5 9 L12 16 L19 9"},
+        reset: {name: "Reset", category: "toolbar", keywords: ["restore", "undo"], path: "M5 11 A7 7 0 1 1 8 18 M5 5 L5 11 L11 11",
+            states: {warning: {color: "accent"}}}
+    }, themes: {hdr, modern}};
 })();

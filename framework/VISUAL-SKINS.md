@@ -1,5 +1,8 @@
 # Theme packs and native skin previews
 
+For inheritance, ordered visual layers, and scalable artwork, see
+[Visual authoring Phase 2](VISUAL-AUTHORING-PHASE-2.md).
+
 Open `examples/ui_designer/index.html`, expand **Theme and asset library** and
 choose **Load HDR / MODERN comparison**. The two themes share the same controls,
 bindings, and wide and portrait positions. Use **Theme** to switch between them
@@ -35,7 +38,8 @@ Changing the theme leaves the generated C++ binding header unchanged.
 ## Import a third-party pack
 
 Select **Import theme pack** and choose a UTF-8 JSON file with schema
-`cell.ui-theme-pack.v1`. A pack is self-contained. The Designer rejects unknown
+`cell.ui-theme-pack.v1`. Use **Import pack folder** when the manifest refers to
+relative artwork files. The Designer rejects unknown
 asset and material references, remote paths, external SVG loads, and scriptable
 SVG content. Colliding IDs are renamed when importing, and their references are
 rewritten together. The original pack file is reusable across projects.

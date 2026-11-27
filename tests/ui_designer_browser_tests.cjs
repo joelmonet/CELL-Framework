@@ -1321,6 +1321,7 @@ async function download(page, id, directory) {
         await placementDesigner.getByRole("button", {name: "Live preview"}).click();
         const placementPreview = placementDesigner.frameLocator("#preview-panel iframe");
         const previewCaptions = placementPreview.locator(".detent-captions span");
+        await previewCaptions.first().waitFor();
         assert.deepEqual(await previewCaptions.allTextContents(), modeParameter.choices);
         assert.equal(await placementPreview.locator(".detent-captions [data-active]").textContent(), "Warm");
         await editPlacement("detent-label-mode").selectOption("custom");
@@ -1700,7 +1701,7 @@ async function download(page, id, directory) {
         skinPage.on("pageerror", error => errors.push(error));
         await skinPage.route(origin + "/**", serveDesigner);
         await skinPage.goto(origin + "/index.html");
-        await skinPage.locator("#appearance-library summary").click();
+        await skinPage.locator("#appearance-library > summary").click();
         await skinPage.locator("#appearance-demo").click();
         await skinPage.getByText("Theme comparison loaded.", {exact: true}).waitFor();
         const skinEditor = skinPage.frameLocator("#preview-panel iframe");
@@ -1735,6 +1736,8 @@ async function download(page, id, directory) {
         await skinPage.locator("#appearance-material").selectOption("dial");
         await skinPage.locator('#appearance-fields select[name="mask"]').selectOption({label: "Round mask.svg"});
         await skinPage.getByRole("button", {name: "Apply material"}).click();
+        await skinPage.getByText("Artwork dependencies", {exact: true}).click();
+        await skinPage.locator("#appearance-dependencies li").filter({hasText: /Round mask\.svg.*dial \(mask\)/}).waitFor();
         await skinPage.getByLabel("Edit layout").selectOption("phone");
         const portrait = JSON.parse(await download(skinPage, "#appearance-native", temp));
         assert.notEqual(portrait.width, hdr.width);
@@ -1745,10 +1748,40 @@ async function download(page, id, directory) {
                 const input = path.join(temp, `${name}.cellskin.json`);
                 await fs.writeFile(input, JSON.stringify(scene));
                 const image = path.join(temp, `${name}-native.png`);
-                execFileSync(process.env.CELL_SKIN_PREVIEW, [input, image, "2"]);
+                const frames = name === "portrait" ? "1" : "8";
+                const result = execFileSync(process.env.CELL_SKIN_PREVIEW, [input, image, "2", frames], {encoding: "utf8"});
+                if (name !== "portrait") {
+                    assert.match(result, /0 warm layer builds, 0 warm blur builds/,
+                        "high-DPI repaint rebuilt static effects");
+                    const clipped = path.join(temp, `${name}-native-clipped.png`);
+                    execFileSync(process.env.CELL_SKIN_PREVIEW, [input, clipped, "2", frames, "damage"]);
+                    assert.ok((await fs.readFile(image)).equals(await fs.readFile(clipped)),
+                        `${name} rotary damage repaint differs from a full repaint`);
+                }
                 assert.ok((await fs.stat(image)).size > 1000, "native image missing");
             }
         }
+        // Visual-only state and portable template operations keep the hosted
+        // parameter input mounted and preserve generated binding identities.
+        const portraitDrive = await drive.elementHandle();
+        await skinPage.locator("#appearance-state").selectOption("warning");
+        await skinEditor.locator('.control.knob[data-cell-preview-state="warning"]').waitFor();
+        assert.equal(await portraitDrive.evaluate(element => element.isConnected), true);
+        await skinPage.locator("#appearance-state").selectOption("");
+        await skinPage.locator("#appearance-local > summary").click();
+        const horizontalPivot = skinPage.getByLabel("Horizontal pivot");
+        await horizontalPivot.fill("0.37");
+        await horizontalPivot.press("Tab");
+        await skinPage.getByRole("button", {name: "Apply layers and geometry"}).click();
+        const pivotScene = JSON.parse(await download(skinPage, "#appearance-native", temp));
+        assert.equal(pivotScene.controls.find(control => control.kind === "knob")?.geometry?.pivot[0], .37);
+        const portable = await download(skinPage, "#appearance-export-template", temp);
+        assert.equal(JSON.parse(portable).manifest.template.style, "template");
+        assert.ok(!portable.includes('"key":'));
+        await skinPage.locator("#appearance-template-file").setInputFiles({name:"template.json",
+            mimeType:"application/json",buffer: Buffer.from(portable)});
+        await skinPage.waitForFunction(() => document.querySelector("#appearance-style").value === "template");
+        assert.equal(await download(skinPage, "#export-cpp", temp), hdrBinding);
         await skinPage.close();
 
         if (process.env.CELL_BANKED_FIXTURE) {

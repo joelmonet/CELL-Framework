@@ -4,7 +4,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const root = path.join(__dirname, "../examples/ui_designer");
-const context = vm.createContext({ assert, TextEncoder });
+const context = vm.createContext({ assert, TextEncoder, atob });
 for (const name of ["model.js", "fonts.js", "artwork.js", "theme_examples.js", "runtime.js"])
     vm.runInContext(fs.readFileSync(path.join(root, name), "utf8"), context);
 
@@ -367,6 +367,97 @@ assert.throws(() => model.readPresentation({...appearance, themes:{invalid:{name
 const modernHtml = CellDesignerRuntime.html(sharedSkin.controls, sharedSkin.theme, undefined, otherTheme);
 assert.ok(modernHtml.includes("#63d5eb"));
 assert.equal(modernHtml.split(cap.artwork).length - 1, 2, "one inline reference table plus the background");
+const frame = {
+    schema: model.themePackSchema,
+    assets: {metal: {name: "Metal frame", data: cap.artwork}},
+    themes: {
+        base: {
+            name: "Base",
+            colors: {accent: "#445566"},
+            materials: {
+                face: {fill: "accent", asset: "metal", slices: {insets:[4, 6, 4, 6], edges:"tile", transparentCenter:true}},
+                rim: {gradient:{kind:"conic", stops:[{at:0,color:"accent"},{at:.25,color:"#ffffff",opacity:.4},{at:1,color:"shadow"}]},
+                    corners:[1, 3, 5, 7], borders:[{color:"accent",width:1},{color:"shadow",width:2}]},
+                mild: {fill: "surface", texture:{asset:"metal",fit:"tile",opacity:.5,blend:"multiply"}}
+            },
+            components: {dial: {kind:"knob",layers:{background:"mild",face:"face",track:"rim"}}},
+            defaults:{knob:"dial"}
+        },
+        detail: {name:"Detail", parent:"base", colors:{accent:"#778899"},
+            materials:{face:{borders:[{color:"accent",width:2}]}},
+            components:{dial:{states:{warning:{background:"rim"}}},
+                metallic:{kind:"knob",layers:{pointer:"rim"}}},
+            transition:{duration:80,easing:"ease"}
+        }
+    }
+};
+const inherited = model.readThemePack(JSON.stringify(frame));
+inherited.activeTheme = "detail";
+const customized = {...cap, artwork:"", artworkMode:undefined, visualStyle:"metallic", visualOverrides:{layers:{track:null, face:"rim"}}};
+const look = model.resolveAppearance(customized, inherited);
+assert.equal(look.layers.background.texture.asset, "metal");
+assert.equal(look.layers.pointer.gradient.stops[0].color, "#778899");
+assert.equal(look.layers.face.corners[3], 7);
+assert.ok(!Object.hasOwn(look.layers, "track"));
+assert.equal(look.states.warning.background.gradient.kind, "conic");
+assert.equal(look.transition.duration, 80);
+const sources = model.appearanceSource(customized, inherited);
+assert.equal(sources.sources.background, "Theme default in Base");
+assert.equal(sources.sources.face, "Local override");
+const baseLook = model.resolveAppearance({...customized, visualOverrides:undefined}, inherited);
+assert.equal(baseLook.layers.face.slices.edges, "tile");
+assert.equal(baseLook.layers.face.borders[0].width, 2);
+const savedOverrides = model.readProject(model.serialize([customized], panelTheme, null, undefined, inherited));
+assert.equal(savedOverrides.controls[0].visualOverrides.layers.track, null);
+assert.equal(savedOverrides.presentation.themes.detail.parent, "base");
+assert.deepEqual(model.bindingContract(savedOverrides.controls), model.bindingContract([cap]));
+const roundtrip = JSON.parse(model.writeThemePack(inherited));
+assert.equal(Object.keys(roundtrip.assets).length, 1);
+assert.ok(!Object.hasOwn(roundtrip.themes.detail.materials.face, "asset"));
+const merged = model.readThemePack(JSON.stringify(frame), inherited);
+assert.equal(merged.themes["detail-2"].parent, "base-2");
+assert.equal(Object.keys(merged.assets).length, 1);
+assert.throws(() => model.readThemePack(JSON.stringify({...frame, themes:{...frame.themes, base:{...frame.themes.base,parent:"detail"}}})), /inheritance cycle/);
+assert.throws(() => model.readThemePack(JSON.stringify({...frame, themes:{detail:{...frame.themes.detail,parent:"absent"}}})), /missing parent theme absent/);
+const css = CellDesignerRuntime.appearanceCss([{...cap,artwork:"",artworkMode:undefined}], inherited);
+assert.ok(css.includes("conic-gradient") && css.includes("border-image:var(") && css.includes("prefers-reduced-motion"));
+const linked = JSON.parse(JSON.stringify(frame));
+linked.assets.metal = {name: "Relative frame", path: "art/frame.webp", license: "Original"};
+linked.manifest = {version: 1, name: "Linked frame", assets: ["metal"], themes:["base", "detail"], previews:["metal"]};
+linked.icons = {needle:{name:"Needle",category:"handle",keywords:["pointer"],viewBox:[0,0,10,20],
+    offset:[.5,0],path:"M5 1 L5 19",color:"accent",states:{warning:{color:"#ffffff"}}}};
+linked.themes.base.materials.glyph = {icon:"needle"};
+linked.themes.base.displays = {trace:{axes:{range:[-60,0],precision:0,unit:"dB"},
+    traces:{waveform:{color:"accent"},handle:{color:"text",mode:"points"}}}};
+linked.themes.base.components.dial.analysis = "trace";
+linked.themes.base.components.dial.geometry = {angles:[-140,130],pivot:[.4,.6],arc:"bipolar",origin:.6,ticks:9};
+linked.themes.base.components.dial.layers.pointer = "glyph";
+linked.themes.base.components.dial.stack = [
+    {id:"faceplate",material:"face",rect:[0,0,1,1],clip:true},
+    {id:"pointer",material:"glyph",rect:[.2,.2,.6,.6],pivot:[.3,.6],motion:{target:"rotate",range:[-140,130]}},
+    {id:"flash",material:"rim",visible:[.8,1],state:"warning",opacity:.45}
+];
+const linkedText = JSON.stringify(linked);
+assert.deepEqual(model.packAssetPaths(linkedText), ["art/frame.webp"]);
+assert.throws(() => model.readThemePack(linkedText), /missing relative asset art/);
+assert.throws(() => model.packAssetPaths(JSON.stringify({...linked,assets:{metal:{path:"../secret.webp"}}})), /unsafe relative asset path/);
+assert.throws(() => model.readThemePack(linkedText, undefined, new Map([["art/frame.webp", "data:image/webp;base64,AAAA"]])), /invalid.*raster/);
+const linkedPack = model.readThemePack(linkedText, undefined, new Map([["art/frame.webp", cap.artwork]]));
+assert.equal(linkedPack.assets.metal.data, cap.artwork);
+assert.equal(linkedPack.assets.metal.path, undefined);
+assert.equal(linkedPack.assets.metal.license, "Original");
+const linkedLook = model.resolveAppearance({...cap,artwork:"",artworkMode:undefined}, linkedPack);
+assert.equal(linkedLook.stack[1].motion.target,"rotate");
+assert.equal(linkedLook.stack[1].material.vector.viewBox[3],20);
+assert.equal(linkedLook.states.warning.pointer.fill,"#ffffff");
+assert.equal(linkedLook.analysis.traces.handle.mode,"points");
+const portableLook = model.visualTemplate({...cap,artwork:"",artworkMode:undefined}, linkedPack, "Bench dial");
+const importedLook = model.importVisualTemplate(portableLook, inherited);
+assert.equal(importedLook.presentation.themes.detail.components[importedLook.id].name, "Bench dial");
+assert.equal(model.resolveAppearance({...cap,visualStyle:importedLook.id}, importedLook.presentation).stack[1].motion.target,"rotate");
+assert.notEqual(importedLook.presentation.themes.detail, inherited.themes.detail);
+assert.ok(!Object.hasOwn(inherited.themes.detail.components, importedLook.id));
+assert.ok(!portableLook.includes('"key":'));
 const hostileLabel = "<" + "/script>";
 const html = CellDesignerRuntime.html([{...project.controls[1], label: hostileLabel}], project.theme);
 assert.ok(!html.includes('"' + hostileLabel + '"'));

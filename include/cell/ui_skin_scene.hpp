@@ -6,7 +6,35 @@
 
 namespace cell::ui::skins {
 
-enum class State { enabled, hover, pressed, selected, focus, disabled };
+enum class State {
+    enabled,
+    hover,
+    pressed,
+    selected,
+    focus,
+    disabled,
+    bypassed,
+    automated,
+    modulated,
+    invalid,
+    warning
+};
+
+enum class TraceRole {
+    spectrum,
+    frequencyResponse,
+    transfer,
+    gainReduction,
+    waveform,
+    meterTrack,
+    meterFill,
+    peakHold,
+    handle,
+    selectedBand,
+    mid,
+    side,
+    sidechain
+};
 
 struct CacheStats {
     std::size_t layers{}, retainedBytes{};
@@ -29,6 +57,13 @@ public:
     bool setValue(unsigned id, double normalized) noexcept;
     bool setIndicator(unsigned id, double normalized) noexcept;
     bool setState(unsigned id, State state, bool active) noexcept;
+    void setReducedMotion(bool) noexcept;
+    // A GUI can schedule additional paints while a transition is active.
+    // The scene never starts a timer or requests an idle repaint.
+    bool needsFrame() const noexcept;
+    // The GUI producer supplies normalized points. Storage is reused after the
+    // first update at a given trace size. Empty data clears the trace.
+    bool setTrace(unsigned id, TraceRole, std::span<const Point>);
     void paint(Canvas&, double deviceScale = 1);
     CacheStats cacheStats() const noexcept;
 

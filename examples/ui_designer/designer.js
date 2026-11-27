@@ -1065,10 +1065,11 @@ form.onsubmit = event => {
     status.textContent = "Control updated.";
 };
 function applyPalette(colors) {
-    const active = presentation.themes[presentation.activeTheme];
+    const active = model.activeAppearanceTheme(presentation);
     if (active) {
-        const themes = {...presentation.themes, [presentation.activeTheme]: {...active, colors: {...active.colors, ...colors}}};
-        setPresentation({...presentation, themes}, true);
+        const authored = presentation.themes[presentation.activeTheme];
+        const themes = {...presentation.themes, [presentation.activeTheme]: {...authored, colors: {...authored.colors, ...colors}}};
+        setPresentation(model.readPresentation({...presentation, themes}), true);
     } else {
         const before = snapshot();
         theme = {...theme, ...colors};
@@ -1377,7 +1378,7 @@ clearBackground.onclick = () => setBackgroundArtwork("", "Background removed.");
 function renderPreview() {
     previewFrame.srcdoc = CellDesignerRuntime.html(controlsOnly(), theme,
         {catalog, programs: programs && {...programs, active: previewProgram ?? programs.active},
-            values: [...previewValues], generation: ++generation}, presentation);
+            values: [...previewValues], generation: ++generation, state: query("#appearance-state").value}, presentation);
 }
 
 function togglePreview(show) {
@@ -1501,6 +1502,10 @@ document.head.append(appearanceStyle);
 
 function refreshAppearance(onlyPreview = false) {
     const colors = model.displayTheme(theme, presentation);
+    const extraColors = query("#appearance-extra-colors");
+    extraColors.hidden = extraColors.disabled = !presentation.activeTheme;
+    if (!extraColors.hidden)
+        for (const field of extraColors.querySelectorAll("input")) field.value = colors[field.name];
     for (const name of Object.keys(model.defaultTheme)) canvas.style.setProperty("--" + name, colors[name]);
     const css = runtime.appearanceCss(controls, presentation, "#canvas > ");
     if (appearanceStyle.textContent !== css) appearanceStyle.textContent = css;
@@ -1508,12 +1513,138 @@ function refreshAppearance(onlyPreview = false) {
     if (onlyPreview && !previewPanel.hidden && previewFrame.contentWindow) {
         previewFrame.contentWindow.postMessage({type: "cell-preview-appearance",
             css: runtime.presentationCss(controlsOnly(), theme, presentation),
-            fonts: runtime.presentationFonts(presentation)}, "*");
+            fonts: runtime.presentationFonts(presentation), looks: runtime.appearanceData(controlsOnly(), presentation),
+            state: query("#appearance-state").value}, "*");
     }
 }
 
+let copiedAppearance;
+const stackEditor = query("#appearance-stack");
+const geometryEditor = query("#appearance-geometry");
+const pivotEditor = query("#appearance-pivot");
+const pivotFields = [...pivotEditor.querySelectorAll("input")];
+
+const slotMenu = query("#appearance-slot");
+const overrideMenu = query("#appearance-override");
+for (const role of model.appearanceLayers) slotMenu.add(new Option(role, role));
+
+function refreshLocalAppearance() {
+    const target = selected ?? selection[0];
+    const look = target && model.appearanceSource(target, presentation);
+    const role = slotMenu.value;
+    overrideMenu.replaceChildren(new Option("Inherit", ""), new Option("Hide layer", "-hidden"),
+        ...Object.keys(look?.theme.materials ?? {}).map(id => new Option(id, id)));
+    const local = target?.visualOverrides?.layers;
+    overrideMenu.value = local && Object.hasOwn(local, role) ? local[role] ?? "-hidden" : "";
+    overrideMenu.disabled = !look;
+    query("#appearance-reset-local").disabled = !selection.some(control => control.visualOverrides);
+    query("#appearance-detach").disabled = !selected || !look || selected.visualOverrides?.detached;
+    query("#appearance-copy-look").disabled = !selected || !look;
+    query("#appearance-paste-look").disabled = !copiedAppearance || !selection.length || !model.activeAppearanceTheme(presentation);
+    query("#appearance-export-template").disabled = !selected || !look;
+    query("#appearance-import-template").disabled = !model.activeAppearanceTheme(presentation);
+    query("#appearance-apply-layers").disabled = !selected || !look;
+    const displays = query("#appearance-display");
+    displays.replaceChildren(new Option("Inherit", ""), ...Object.keys(look?.theme.displays ?? {}).map(id => new Option(id, id)));
+    displays.value = target?.visualOverrides?.analysis ?? "";
+    stackEditor.value = look?.stack ? JSON.stringify(look.stack, null, 2) : "";
+    geometryEditor.value = look?.geometry ? JSON.stringify(look.geometry, null, 2) : "";
+    pivotEditor.hidden = look?.kind !== "knob";
+    pivotEditor.disabled = !selected || pivotEditor.hidden;
+    pivotFields.forEach((field, i) => {field.value = look?.geometry?.pivot?.[i] ?? .5;});
+    const origin = look?.sources[role];
+    const source = origin ? `${look.layers[role]} · ${origin}` : "No material for this slot";
+    query("#appearance-source").textContent = [source, ...(look?.diagnostics ?? [])].join(". ");
+}
+
+slotMenu.onchange = refreshLocalAppearance;
+pivotEditor.onchange = () => applyArtwork(() => {
+    if (pivotFields.some(field => !field.value || !field.checkValidity())) {
+        throw new Error("Rotary pivot coordinates must be between 0 and 1.");
+    }
+    const geometry = JSON.parse(geometryEditor.value.trim() || "{}");
+    geometry.pivot = pivotFields.map(field => field.valueAsNumber);
+    geometryEditor.value = JSON.stringify(geometry, null, 2);
+});
+overrideMenu.onchange = () => {
+    const before = snapshot();
+    for (const control of selection) {
+        const local = control.visualOverrides ?? {};
+        const layers = {...local.layers};
+        if (overrideMenu.value) layers[slotMenu.value] = overrideMenu.value === "-hidden" ? null : overrideMenu.value;
+        else delete layers[slotMenu.value];
+        control.visualOverrides = {...local, layers};
+    }
+    record(before, true);
+};
+query("#appearance-reset-local").onclick = () => {
+    const before = snapshot();
+    for (const control of selection) delete control.visualOverrides;
+    record(before, true);
+};
+query("#appearance-detach").onclick = () => {
+    if (!selected) return;
+    const look = model.appearanceSource(selected, presentation);
+    if (!look) return;
+    const before = snapshot();
+    selected.visualOverrides = {detached: true, kind: look.kind, layers: look.layers, states: look.states,
+        stack: look.stack, geometry: look.geometry, analysis: look.analysis};
+    delete selected.visualStyle;
+    record(before, true);
+};
+
+query("#appearance-apply-layers").onclick = () => applyArtwork(() => {
+    if (!selected) return;
+    const before = snapshot();
+    const overrides = {...selected.visualOverrides};
+    const stack = stackEditor.value.trim();
+    const geometry = geometryEditor.value.trim();
+    if (stack) overrides.stack = JSON.parse(stack);
+    else delete overrides.stack;
+    if (geometry) overrides.geometry = JSON.parse(geometry);
+    else delete overrides.geometry;
+    const display = query("#appearance-display").value;
+    if (display) overrides.analysis = display;
+    else delete overrides.analysis;
+    selected.visualOverrides = model.readLocalAppearance(overrides, model.appearanceKind(selected.kind));
+    record(before, true);
+});
+query("#appearance-copy-look").onclick = () => applyArtwork(() => {
+    if (!selected) return;
+    copiedAppearance = model.visualTemplate(selected, presentation, selected.label.trim().split(String.fromCharCode(10))[0].slice(0, 80));
+    refreshLocalAppearance();
+    status.textContent = "Appearance copied.";
+});
+function useVisualTemplate(text, controlsToUpdate = []) {
+    const imported = model.importVisualTemplate(text, presentation);
+    if (encoder.encode(model.serialize(controlsOnly(), theme, catalog, programs, imported.presentation)).length > model.maxProjectBytes)
+        throw new Error("The template would take this layout over 2 MiB.");
+    const style = model.activeAppearanceTheme(imported.presentation).components[imported.id];
+    const before = snapshot();
+    for (const control of controlsToUpdate) {
+        if (!model.matchesAppearance(model.appearanceKind(control.kind), style)) continue;
+        control.visualStyle = imported.id;
+        delete control.visualOverrides;
+    }
+    presentation = imported.presentation;
+    record(before, true);
+}
+query("#appearance-paste-look").onclick = () => applyArtwork(() => {
+    if (copiedAppearance) useVisualTemplate(copiedAppearance, selection);
+    status.textContent = "Appearance pasted.";
+});
+query("#appearance-export-template").onclick = () => applyArtwork(() => {
+    if (!selected) return;
+    const name = selected.label.trim().split(String.fromCharCode(10))[0].slice(0, 80);
+    download(model.visualTemplate(selected, presentation, name), "application/json", "cell-visual-template.json");
+});
+bindFile(query("#appearance-import-template"), query("#appearance-template-file"), async file => {
+    if (file.size > model.maxProjectBytes) throw new Error("Template exceeds 2 MiB.");
+    useVisualTemplate(await file.text(), selection);
+});
+
 function refreshAppearanceBrowser() {
-    const active = presentation.themes[presentation.activeTheme];
+    const active = model.activeAppearanceTheme(presentation);
     const term = query("#appearance-search").value.trim().toLowerCase();
     themeSelection.replaceChildren(new Option("Layout colors", ""),
         ...Object.entries(presentation.themes).map(([id, theme]) => new Option(theme.name, id)));
@@ -1527,26 +1658,48 @@ function refreshAppearanceBrowser() {
         const entries = [
             ...Object.entries(presentation.assets).map(([id, asset]) => ({id, name: asset.name, type: "asset", asset})),
             ...Object.entries(active?.components ?? {}).map(([id, style]) => ({id, name: style.name, type: "style", style})),
+            ...Object.entries(active?.icons ?? {}).map(([id, icon]) => ({id, name: icon.name, type: "icon", icon})),
             ...[...stockArtwork].filter(([, asset]) => !registered.has(asset.artwork))
                 .map(([id, asset]) => ({id, name: asset.name, type: "stock", asset: {...asset, data: asset.artwork}}))
-        ].filter(entry => (entry.name + " " + entry.id + " " + (entry.style?.kind ?? "artwork"))
+        ].filter(entry => (entry.name + " " + entry.id + " " + (entry.style?.kind ?? "artwork") + " " +
+            (entry.icon ? entry.icon.category + " " + entry.icon.keywords.join(" ") : ""))
             .toLowerCase().includes(term));
         assetResults.replaceChildren(...entries.map(entry => {
             const button = document.createElement("button");
             button.type = "button";
-            button.draggable = true;
+            button.draggable = entry.type !== "icon";
             button.textContent = entry.name + (entry.style ? ` · ${entry.style.kind}` : "");
-            if (entry.asset) {
+            if (entry.asset || entry.icon) {
                 const image = document.createElement("img");
                 image.alt = "";
                 image.loading = "lazy";
-                image.src = entry.asset.data;
+                image.src = entry.asset?.data ?? model.iconDataUrl(entry.icon, active.colors[entry.icon.color] ?? entry.icon.color);
+                if (entry.icon) image.style.setProperty("--artwork-preview-size", query("#appearance-icon-size").value + "px");
                 button.prepend(image);
             }
             button.onclick = () => applyArtwork(() => placeAppearance(entry.type, entry.id, selected));
             button.ondragstart = event => event.dataTransfer.setData(assetDrag, JSON.stringify([entry.type, entry.id]));
             return button;
         }));
+        const dependencies = new Map();
+        for (const [id, material] of Object.entries(active?.materials ?? {})) {
+            for (const [role, asset] of [["artwork", material.asset], ["mask", material.mask], ["texture", material.texture?.asset]]) {
+                if (!asset) continue;
+                if (!dependencies.has(asset)) dependencies.set(asset, []);
+                dependencies.get(asset).push(`${id} (${role})`);
+            }
+        }
+        const list = query("#appearance-dependencies");
+        list.replaceChildren(...[...dependencies].map(([id, references]) => {
+            const item = document.createElement("li");
+            item.textContent = `${presentation.assets[id]?.name ?? "Missing artwork"} (${id}) · ${references.join(", ")}`;
+            return item;
+        }));
+        if (!dependencies.size) {
+            const item = document.createElement("li");
+            item.textContent = "This theme has no artwork dependencies.";
+            list.append(item);
+        }
     }
     const selectedStyle = selected && active ?
         (active.components[selected.visualStyle] ?? active.components[active.defaults[model.appearanceKind(selected.kind)]]) : undefined;
@@ -1559,16 +1712,91 @@ function refreshAppearanceBrowser() {
     const materialSelect = query("#appearance-material");
     const material = materialSelect.value;
     const materialIds = new Set(selectedStyle ? [
-        ...Object.values(selectedStyle.layers), ...Object.values(selectedStyle.states).flatMap(Object.values)
+        ...Object.values(selectedStyle.layers), ...Object.values(selectedStyle.states).flatMap(Object.values),
+        ...(selectedStyle.stack ?? []).map(layer => layer.material)
     ] : Object.keys(active?.materials ?? {}));
     materialSelect.replaceChildren(new Option("Choose a material", ""),
         ...[...materialIds].map(id => new Option(id, id)));
     materialSelect.value = materialIds.has(material) ? material : "";
     readMaterialFields();
+    refreshLocalAppearance();
 }
 
+function materialOption(name) {
+    return materialFields.elements.namedItem(name);
+}
+
+function updateSliceGuide() {
+    const guide = query("#appearance-slice-guide");
+    const asset = presentation.assets[materialOption("asset").value];
+    const show = materialOption("slice-enable").checked && asset;
+    guide.hidden = !show;
+    if (!show) return;
+    const bitmap = guide.querySelector("image");
+    const image = new Image();
+    image.onload = () => {
+        if (presentation.assets[materialOption("asset").value] !== asset || guide.hidden) return;
+        const width = image.naturalWidth, height = image.naturalHeight;
+        const insets = materialOption("slice-insets").value.trim().split(/\s+/).map(Number);
+        const [top, right, bottom, left] = insets.length === 4 && insets.every(Number.isFinite) ? insets : [0, 0, 0, 0];
+        guide.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        bitmap.setAttribute("width", width);
+        bitmap.setAttribute("height", height);
+        bitmap.setAttribute("href", asset.data);
+        guide.querySelector("path").setAttribute("d",
+            `M${left} 0V${height} M${width - right} 0V${height} M0 ${top}H${width} M0 ${height - bottom}H${width}`);
+    };
+    image.src = asset.data;
+}
+
+function showAdvancedMaterial(material) {
+    const gradient = material.gradient, slices = material.slices;
+    materialOption("gradient-kind").value = gradient?.kind ?? "";
+    materialOption("gradient-angle").value = gradient?.angle ?? 180;
+    materialOption("gradient-center").value = gradient?.center.join(" ") ?? ".5 .5";
+    materialOption("gradient-stops").value = gradient?.stops.map(stop =>
+        `${stop.at} ${stop.color} ${stop.opacity}`).join("\n") ?? "";
+    materialOption("slice-enable").checked = Boolean(slices);
+    materialOption("slice-insets").value = slices?.insets.join(" ") ?? "8 8 8 8";
+    materialOption("slice-minimum").value = slices?.minimum.join(" ") ?? "0 0";
+    materialOption("slice-edges").value = slices?.edges ?? "stretch";
+    materialOption("slice-center").value = slices?.center ?? "stretch";
+    materialOption("slice-transparent").checked = Boolean(slices?.transparentCenter);
+    const extras = Object.fromEntries(["corners", "borders", "bevel", "texture", "lighting", "finish"]
+        .filter(name => material[name] !== undefined).map(name => [name, material[name]]));
+    materialOption("material-extra").value = JSON.stringify(extras, null, 2);
+    updateSliceGuide();
+}
+
+function readAdvancedMaterial() {
+    const checklist = name => materialOption(name).value.trim().split(/\s+/).map(Number);
+    const draft = JSON.parse(materialOption("material-extra").value || "{}");
+    const keys = ["corners", "borders", "bevel", "texture", "lighting", "finish"];
+    if (!draft || typeof draft !== "object" || Array.isArray(draft) || Object.keys(draft).some(key => !keys.includes(key)))
+        throw new Error("Use the documented advanced material fields.");
+    const result = Object.fromEntries(keys.map(key => [key, draft[key]]));
+    if (materialOption("gradient-kind").value) {
+        result.gradient = {kind: materialOption("gradient-kind").value, angle: materialOption("gradient-angle").valueAsNumber,
+            center: checklist("gradient-center"), stops: materialOption("gradient-stops").value.trim().split(/\n/).filter(Boolean)
+                .map(line => {
+                    const [at, color, opacity = "1", extra] = line.trim().split(/\s+/);
+                    if (extra !== undefined) throw new Error("A gradient stop uses position, color, and optional opacity.");
+                    return {at: Number(at), color, opacity: Number(opacity)};
+                })};
+    }
+    if (materialOption("slice-enable").checked) {
+        result.slices = {insets: checklist("slice-insets"), minimum: checklist("slice-minimum"),
+            edges: materialOption("slice-edges").value, center: materialOption("slice-center").value,
+            transparentCenter: materialOption("slice-transparent").checked};
+    }
+    return {gradient: result.gradient, slices: result.slices, ...result};
+}
+
+for (const name of ["asset", "slice-enable", "slice-insets"])
+    materialOption(name).addEventListener("input", updateSliceGuide);
+
 function readMaterialFields() {
-    const current = presentation.themes[presentation.activeTheme]?.materials[query("#appearance-material").value];
+    const current = model.activeAppearanceTheme(presentation)?.materials[query("#appearance-material").value];
     materialFields.hidden = !current;
     if (!current) return;
     for (const name of ["fill", "end", "edge", "edgeWidth", "highlight", "radius", "opacity", "shape"])
@@ -1582,9 +1810,23 @@ function readMaterialFields() {
         menu.replaceChildren(new Option("None", ""), ...Object.entries(presentation.assets).map(([id, asset]) => new Option(asset.name, id)));
         menu.value = current[name] ?? "";
     }
+    const icons = model.activeAppearanceTheme(presentation).icons;
+    const iconMenu = materialOption("icon");
+    iconMenu.replaceChildren(new Option("None", ""), ...Object.entries(icons).map(([id, icon]) => new Option(icon.name, id)));
+    iconMenu.value = current.icon ?? "";
+    showAdvancedMaterial(current);
 }
 
 function placeAppearance(type, id, target, point) {
+    if (type === "icon") {
+        const material = query("#appearance-material").value;
+        if (!material) throw new Error("Choose a material for the icon first.");
+        const next = structuredClone(presentation);
+        const theme = next.themes[next.activeTheme];
+        (theme.materials ??= {})[material] = {...theme.materials?.[material], icon: id};
+        setPresentation(model.readPresentation(next), true);
+        return;
+    }
     if (type === "asset" || type === "stock") {
         const stock = type === "stock" ? stockArtwork.get(id) : undefined;
         const asset = stock ? {name: stock.name, data: stock.artwork} :
@@ -1598,7 +1840,7 @@ function placeAppearance(type, id, target, point) {
         }
         return;
     }
-    const pack = presentation.themes[presentation.activeTheme];
+    const pack = model.activeAppearanceTheme(presentation);
     const style = pack?.components[id];
     if (!style || !Object.hasOwn(pack.components, id)) return;
     if (target) {
@@ -1620,8 +1862,39 @@ function setPresentation(next, previewOnly = false) {
     record(before, previewOnly);
 }
 
+const previewState = query("#appearance-state");
+for (const state of model.appearanceStates) previewState.add(new Option(state, state));
+previewState.onchange = () => refreshAppearance(true);
+query("#appearance-compare").onclick = () => {
+    const comparison = query("#appearance-comparison");
+    if (!comparison.hidden) {
+        comparison.hidden = true;
+        for (const frame of comparison.querySelectorAll("iframe")) frame.removeAttribute("srcdoc");
+        return;
+    }
+    const ids = Object.keys(presentation.themes);
+    if (ids.length < 2) {
+        status.textContent = "Load two themes to compare their appearance.";
+        return;
+    }
+    const current = presentation.activeTheme || ids[0];
+    const views = [current, ids.find(id => id !== current)];
+    for (const [i, frame] of [...comparison.querySelectorAll("iframe")].entries()) {
+        const id = views[i];
+        frame.title = presentation.themes[id].name + " comparison preview";
+        frame.srcdoc = runtime.html(controlsOnly(), theme,
+            {catalog, programs, values: [...previewValues], generation: -1, state: previewState.value},
+            {...presentation, activeTheme: id});
+    }
+    comparison.hidden = false;
+};
+
 themeSelection.onchange = () => applyArtwork(() => setPresentation({...presentation, activeTheme: themeSelection.value}, true));
 query("#appearance-search").oninput = refreshAppearanceBrowser;
+query("#appearance-icon-size").onchange = () => {
+    libraryPreview = undefined;
+    refreshAppearanceBrowser();
+};
 query("#appearance-library").ontoggle = refreshAppearanceBrowser;
 query("#appearance-style").onchange = event => {
     if (!selected) return;
@@ -1637,8 +1910,10 @@ materialFields.onsubmit = event => {
         const id = query("#appearance-material").value;
         if (!id) return;
         const next = structuredClone(presentation);
-        const material = next.themes[next.activeTheme].materials[id];
-        for (const name of ["fill", "end", "edge", "edgeWidth", "highlight", "radius", "opacity", "shape", "asset", "mask"]) {
+        const authored = next.themes[next.activeTheme];
+        const current = model.activeAppearanceTheme(presentation).materials[id];
+        const material = {...current};
+        for (const name of ["fill", "end", "edge", "edgeWidth", "highlight", "radius", "opacity", "shape", "asset", "mask", "icon"]) {
             const field = materialFields.elements.namedItem(name);
             const value = field.type === "number" ? field.valueAsNumber : field.value;
             material[name] = value === "" ? undefined : value;
@@ -1648,6 +1923,12 @@ materialFields.onsubmit = event => {
             const value = name => materialFields.elements.namedItem(kind + "-" + name).valueAsNumber;
             material[kind] = color ? {color, sigma: value("sigma") || 0, x: value("x") || 0, y: value("y") || 0} : undefined;
         }
+        Object.assign(material, readAdvancedMaterial());
+        const patch = {...authored.materials?.[id]};
+        for (const [key, value] of Object.entries(material)) {
+            if (JSON.stringify(value) !== JSON.stringify(current[key])) patch[key] = value ?? null;
+        }
+        (authored.materials ??= {})[id] = patch;
         setPresentation(model.readPresentation(next), true);
     });
 };
@@ -1657,6 +1938,97 @@ bindFile(query("#appearance-import"), query("#appearance-pack-file"), async file
     const next = model.readThemePack(await file.text(), presentation);
     if (importVersion === layoutVersion) setPresentation(next, true);
 });
+const packFolder = query("#appearance-pack-folder");
+query("#appearance-import-folder").onclick = () => packFolder.click();
+packFolder.onchange = async () => {
+    const version = layoutVersion;
+    try {
+        const selectedFiles = [...packFolder.files];
+        if (!selectedFiles.length) return;
+        if (selectedFiles.length > 1024) throw new Error("The pack folder contains too many files.");
+        const byPath = new Map(selectedFiles.map(file => [file.webkitRelativePath.split("/").slice(1).join("/"), file]));
+        const definition = byPath.get("cell-theme-pack.json");
+        if (!definition || definition.size > model.maxProjectBytes)
+            throw new Error("Choose a folder with a cell-theme-pack.json file at its root.");
+        const text = await definition.text();
+        let bytes = definition.size;
+        const files = new Map();
+        for (const path of model.packAssetPaths(text)) {
+            const file = byPath.get(path);
+            if (!file) throw new Error("Missing relative asset " + path);
+            bytes += file.size;
+            if (bytes > model.maxProjectBytes) throw new Error("The pack and its assets exceed 2 MiB.");
+            files.set(path, await readArtwork(file, true));
+        }
+        if (version === layoutVersion) setPresentation(model.readThemePack(text, presentation, files), true);
+        status.textContent = "Theme pack folder imported.";
+    } catch (error) {
+        status.textContent = error.message;
+    } finally {
+        packFolder.value = "";
+    }
+};
+const watchButton = query("#appearance-watch");
+let watchedPack;
+watchButton.disabled = typeof window.showOpenFilePicker !== "function";
+if (watchButton.disabled) watchButton.title = "This browser does not support watching local files.";
+watchButton.onclick = async () => {
+    if (watchedPack) {
+        clearInterval(watchedPack.timer);
+        watchedPack = undefined;
+        watchButton.textContent = "Watch theme file";
+        watchButton.setAttribute("aria-pressed", "false");
+        return;
+    }
+    try {
+        const [handle] = await window.showOpenFilePicker({multiple: false,
+            types: [{description: "Cell theme pack", accept: {"application/json": [".json"]}}]});
+        const watcher = watchedPack = {handle, version: layoutVersion, ids: [], icons: [], fingerprint: undefined, busy: false};
+        watchButton.textContent = "Stop watching";
+        watchButton.setAttribute("aria-pressed", "true");
+        const refresh = async () => {
+            if (watcher.busy || document.hidden) return;
+            if (watcher.version !== layoutVersion) {
+                if (watchedPack === watcher) watchButton.onclick();
+                return;
+            }
+            watcher.busy = true;
+            try {
+                const file = await watcher.handle.getFile();
+                const fingerprint = file.lastModified + ":" + file.size;
+                if (watcher.fingerprint === fingerprint || watchedPack !== watcher) return;
+                if (file.size > model.maxProjectBytes) throw new Error("The watched theme exceeds 2 MiB.");
+                const text = await file.text();
+                if (watchedPack !== watcher || layoutVersion !== watcher.version) return;
+                watcher.fingerprint = fingerprint;
+                const themes = Object.fromEntries(Object.entries(presentation.themes).filter(([id]) => !watcher.ids.includes(id)));
+                const active = presentation.activeTheme;
+                const usedIcons = new Set(Object.values(themes).flatMap(theme =>
+                    Object.values(theme.materials ?? {}).flatMap(material => material?.icon ?? [])));
+                const icons = Object.fromEntries(Object.entries(presentation.icons).filter(([id]) =>
+                    !watcher.icons.includes(id) || usedIcons.has(id)));
+                const base = {...presentation, themes, icons, activeTheme: Object.hasOwn(themes, active) ? active : ""};
+                const next = model.readThemePack(text, base);
+                const ids = Object.keys(next.themes).filter(id => !Object.hasOwn(themes, id));
+                if (!watcher.ids.length || watcher.ids.includes(active))
+                    next.activeTheme = ids.includes(active) ? active : ids[0];
+                setPresentation(next, true);
+                watcher.ids = ids;
+                watcher.icons = Object.keys(next.icons).filter(id => !Object.hasOwn(icons, id));
+                status.textContent = "Watching " + file.name + ".";
+            } catch (error) {
+                status.textContent = error.message;
+            } finally {
+                watcher.busy = false;
+            }
+        };
+        watcher.timer = setInterval(refresh, 1000);
+        await refresh();
+    } catch (error) {
+        if (error.name !== "AbortError") status.textContent = error.message;
+    }
+};
+
 bindFile(query("#appearance-asset"), query("#appearance-asset-file"), async file => {
     const importVersion = layoutVersion;
     const data = await readArtwork(file, true);
@@ -1674,7 +2046,7 @@ query("#appearance-native").onclick = async () => {
         const name = presentation.activeTheme;
         const layout = grid === phoneGrid ? "portrait" : "wide";
         const scene = await model.nativeScene(controlsOnly(), theme, presentation,
-            {phone: grid === phoneGrid, catalog, values: [...previewValues]}, async data => {
+            {phone: grid === phoneGrid, catalog, values: [...previewValues], visualState: query("#appearance-state").value}, async data => {
                 const image = new Image();
                 image.src = data;
                 await image.decode();
@@ -1683,7 +2055,8 @@ query("#appearance-native").onclick = async () => {
                 bitmap.width = Math.max(1, Math.round(image.naturalWidth * scale));
                 bitmap.height = Math.max(1, Math.round(image.naturalHeight * scale));
                 bitmap.getContext("2d").drawImage(image, 0, 0, bitmap.width, bitmap.height);
-                return bitmap.toDataURL("image/png").split(",")[1];
+                return {png: bitmap.toDataURL("image/png").split(",")[1],
+                    sourceScale: [bitmap.width / image.naturalWidth, bitmap.height / image.naturalHeight]};
             });
         download(scene, "application/json", `cell-${name}-${layout}.cellskin.json`);
         status.textContent = "Run cell_skin_preview to render this scene through the native Canvas.";
@@ -1700,9 +2073,10 @@ query("#appearance-demo").onclick = () => {
         {kind: "rectangle", label: "Backplate", x: 0, y: 0, width: 12, height: 6},
         {kind: "knob", label: "Drive", key: "gain", x: 0, y: 0, width: 4, height: 4, showGainReduction: true},
         {kind: "fader", label: "Level", key: "gain", x: 4, y: 0, width: 3, height: 5},
-        {kind: "meter", label: "Output", key: "output-peak", x: 7, y: 0, width: 5, height: 2},
+        {kind: "meter", label: "Output", key: "output-peak", x: 7, y: 0, width: 5, height: 1},
         {kind: "slider", label: "Mix", key: "gain", x: 0, y: 4, width: 4, height: 1},
-        {kind: "choice", label: "Mode", key: "mode", x: 7, y: 2, width: 5, height: 2},
+        {kind: "choice", label: "Mode", key: "mode", x: 7, y: 1, width: 5, height: 1},
+        {kind: "rectangle", label: "Response", visualStyle: "analysis", x: 7, y: 2, width: 5, height: 3},
         {kind: "toggle", label: "Active", key: "bypass", x: 0, y: 5, width: 4, height: 1},
         {kind: "toggle", label: "Alternate", key: "bypass", visualStyle: "tab", x: 4, y: 5, width: 4, height: 1},
         {kind: "action", label: "Reset", action: "reset", visualStyle: "icon-button", x: 8, y: 5, width: 4, height: 1}

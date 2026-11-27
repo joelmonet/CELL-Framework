@@ -185,7 +185,7 @@ FILES = {
     'tests/instrument_controller_tests.cpp', 'tests/ui_scaling_tests.cpp',
     'tests/ui_theme_tests.cpp', 'tests/ui_skin_scene_tests.cpp', 'src/ui/skin_scene.cpp',
     'examples/native_theme_editor/skin_preview.cpp', 'framework/VISUAL-SKINS.md',
-    'framework/schemas/cell.ui-theme-pack.v1.schema.json',
+    'framework/schemas/cell.ui-theme-pack.v1.schema.json', 'framework/VISUAL-AUTHORING-PHASE-2.md',
     'examples/native_theme_editor/CMakeLists.txt', 'examples/native_theme_editor/main.cpp',
     'examples/native_theme_editor/theme_editor_integration.hpp',
     'framework/THEME-FORMAT.md',
