@@ -12,6 +12,10 @@ namespace cell::web {
 class DesignerLivePage {
 public:
     using Clock = std::chrono::steady_clock;
+    struct Update {
+        std::string html;
+        std::string appearanceScript;
+    };
 
     explicit DesignerLivePage(std::string_view pluginId) {
         const auto* id = std::getenv("CELL_DESIGNER_LIVE_ID");
@@ -27,7 +31,7 @@ public:
         }
     }
 
-    std::optional<std::string> read(const ParameterBridge& bridge) {
+    std::optional<Update> read(const ParameterBridge& bridge) {
         const auto now = Clock::now();
         if (file_.empty() || pending() || now < nextRead_) return {};
         nextRead_ = now + std::chrono::milliseconds(250);
@@ -55,15 +59,41 @@ public:
                                         {detail::maxMessageBytes, 2048, detail::maxMessageBytes, 8});
         validate(contract, bridge);
         std::string html(content.substr(newline + 1));
-        const auto head = html.find("<head>");
-        if (!html.starts_with("<!doctype html>") || head == html.npos ||
+        if (!html.starts_with("<!doctype html>") || html.find("<head>") == html.npos ||
             html.find('\0') != html.npos || html.size() > detail::maxHtmlBytes - 128)
             throw std::runtime_error("Invalid Designer live document");
+        constexpr std::string_view appearanceLine = "\nconst cellLiveAppearance = ";
+        std::string shell, script;
+        if (const auto marker = html.find(appearanceLine); marker != html.npos) {
+            const auto start = marker + appearanceLine.size();
+            const auto end = html.find('\n', start);
+            if (end == html.npos || end <= start || html[end - 1] != ';' ||
+                html.find(appearanceLine, end) != html.npos)
+                throw std::runtime_error("Invalid Designer live appearance line");
+            const std::string_view payload = std::string_view(html).substr(start, end - start - 1);
+            const auto appearance = json::read(payload);
+            if (!appearance["css"].string() || !appearance["fonts"].string() ||
+                !appearance["looks"].array() || appearance["looks"].array()->size() > 256)
+                throw std::runtime_error("Invalid Designer live appearance data");
+            shell = html;
+            shell.erase(start, end - start);
+            if (active() && shell == shell_ && payload.size() < 1024u * 1024) {
+                // Quote the original JSON as data to preserve its text and
+                // prevent it from introducing JavaScript into the update.
+                auto quoted = json::write(json::Value(std::string(payload)));
+                script = "window.__cellApplyDesignerAppearance(JSON.parse(" + quoted + "));";
+            }
+        }
+        shell_ = std::move(shell);
+        return Update{std::move(html), std::move(script)};
+    }
+
+    void mount(std::string& html) {
+        const auto head = html.find("<head>");
         const auto token = std::to_string(++generation_);
         html.insert(head + 6, "<script>window.__cellDesignerLivePage=" + token + ";</script>");
         token_ = token;
-        deadline_ = now + std::chrono::seconds(6);
-        return html;
+        deadline_ = Clock::now() + std::chrono::seconds(6);
     }
 
     bool pending() const noexcept { return deadline_ != Clock::time_point{}; }
@@ -75,12 +105,12 @@ public:
     }
     void ready() noexcept { deadline_ = {}; }
     void reset() noexcept {
-        token_.clear();
-        deadline_ = {};
+        fallback();
         stamp_.reset();
     }
     void fallback() noexcept {
         token_.clear();
+        shell_.clear();
         deadline_ = {};
     }
 private:
@@ -111,7 +141,7 @@ private:
     std::filesystem::path file_;
     std::optional<Stamp> stamp_;
     std::uint64_t generation_{};
-    std::string token_;
+    std::string token_, shell_;
     Clock::time_point nextRead_{}, deadline_{};
 };
 

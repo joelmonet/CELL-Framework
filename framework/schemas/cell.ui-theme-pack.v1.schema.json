@@ -33,13 +33,18 @@
         "template": {
           "type": "object",
           "required": ["theme", "style"],
-          "properties": {"theme": {"$ref": "#/$defs/id"}, "style": {"$ref": "#/$defs/id"}}
+          "properties": {"theme": {"$ref": "#/$defs/id"}, "style": {"$ref": "#/$defs/styleId"}}
         }
       }
     }
   },
   "$defs": {
     "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+    "styleId": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:(?:knob|slider|fader|button|meter|panel|dropdown|tab|icon-button)\\.)?[a-z][a-z0-9_-]*$"
+    },
     "name": {"type": "string", "minLength": 1, "maxLength": 80},
     "role": {"enum": ["background", "surface", "text", "accent", "edge", "muted", "metal", "highlight", "shadow"]},
     "color": {
@@ -334,13 +339,13 @@
         "components": {
           "type": "object",
           "maxProperties": 64,
-          "propertyNames": {"$ref": "#/$defs/id"},
+          "propertyNames": {"$ref": "#/$defs/styleId"},
           "additionalProperties": {"$ref": "#/$defs/component"}
         },
         "defaults": {
           "type": "object",
           "propertyNames": {"$ref": "#/$defs/kind"},
-          "additionalProperties": {"$ref": "#/$defs/id"}
+          "additionalProperties": {"$ref": "#/$defs/styleId"}
         },
         "parent": {"$ref": "#/$defs/id"},
         "icons": {

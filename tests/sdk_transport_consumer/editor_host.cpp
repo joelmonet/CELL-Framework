@@ -19,7 +19,8 @@ void check(bool condition, const char* message) {
 
 struct HostSignals {
     std::atomic<bool> pending{};
-    bool rejectedBindings{}, reloaded{};
+    bool rejectedBindings{}, appearanceUpdated{};
+    unsigned reloads{};
 };
 
 struct FileFixture {
@@ -85,7 +86,8 @@ int main(int argc, char** argv) try {
                     const std::string_view text(message);
                     if (text.find("Designer changed a compiled parameter binding") != text.npos)
                         signals.rejectedBindings = true;
-                    if (text == "Designer live page reloaded") signals.reloaded = true;
+                    if (text == "Designer live page reloaded") ++signals.reloads;
+                    if (text == "Designer live appearance updated") signals.appearanceUpdated = true;
                     std::clog << message << '\n';
                 }};
             return std::string_view(id) == CLAP_EXT_LOG ? &log : nullptr;
@@ -133,22 +135,30 @@ int main(int argc, char** argv) try {
 <!doctype html><html><head></head><body>Invalid bindings</body></html>)html");
     check(wait([&] { return signals.rejectedBindings; }, 5) && currentLane() == 2.0,
           "Live reload did not reject a new key while retaining the current patch");
-    publish(R"html(<!-- cell.designer.live.v1 {"parameters":[],"actions":[]}-->
+    const std::string livePage = R"html(<!-- cell.designer.live.v1 {"parameters":[],"actions":[]}-->
 <!doctype html><html><head></head><body><script>
+const cellLiveAppearance = {"css":"original","fonts":"","looks":[]};
 const designerPage = String(window.__cellDesignerLivePage);
+let receivedPatch = false;
+window.__cellApplyDesignerAppearance = appearance => {
+    if (appearance.css === "replacement" && receivedPatch)
+        cell.postMessage({type:"host-shortcut",key:"space",designerPage});
+};
 cell.postMessage({type:"recall-program",bank:0,program:3,designerPage:"stale"});
 cell.onMessage(message => {
     if (message.type !== "parameters") return;
     const preserved = message.programs?.active?.program === 37 &&
         message.programs?.banks[0].programs[37].name === "Imported P37" &&
         message.parameters.some(field => field.key === "slot1" && field.value === 2);
+    receivedPatch = preserved;
     cell.postMessage({type:"host-shortcut",key:preserved ? "space" : "release",designerPage});
 });
 cell.postMessage({type:"designer-ready",designerPage});
-</script></body></html>)html");
-    check(wait([&] { return signals.reloaded; }, 5), "CLAP host did not accept the live page");
+</script></body></html>)html";
+    publish(livePage);
+    check(wait([&] { return signals.reloads == 1; }, 5), "CLAP host did not accept the live page");
     bool keyPressed{}, keyReleased{};
-    check(wait([&] {
+    const auto receivedSpace = [&] {
         while (XPending(display)) {
             XEvent event{};
             XNextEvent(display, &event);
@@ -158,7 +168,16 @@ cell.postMessage({type:"designer-ready",designerPage});
             if (event.type == KeyRelease) keyReleased = true;
         }
         return keyPressed && keyReleased;
-    }, 7) && currentLane() == 2.0, "Live page lost the patch, parameter snapshot or host shortcut");
+    };
+    check(wait(receivedSpace, 7) && currentLane() == 2.0,
+          "Live page lost the patch, parameter snapshot or host shortcut");
+    auto replacement = livePage;
+    replacement.replace(replacement.find("\"original\""), sizeof("\"original\"") - 1, "\"replacement\"");
+    keyPressed = keyReleased = false;
+    publish(replacement);
+    check(wait([&] { return signals.appearanceUpdated && receivedSpace(); }, 5) &&
+          signals.reloads == 1 && currentLane() == 2.0,
+          "Live theme did not update the mounted editor and preserve its patch");
     gui->destroy(plugin);
     plugin->destroy(plugin);
     entry->deinit();

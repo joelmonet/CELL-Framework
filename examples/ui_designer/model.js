@@ -436,6 +436,13 @@ const CellDesignerModel = (() => {
     const appearanceColors = {...defaultTheme, edge: "#46565d", muted: "#a8b5bb", metal: "#35444a",
         highlight: "#9aabb4", shadow: "#101417"};
     const validId = value => typeof value === "string" && assetIdPattern.test(value);
+    const validStyleId = (value, kind) => {
+        if (validId(value)) return true;
+        if (typeof value !== "string" || value.length > 64) return false;
+        const [namespace, name, extra] = value.split(".");
+        return extra === undefined && appearanceKinds.includes(namespace) && validId(name) &&
+            (kind === undefined || namespace === kind);
+    };
     const appearanceError = cause => { throw new Error("Presentation: " + cause + "."); };
     const objectEntries = (input, max) => {
         if (input === undefined) return [];
@@ -443,8 +450,8 @@ const CellDesignerModel = (() => {
             appearanceError("invalid or oversized table");
         return Object.entries(input);
     };
-    const table = (input, max, read) => Object.fromEntries(objectEntries(input, max).map(([id, value]) => {
-        if (!validId(id)) appearanceError("invalid ID");
+    const table = (input, max, read, valid = validId) => Object.fromEntries(objectEntries(input, max).map(([id, value]) => {
+        if (!valid(id)) appearanceError("invalid ID");
         return [id, read(value, id)];
     }));
     const bounded = (value, min, max, fallback) => {
@@ -497,7 +504,7 @@ const CellDesignerModel = (() => {
         let template;
         if (value.template !== undefined) {
             objectEntries(value.template, 2);
-            if (!dictionaryHas(themes, value.template.theme) || !validId(value.template.style))
+            if (!dictionaryHas(themes, value.template.theme) || !validStyleId(value.template.style))
                 appearanceError("invalid pack manifest template");
             template = {theme: value.template.theme, style: value.template.style};
         }
@@ -813,6 +820,7 @@ const CellDesignerModel = (() => {
         const displays = readAnalyticalStyles(value.displays);
         const components = table(value?.components, 64, (style, id) => {
             if (!appearanceKinds.includes(style?.kind)) appearanceError("unknown component kind");
+            if (!validStyleId(id, style.kind)) appearanceError("style class namespace does not match " + style.kind);
             const states = Object.fromEntries(objectEntries(style.states, appearanceStates.length).map(([state, layers]) => {
                 if (!appearanceStates.includes(state)) appearanceError("unknown visual state");
                 return [state, readVisualLayers(layers, materials)];
@@ -820,7 +828,7 @@ const CellDesignerModel = (() => {
             return {name: displayName(style.name ?? id), kind: style.kind, layers: readVisualLayers(style.layers, materials), states,
                 stack: readStack(style.stack, materials), geometry: readControlGeometry(style.geometry, style.kind),
                 analysis: style.analysis === undefined ? undefined : checkReference(displays, style.analysis)};
-        });
+        }, validStyleId);
         const defaults = Object.fromEntries(objectEntries(value?.defaults, appearanceKinds.length).map(([kind, id]) => {
             if (!appearanceKinds.includes(kind) || components[checkReference(components, id)].kind !== kind)
                 appearanceError("component default has the wrong kind");
@@ -1015,7 +1023,7 @@ const CellDesignerModel = (() => {
             previewAssets: previewAssets?.map(id => checkReference(assets, id))};
     }
 
-    function readThemePack(text, presentation = readPresentation(), files) {
+    function readThemePack(text, presentation = readPresentation(), files, replace) {
         if (new TextEncoder().encode(text).length > maxProjectBytes) appearanceError("theme pack exceeds 2 MiB");
         const pack = JSON.parse(text);
         if (pack?.schema !== themePackSchema) appearanceError("unsupported theme pack schema");
@@ -1032,6 +1040,12 @@ const CellDesignerModel = (() => {
         if (manifest?.template && !themeResolutions.get(themes).get(manifest.template.theme).definition.components[manifest.template.style])
             appearanceError("missing manifest template style " + manifest.template.style);
         const next = readPresentation(presentation);
+        if (replace) {
+            for (const domain of ["themes", "icons", "assets"])
+                for (const id of replace[domain]) delete next[domain][id];
+            next.previewAssets = next.previewAssets?.filter(id => !replace.previews.has(id));
+            if (!Object.hasOwn(next.themes, next.activeTheme)) next.activeTheme = "";
+        }
         const rename = new Map();
         for (const [id, asset] of Object.entries(assets)) {
             const existing = Object.keys(next.assets).find(key => next.assets[key].data === asset.data);
@@ -1172,9 +1186,10 @@ const CellDesignerModel = (() => {
         return JSON.stringify({schema: themePackSchema, manifest, themes, icons, assets: shipped}, null, 2) + "\n";
     }
 
-    function visualTemplate(control, presentation, name) {
+    function visualTemplate(control, presentation, name, id = "template") {
         const look = appearanceSource(control, presentation);
         if (!look) appearanceError("choose a themed control first");
+        if (!validStyleId(id, look.kind)) appearanceError("invalid style class for " + look.kind);
         const style = {name: displayName(name), kind: look.kind, layers: look.layers,
             states: look.states, stack: look.stack, geometry: look.geometry, analysis: look.analysis};
         const ids = new Set([...Object.values(style.layers),
@@ -1186,8 +1201,8 @@ const CellDesignerModel = (() => {
         return writeThemePack({schema: presentationSchema, icons, assets: presentation.assets, activeTheme: "template",
             themes: {template: {name: style.name, colors: look.theme.colors, typography: look.theme.typography,
                 materials, displays: look.analysis ? {[look.analysis]: look.theme.displays[look.analysis]} : undefined,
-                components: {template: style}, defaults: {[style.kind]: "template"}}}},
-            {template: {theme: "template", style: "template"}});
+                components: {[id]: style}, defaults: {[style.kind]: id}}}},
+            {template: {theme: "template", style: id}});
     }
 
     function importVisualTemplate(text, presentation) {
@@ -1411,7 +1426,7 @@ const CellDesignerModel = (() => {
         if (control.visualOverrides !== undefined)
             result.visualOverrides = readLocalAppearance(control.visualOverrides, appearanceKind(kind));
         if (control.visualStyle !== undefined) {
-            if (!validId(control.visualStyle)) appearanceError("invalid component style ID");
+            if (!validStyleId(control.visualStyle)) appearanceError("invalid component style ID");
             result.visualStyle = control.visualStyle;
         }
         if (artworkMode) result.artworkMode = artworkMode;

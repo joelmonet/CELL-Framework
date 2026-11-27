@@ -362,6 +362,7 @@ aria-describedby="display-code-help"></textarea></label>
 <button id="appearance-import" type="button">Import theme pack</button>
 <button id="appearance-import-folder" type="button">Import pack folder</button>
 <button id="appearance-watch" type="button" aria-pressed="false">Watch theme file</button>
+<button id="appearance-watch-folder" type="button" aria-pressed="false">Watch theme folder</button>
 <button id="appearance-export" type="button">Export theme pack</button>
 <button id="appearance-asset" type="button">Import asset</button>
 <button id="appearance-native" type="button">Export native preview</button>
@@ -375,6 +376,12 @@ aria-describedby="display-code-help"></textarea></label>
 <div id="appearance-results" aria-label="Theme assets and styles"></div>
 <details><summary>Artwork dependencies</summary><ul id="appearance-dependencies"></ul></details>
 <label>Selected control style<select id="appearance-style"></select></label>
+<details>
+<summary>Save a style class</summary>
+<label>Style ID<input id="appearance-class-id" type="text" maxlength="64" placeholder="knob.primary"></label>
+<label>Style name<input id="appearance-class-name" type="text" maxlength="80"></label>
+<button id="appearance-save-class" type="button">Save style class</button>
+</details>
 <details id="appearance-local">
 <summary>Local appearance and sources</summary>
 <label>Visual slot<select id="appearance-slot"></select></label>

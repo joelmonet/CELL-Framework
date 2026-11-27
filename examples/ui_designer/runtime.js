@@ -1277,7 +1277,6 @@ mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% -
 .cell-look-icon,.cell-look-indicator{position:absolute;visibility:hidden;pointer-events:none;z-index:1}
 .cell-look-icon{right:15px;top:calc(50% - 9px);width:18px;height:18px}
 .cell-look-indicator{height:3px;bottom:8px;left:12px;right:12px}
-[data-look-index] select:has(~ .cell-look-icon){appearance:none}
 .panel-background,.panel-art img{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .control.panel-art{position:relative;padding:0;border:0;border-radius:0;background:transparent;overflow:hidden;pointer-events:none}
 .panel-art.rectangle::before,.panel-art.line::before{content:"";position:absolute;inset:0;background:var(--accent)}
@@ -1580,7 +1579,10 @@ main[data-layout=phone] .meter-face{min-height:62px}
                         .map(suffix => {
                         const extra = suffix === " .dial::before" ? 'content:"";position:absolute;inset:-4px;z-index:-1;' :
                             suffix === " .dial::after" ? "background-size:4px 23%;background-position:center top;" : "";
-                        return `${selector}${stateConditions[state]}${suffix}{${material(layerMaterial, layer, suffix)}${extra}}`;
+                        const rule = selector + stateConditions[state];
+                        const dropdown = suffix === " .cell-look-icon" && look.kind === "dropdown" ?
+                            `${rule} select{appearance:none}` : "";
+                        return `${rule}${suffix}{${material(layerMaterial, layer, suffix)}${extra}}${dropdown}`;
                     });
                 }).join("\n");
             }
@@ -1679,14 +1681,18 @@ ${selector}.rectangle::before{content:none}
         return fontCss(Object.values(theme?.typography ?? {}).filter(Boolean));
     }
 
-    function updatePreviewAppearance(message) {
-        if (message.source !== window.parent || message.data?.type !== "cell-preview-appearance" ||
-            typeof message.data.css !== "string" || message.data.css.length > 4 * 1024 * 1024) return;
+    function applyThemeAppearance(data) {
+        if (typeof data?.css !== "string" || data.css.length > 8 * 1024 * 1024) return;
         const fonts = document.querySelector("#cell-appearance-fonts");
-        if (typeof message.data.fonts === "string" && message.data.fonts.length <= 1024 * 1024 &&
-            fonts.textContent !== message.data.fonts) fonts.textContent = message.data.fonts;
-        document.querySelector("#cell-appearance").textContent = message.data.css;
-        applyAppearanceData(message.data.looks, document.querySelector("main"), message.data.state);
+        if (typeof data.fonts === "string" && data.fonts.length <= 1024 * 1024 &&
+            fonts.textContent !== data.fonts) fonts.textContent = data.fonts;
+        document.querySelector("#cell-appearance").textContent = data.css;
+        applyAppearanceData(data.looks, document.querySelector("main"), data.state);
+    }
+
+    function updatePreviewAppearance(message) {
+        if (message.source === window.parent && message.data?.type === "cell-preview-appearance")
+            applyThemeAppearance(message.data);
     }
 
     function appearanceData(controls, presentation) {
@@ -1838,7 +1844,7 @@ ${selector}.rectangle::before{content:none}
 
     const json = value => JSON.stringify(value).replace(/</g, "\\u003c");
 
-    function html(controls, theme, preview, presentation) {
+    function html(controls, theme, preview, presentation, live = false) {
         const {phoneGrid, phonePlacements, readingOrder, layerOrder, layerPriority, stepCount, maxDetentLabels, isPanelArt, isProgramControl, hasDisplayArtwork, hasSwitchArtwork, isMeterBinding,
             readPrograms, defaultTheme, ledGlyphs, displayCode, numericLedCode, actionBindings,
             conditionRules, compareValue, parameterKeys, meterKeys, typographyFamilies} = CellDesignerModel;
@@ -1859,14 +1865,24 @@ ${selector}.rectangle::before{content:none}
         const rows = Math.ceil(sorted.reduce((maximum, control) => Math.max(maximum, control.y + control.height), 1));
         const fonts = fontCss(sorted.flatMap(control => control.typography ? [control.typography] : []));
         const lookCss = presentationCss(controls, theme, presentation);
+        const lookFonts = presentationFonts(presentation), looks = appearanceData(controls, presentation);
+        // This single marked line is the only theme-dependent part of a live
+        // document. The host compares the rest before applying an update.
+        const liveAppearance = live ? `\nconst cellLiveAppearance = ${json({css: lookCss, fonts: lookFonts, looks})};\n` : "";
+        if (live) {
+            for (const control of sorted) {
+                delete control.visualStyle;
+                delete control.visualOverrides;
+            }
+        }
         return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Cell plug-in editor</title>
 <style>${fonts}
 :root{--rows:${rows};--phone-columns:${phoneGrid.columns}}${css}${typographyCss}</style>
-<style id="cell-appearance-fonts">${presentationFonts(presentation)}</style>
-<style id="cell-appearance">${lookCss}</style></head>
-<body><main></main><script>const controls = ${json(sorted)}, artwork = ${json(artwork)};
+<style id="cell-appearance-fonts">${live ? "" : lookFonts}</style>
+<style id="cell-appearance">${live ? "" : lookCss}</style></head>
+<body><main></main><script>${liveAppearance}const controls = ${json(sorted)}, artwork = ${json(artwork)};
 for (const control of controls) if (control.artworkIndex !== undefined) control.artwork = artwork[control.artworkIndex];
 const isProgramControl = ${isProgramControl.toString()}, isPanelArt = ${isPanelArt.toString()};
 const updateAnalysis = ${updateAnalysis.toString()}, installAnalysis = ${installAnalysis.toString()};
@@ -1874,13 +1890,16 @@ const updateDecorations = ${updateDecorations.toString()}, applyAppearanceData =
 ${simulation}(${mount.toString()})(controls,${json(background)},${phoneGrid.breakpoint},${stepCount.toString()},${maxDetentLabels},isPanelArt,isProgramControl,${hasDisplayArtwork.toString()},${hasSwitchArtwork.toString()},${isMeterBinding.toString()},${readPrograms.toString()},
 {glyphs:${json(ledGlyphs)},codeForValue:${displayCode.toString()},numericCode:${numericLedCode.toString()}},${compareValue.toString()},
 ${paintTypography.toString()},${json(typographyFamilies)},${addAppearanceLayers.toString()});
-applyAppearanceData(${json(appearanceData(controls, presentation))},document.querySelector("main"),${json(preview?.state ?? "")});
-${preview ? `window.addEventListener("message", ${updatePreviewAppearance.toString()});` : ""}</script></body></html>`;
+${live ? `window.__cellApplyDesignerAppearance = ${applyThemeAppearance.toString()};
+window.__cellApplyDesignerAppearance(cellLiveAppearance);` :
+`applyAppearanceData(${json(looks)},document.querySelector("main"),${json(preview?.state ?? "")});`}
+${preview ? `const applyThemeAppearance = ${applyThemeAppearance.toString()};
+window.addEventListener("message", ${updatePreviewAppearance.toString()});` : ""}</script></body></html>`;
     }
 
     function liveHtml(controls, theme, presentation) {
         const contract = json(CellDesignerModel.bindingContract(controls)).replace(/>/g, "\\u003e");
-        return "<!-- cell.designer.live.v1 " + contract + "-->\n" + html(controls, theme, undefined, presentation);
+        return "<!-- cell.designer.live.v1 " + contract + "-->\n" + html(controls, theme, undefined, presentation, true);
     }
 
     return {html, liveHtml, fontCss, paintTypography, typographyCss, appearanceCss, presentationCss, presentationFonts, appearanceData, addAppearanceLayers};

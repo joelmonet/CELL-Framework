@@ -64,6 +64,11 @@ reference in **Local appearance and sources**.
 Use named styles as linked visual templates. Editing their shared materials
 updates each linked instance. Local appearance changes affect only the
 selected controls. Detach captures a style's current layer references.
+**Save a style class** captures the selected control's appearance under a
+stable ID such as `knob.primary` or `button.destructive`. The prefix
+matches the component kind. Existing undotted IDs remain valid. Give a
+class the same ID in related themes so a control keeps its assignment when
+the active theme changes.
 Copy, paste, import and export use a portable visual template with material,
 icon and asset dependencies. Its format is a normal theme pack with a
 `manifest.template` reference. Control positions, bindings and automation
@@ -144,7 +149,11 @@ raster pixel budget before rendering. Native scene assets retain their own
 decoded memory budget.
 
 **Watch theme file** can re-read a self-contained local JSON pack in browsers
-with the File System Access API. Relative-asset packages use folder import.
+with the File System Access API. **Watch theme folder** also follows the
+relative artwork declared by `cell-theme-pack.json`. The watcher checks
+file timestamps and sizes, skips polling while the Designer tab is hidden,
+and replaces a previously loaded version only after validation. Connect a
+local CLAP live host to see those updates in the running editor.
 Invalid updates leave the last valid appearance active. Editing and applying a
 new pack can update the visual document without rebuilding the DSP.
 For a starting manifest and knob style, see the
@@ -174,4 +183,12 @@ rewrites, missing assets, template portability, and layout migration.
 The native test checks shared nine-slice edges and transparent centers at
 1×, 1.25× and 2×, ordered dynamic layers, and cache behavior during value
 and trace updates. With the native preview binary enabled, the browser test
-also compares the full and clipped final frames of each 2× rotary demo.
+also checks gallery dimensions at 1×, 1.25× and 2× and compares the full and
+clipped final frames of each 2× rotary demo. The Linux CLAP workflow builds
+the native renderer and runs these checks.
+
+In the 912 × 456 reference gallery, a 2× Linux CPU run measured approximately
+6–7 ms p95 for a clipped rotary repaint and 29–30 ms p95 for a full repaint.
+Use dirty rectangles for local changes. Profile real workloads that repaint
+most of the view, such as several continuously updating analytical displays,
+before choosing a second rendering backend.

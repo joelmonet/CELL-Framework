@@ -1707,6 +1707,7 @@ async function download(page, id, directory) {
         const skinEditor = skinPage.frameLocator("#preview-panel iframe");
         const drive = skinEditor.getByRole("slider", {name: "Drive"});
         await drive.waitFor();
+        assert.equal(await skinEditor.getByRole("combobox", {name:"Mode"}).evaluate(menu => getComputedStyle(menu).appearance), "none");
         await drive.press("ArrowUp");
         const driveValue = await drive.inputValue();
         const originalDrive = await drive.elementHandle();
@@ -1757,6 +1758,13 @@ async function download(page, id, directory) {
                     execFileSync(process.env.CELL_SKIN_PREVIEW, [input, clipped, "2", frames, "damage"]);
                     assert.ok((await fs.readFile(image)).equals(await fs.readFile(clipped)),
                         `${name} rotary damage repaint differs from a full repaint`);
+                    for (const scale of [1, 1.25]) {
+                        const scaled = path.join(temp, `${name}-native-${scale}.png`);
+                        execFileSync(process.env.CELL_SKIN_PREVIEW, [input, scaled, String(scale)]);
+                        const png = await fs.readFile(scaled);
+                        assert.equal(png.readUInt32BE(16), Math.ceil(scene.width * scale));
+                        assert.equal(png.readUInt32BE(20), Math.ceil(scene.height * scale));
+                    }
                 }
                 assert.ok((await fs.stat(image)).size > 1000, "native image missing");
             }
@@ -1782,6 +1790,45 @@ async function download(page, id, directory) {
             mimeType:"application/json",buffer: Buffer.from(portable)});
         await skinPage.waitForFunction(() => document.querySelector("#appearance-style").value === "template");
         assert.equal(await download(skinPage, "#export-cpp", temp), hdrBinding);
+        await skinPage.getByText("Save a style class", {exact:true}).click();
+        await skinPage.getByLabel("Style ID", {exact:true}).fill("knob.primary");
+        await skinPage.getByLabel("Style name", {exact:true}).fill("Primary rotary");
+        await skinPage.getByRole("button", {name:"Save style class"}).click();
+        await skinPage.waitForFunction(() => document.querySelector("#appearance-style").value === "knob.primary");
+        assert.equal(await download(skinPage, "#export-cpp", temp), hdrBinding);
+        await skinPage.evaluate(() => {
+            let version = 0;
+            const svg = color => `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><rect width="12" height="12" fill="${color}"/></svg>`;
+            window.setArtwork = data => { asset = data; ++version; };
+            let asset = svg("#8a5353");
+            const pack = {schema:"cell.ui-theme-pack.v1", assets:{sample:{name:"Watched artwork", path:"art/face.svg"}},
+                themes:{watched:{name:"Watched theme", materials:{cap:{asset:"sample"}},
+                    components:{"knob.primary":{kind:"knob",layers:{face:"cap"}}}, defaults:{knob:"knob.primary"}}}};
+            window.showDirectoryPicker = async () => ({
+                kind:"directory", name:"theme-fixture",
+                async getFileHandle(name) {
+                    if (name !== "cell-theme-pack.json") throw new Error("Expected the theme manifest");
+                    return {getFile: async () => new File([JSON.stringify(pack)], name, {lastModified:1})};
+                },
+                async getDirectoryHandle(name) {
+                    if (name !== "art") throw new Error("Expected the artwork directory");
+                    return {getFileHandle: async filename => ({getFile: async () =>
+                        new File([asset], filename, {type:"image/svg+xml",lastModified:version + 1})})};
+                }
+            });
+        });
+        await skinPage.getByRole("button", {name:"Watch theme folder"}).click();
+        await skinPage.getByText("Watching theme-fixture.", {exact:true}).waitFor();
+        const watchBefore = JSON.parse(await download(skinPage, "#appearance-export", temp));
+        await skinPage.evaluate(() => window.setArtwork("invalid SVG"));
+        await skinPage.getByText(/Choose valid artwork/).waitFor();
+        assert.deepEqual(JSON.parse(await download(skinPage, "#appearance-export", temp)), watchBefore);
+        await skinPage.evaluate(() => window.setArtwork('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><rect width="12" height="12" fill="#345856"/></svg>'));
+        await skinPage.getByText("Watching theme-fixture.", {exact:true}).waitFor();
+        const watchAfter = JSON.parse(await download(skinPage, "#appearance-export", temp));
+        assert.notEqual(watchBefore.assets.sample.data, watchAfter.assets.sample.data);
+        assert.deepEqual(Object.keys(watchAfter.assets), Object.keys(watchBefore.assets));
+        await skinPage.getByRole("button", {name:"Stop watching"}).click();
         await skinPage.close();
 
         if (process.env.CELL_BANKED_FIXTURE) {
@@ -1796,6 +1843,7 @@ async function download(page, id, directory) {
             await banked.goto(origin + "/banked.html");
             const snapshot = JSON.parse(execFileSync(process.env.CELL_BANKED_FIXTURE, ["--parameters"], {encoding: "utf8"}));
             await banked.evaluate(snapshot => window.receive(snapshot), snapshot);
+            assert.notEqual(await banked.getByRole("combobox", {name:"Bank", exact:true}).evaluate(menu => getComputedStyle(menu).appearance), "none");
             const patch = banked.getByRole("status", {name: "Patch name"});
             assert.equal(await patch.textContent(), "0 dB Trim");
             await banked.getByRole("combobox", {name: "Bank", exact: true}).selectOption("2");
@@ -1895,6 +1943,11 @@ async function download(page, id, directory) {
             await keys.keyboard.press("Tab");
             assert.equal(await drive.evaluate(node => node === document.activeElement), true);
             assert.equal(await drive.getAttribute("aria-valuetext"), "-6.00 dB");
+            const inputNode = await drive.elementHandle();
+            await keys.evaluate(() => window.__cellApplyDesignerAppearance({css:":root{--background:#342718}",fonts:"",looks:[]}));
+            assert.equal(await inputNode.evaluate(node => node === document.activeElement), true);
+            assert.equal(await drive.getAttribute("aria-valuetext"), "-6.00 dB");
+            assert.equal(await keys.locator("#cell-appearance").textContent(), ":root{--background:#342718}");
             const accessibleTree = await keys.locator("main").ariaSnapshot();
             assert.match(accessibleTree, /slider "Drive"/);
             assert.match(accessibleTree, /group "Mode"/);

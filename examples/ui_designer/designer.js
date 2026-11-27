@@ -1633,6 +1633,16 @@ query("#appearance-paste-look").onclick = () => applyArtwork(() => {
     if (copiedAppearance) useVisualTemplate(copiedAppearance, selection);
     status.textContent = "Appearance pasted.";
 });
+query("#appearance-save-class").onclick = () => applyArtwork(() => {
+    if (!selected) return;
+    const id = query("#appearance-class-id").value.trim();
+    const name = query("#appearance-class-name").value.trim();
+    if (!id || !name) throw new Error("Enter a style ID and name.");
+    if (Object.hasOwn(model.activeAppearanceTheme(presentation).components, id))
+        throw new Error("This theme already has a style with that ID.");
+    useVisualTemplate(model.visualTemplate(selected, presentation, name, id), [selected]);
+    status.textContent = "Saved " + id + ".";
+});
 query("#appearance-export-template").onclick = () => applyArtwork(() => {
     if (!selected) return;
     const name = selected.label.trim().split(String.fromCharCode(10))[0].slice(0, 80);
@@ -1708,6 +1718,7 @@ function refreshAppearanceBrowser() {
         .filter(([, style]) => selected && model.matchesAppearance(model.appearanceKind(selected.kind), style))
         .map(([id, style]) => new Option(style.name, id)));
     styleSelect.disabled = !selected || !active;
+    query("#appearance-save-class").disabled = !selected || !active;
     styleSelect.value = selected?.visualStyle ?? "";
     const materialSelect = query("#appearance-material");
     const material = materialSelect.value;
@@ -1939,6 +1950,35 @@ bindFile(query("#appearance-import"), query("#appearance-pack-file"), async file
     if (importVersion === layoutVersion) setPresentation(next, true);
 });
 const packFolder = query("#appearance-pack-folder");
+const packManifest = "cell-theme-pack.json";
+
+async function readFolderPack(definition, getAsset, previous) {
+    if (!definition || definition.size > model.maxProjectBytes)
+        throw new Error("Choose a folder with a cell-theme-pack.json file at its root.");
+    const manifestStamp = definition.lastModified + ":" + definition.size;
+    const sameManifest = previous?.manifestStamp === manifestStamp;
+    const text = sameManifest ? previous.text : await definition.text();
+    const paths = sameManifest ? previous.paths : model.packAssetPaths(text);
+    let bytes = definition.size;
+    const found = new Map(), stamps = new Map();
+    for (const path of paths) {
+        const file = await getAsset(path);
+        if (!file) throw new Error("Missing relative asset " + path);
+        bytes += file.size;
+        if (bytes > model.maxProjectBytes) throw new Error("The pack and its assets exceed 2 MiB.");
+        found.set(path, file);
+        stamps.set(path, file.lastModified + ":" + file.size);
+    }
+    if (sameManifest && [...stamps].every(([path, stamp]) => previous.stamps.get(path) === stamp)) return undefined;
+    const files = new Map();
+    for (const [path, file] of found) {
+        const artwork = previous?.stamps.get(path) === stamps.get(path)
+            ? previous.files.get(path) : await readArtwork(file, true);
+        files.set(path, artwork);
+    }
+    return {text, files, paths, manifestStamp, stamps};
+}
+
 query("#appearance-import-folder").onclick = () => packFolder.click();
 packFolder.onchange = async () => {
     const version = layoutVersion;
@@ -1947,21 +1987,11 @@ packFolder.onchange = async () => {
         if (!selectedFiles.length) return;
         if (selectedFiles.length > 1024) throw new Error("The pack folder contains too many files.");
         const byPath = new Map(selectedFiles.map(file => [file.webkitRelativePath.split("/").slice(1).join("/"), file]));
-        const definition = byPath.get("cell-theme-pack.json");
-        if (!definition || definition.size > model.maxProjectBytes)
-            throw new Error("Choose a folder with a cell-theme-pack.json file at its root.");
-        const text = await definition.text();
-        let bytes = definition.size;
-        const files = new Map();
-        for (const path of model.packAssetPaths(text)) {
-            const file = byPath.get(path);
-            if (!file) throw new Error("Missing relative asset " + path);
-            bytes += file.size;
-            if (bytes > model.maxProjectBytes) throw new Error("The pack and its assets exceed 2 MiB.");
-            files.set(path, await readArtwork(file, true));
+        const {text, files} = await readFolderPack(byPath.get(packManifest), path => byPath.get(path));
+        if (version === layoutVersion) {
+            setPresentation(model.readThemePack(text, presentation, files), true);
+            status.textContent = "Theme pack folder imported.";
         }
-        if (version === layoutVersion) setPresentation(model.readThemePack(text, presentation, files), true);
-        status.textContent = "Theme pack folder imported.";
     } catch (error) {
         status.textContent = error.message;
     } finally {
@@ -1969,55 +1999,90 @@ packFolder.onchange = async () => {
     }
 };
 const watchButton = query("#appearance-watch");
+const watchFolderButton = query("#appearance-watch-folder");
 let watchedPack;
 watchButton.disabled = typeof window.showOpenFilePicker !== "function";
-if (watchButton.disabled) watchButton.title = "This browser does not support watching local files.";
-watchButton.onclick = async () => {
-    if (watchedPack) {
-        clearInterval(watchedPack.timer);
-        watchedPack = undefined;
-        watchButton.textContent = "Watch theme file";
-        watchButton.setAttribute("aria-pressed", "false");
-        return;
-    }
+watchFolderButton.disabled = typeof window.showDirectoryPicker !== "function";
+
+function stopWatchingPack() {
+    if (!watchedPack) return;
+    clearInterval(watchedPack.timer);
+    watchedPack.button.textContent = watchedPack.label;
+    watchedPack.button.setAttribute("aria-pressed", "false");
+    watchedPack = undefined;
+}
+
+async function folderAsset(root, path) {
+    const parts = path.split("/");
+    const filename = parts.pop();
     try {
-        const [handle] = await window.showOpenFilePicker({multiple: false,
-            types: [{description: "Cell theme pack", accept: {"application/json": [".json"]}}]});
-        const watcher = watchedPack = {handle, version: layoutVersion, ids: [], icons: [], fingerprint: undefined, busy: false};
-        watchButton.textContent = "Stop watching";
-        watchButton.setAttribute("aria-pressed", "true");
+        let directory = root;
+        for (const part of parts) directory = await directory.getDirectoryHandle(part);
+        return await (await directory.getFileHandle(filename)).getFile();
+    } catch (error) {
+        if (error.name !== "NotFoundError") throw error;
+    }
+}
+
+function updateWatchedPack(watcher, text, files) {
+    const previous = presentation;
+    const active = previous.activeTheme;
+    const remaining = Object.entries(previous.themes).filter(([id]) => !watcher.themes.has(id));
+    const usedAssets = new Set([theme.backgroundAsset, ...controls.map(control => control.assetId),
+        ...(previous.previewAssets ?? []).filter(id => !watcher.previews.has(id))]);
+    const usedIcons = new Set();
+    for (const [, theme] of remaining) {
+        for (const material of Object.values(theme.materials ?? {})) {
+            for (const id of [material?.asset, material?.mask, material?.texture?.asset]) usedAssets.add(id);
+            usedIcons.add(material?.icon);
+        }
+    }
+    const replace = {themes: watcher.themes, previews: watcher.previews,
+        assets: new Set([...watcher.assets].filter(id => !usedAssets.has(id))),
+        icons: new Set([...watcher.icons].filter(id => !usedIcons.has(id)))};
+    const next = model.readThemePack(text, previous, files, replace);
+    const owned = {};
+    for (const domain of ["themes", "assets", "icons"])
+        owned[domain] = new Set(Object.keys(next[domain]).filter(id => replace[domain].has(id) || !Object.hasOwn(previous[domain], id)));
+    owned.previews = new Set((next.previewAssets ?? []).filter(id =>
+        replace.previews.has(id) || !previous.previewAssets?.includes(id)));
+    if (!watcher.themes.size || watcher.themes.has(active))
+        next.activeTheme = owned.themes.has(active) ? active : [...owned.themes][0];
+    setPresentation(next, true);
+    Object.assign(watcher, owned);
+}
+
+async function watchTheme(button, pick) {
+    const wasWatching = watchedPack?.button === button;
+    stopWatchingPack();
+    if (wasWatching) return;
+    const version = layoutVersion;
+    try {
+        const handle = await pick();
+        if (!handle || version !== layoutVersion) return;
+        const watcher = watchedPack = {button, label: button.textContent, version, busy: false,
+            themes: new Set(), assets: new Set(), icons: new Set(), previews: new Set()};
+        button.textContent = "Stop watching";
+        button.setAttribute("aria-pressed", "true");
         const refresh = async () => {
-            if (watcher.busy || document.hidden) return;
+            if (watcher !== watchedPack || watcher.busy || document.hidden) return;
             if (watcher.version !== layoutVersion) {
-                if (watchedPack === watcher) watchButton.onclick();
+                stopWatchingPack();
                 return;
             }
             watcher.busy = true;
             try {
-                const file = await watcher.handle.getFile();
-                const fingerprint = file.lastModified + ":" + file.size;
-                if (watcher.fingerprint === fingerprint || watchedPack !== watcher) return;
-                if (file.size > model.maxProjectBytes) throw new Error("The watched theme exceeds 2 MiB.");
-                const text = await file.text();
+                const directory = handle.kind === "directory";
+                const file = directory ? await folderAsset(handle, packManifest) : await handle.getFile();
+                const pack = await readFolderPack(file, directory ? path => folderAsset(handle, path) : () => undefined,
+                    watcher.source);
                 if (watchedPack !== watcher || layoutVersion !== watcher.version) return;
-                watcher.fingerprint = fingerprint;
-                const themes = Object.fromEntries(Object.entries(presentation.themes).filter(([id]) => !watcher.ids.includes(id)));
-                const active = presentation.activeTheme;
-                const usedIcons = new Set(Object.values(themes).flatMap(theme =>
-                    Object.values(theme.materials ?? {}).flatMap(material => material?.icon ?? [])));
-                const icons = Object.fromEntries(Object.entries(presentation.icons).filter(([id]) =>
-                    !watcher.icons.includes(id) || usedIcons.has(id)));
-                const base = {...presentation, themes, icons, activeTheme: Object.hasOwn(themes, active) ? active : ""};
-                const next = model.readThemePack(text, base);
-                const ids = Object.keys(next.themes).filter(id => !Object.hasOwn(themes, id));
-                if (!watcher.ids.length || watcher.ids.includes(active))
-                    next.activeTheme = ids.includes(active) ? active : ids[0];
-                setPresentation(next, true);
-                watcher.ids = ids;
-                watcher.icons = Object.keys(next.icons).filter(id => !Object.hasOwn(icons, id));
-                status.textContent = "Watching " + file.name + ".";
+                if (!pack) return;
+                updateWatchedPack(watcher, pack.text, pack.files);
+                watcher.source = pack;
+                status.textContent = "Watching " + handle.name + ".";
             } catch (error) {
-                status.textContent = error.message;
+                if (watchedPack === watcher) status.textContent = error.message;
             } finally {
                 watcher.busy = false;
             }
@@ -2027,7 +2092,14 @@ watchButton.onclick = async () => {
     } catch (error) {
         if (error.name !== "AbortError") status.textContent = error.message;
     }
-};
+}
+
+watchButton.onclick = () => watchTheme(watchButton, async () => {
+    const [handle] = await window.showOpenFilePicker({multiple: false,
+        types: [{description: "Cell theme pack", accept: {"application/json": [".json"]}}]});
+    return handle;
+});
+watchFolderButton.onclick = () => watchTheme(watchFolderButton, () => window.showDirectoryPicker({mode: "read"}));
 
 bindFile(query("#appearance-asset"), query("#appearance-asset-file"), async file => {
     const importVersion = layoutVersion;

@@ -1298,10 +1298,15 @@ void updateWebEditor(Instance& instance) {
             startupFailed = !changeWebPage(editor, embeddedWebPage(), cancelled);
         } else if (editor.loaded) {
             try {
-                if (auto content = editor.livePage.read(editor.parameters)) {
-                    if (!changeWebPage(editor, *content, cancelled)) {
-                        editor.livePage.fallback();
-                        startupFailed = !changeWebPage(editor, embeddedWebPage(), cancelled);
+                if (auto update = editor.livePage.read(editor.parameters)) {
+                    if (!update->appearanceScript.empty() && editor.view.evaluate(update->appearanceScript)) {
+                        webLog(instance, "Designer live appearance updated", CLAP_LOG_INFO);
+                    } else {
+                        editor.livePage.mount(update->html);
+                        if (!changeWebPage(editor, update->html, cancelled)) {
+                            editor.livePage.fallback();
+                            startupFailed = !changeWebPage(editor, embeddedWebPage(), cancelled);
+                        }
                     }
                 }
             } catch (const std::exception& error) { webLog(instance, error.what()); }

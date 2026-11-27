@@ -195,14 +195,17 @@ every 250 ms while it is open. Launch another CLAP host with
 `CELL_DESIGNER_LIVE_ID` set to the plug-in's CLAP ID. Use a local folder
 whose contents you control.
 
-Live reload replaces the view and takes a fresh snapshot from the running
-processor. It preserves the active patch and native parameter values.
-An in-progress gesture or held action is released as the old view closes.
-Layout, artwork, and controls that use compiled bindings can change
-live. New native keys or actions and writable access to a read-only binding
+Theme-only edits within the WebView script size limit apply in place. Focus,
+ongoing control gestures, and the current program and parameters stay in the
+mounted editor. Layout changes and larger appearance updates reload the view
+and take a fresh snapshot from the running processor. On those full reloads,
+the old view releases an in-progress gesture or held action.
+New native keys or actions and writable access to a read-only binding
 require a new C++ export and plug-in build. The host logs a rejection and
 keeps the current panel if a live page exceeds the compiled bindings.
-An editor that fails to initialize returns to the embedded page.
+An editor that fails to initialize returns to the embedded page. Pair
+**Watch theme folder** with **Connect live host** to publish updates when
+external artwork changes.
 
 ### Keyboard and screen-reader behavior
 
