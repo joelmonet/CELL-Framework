@@ -17,6 +17,17 @@ For a gain effect, run the executable named after the project with an input WAV,
 path, and gain in dB. It processes mono or stereo through the same processor
 used by the plug-in targets.
 
+Before shipping an update, compare with a saved release baseline.
+
+```sh
+cell release . --capture previous-reference
+cell release . --previous previous-reference --report compatibility.json
+```
+
+Capture the baseline on the outgoing release before changing the project.
+Edit `release-fixture.json` to name the assets, saved states, automation,
+and render tolerances that the next release must preserve.
+
 For CLAP, set `CELL_PROJECT_CLAP=ON`. The installed SDK supplies pinned headers,
 and `CELL_PROJECT_CLAP_SDK=/path/to/clap` selects an alternate checkout.
 For VST3, set `CELL_PROJECT_VST3=ON`

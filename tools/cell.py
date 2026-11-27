@@ -3,17 +3,20 @@
 """Create and check Cell Framework projects."""
 
 import argparse
+import io
 import json
 import os
 from pathlib import Path
 import plistlib
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+import wave
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
 
@@ -199,6 +202,18 @@ def new_project(args):
     if not notice.is_file():
         notice = notices / "framework" / "THIRD_PARTY_NOTICES.md"
     files["THIRD_PARTY_NOTICES.md"] = notice.read_bytes()
+
+    fixture = {"schema": "cell.release-fixture.v1", "tolerances": {"peak": 1e-6, "rms": 1e-7}}
+    if banked:
+        fixture.update(input="release/input.wav", factory_presets=["2:4", "5:3"])
+        samples = io.BytesIO()
+        with wave.open(samples, "wb") as audio:
+            audio.setparams((2, 2, 48000, 0, "NONE", "not compressed"))
+            audio.writeframes(b"".join(struct.pack("<hh", 256 * (index % 127 - 63),
+                                                      512 * (index % 53 - 26))
+                                       for index in range(4097)))
+        files["release/input.wav"] = samples.getvalue()
+    files["release-fixture.json"] = (json.dumps(fixture, indent=2) + "\n").encode("utf-8")
 
     if args.github_ci:
         files[".github/workflows/cell.yml"] = (templates / "github-ci.yml").read_bytes()
@@ -677,6 +692,99 @@ def doctor(args):
     return 0 if passed else 1
 
 
+def release(args):
+    import cell_release as gate
+
+    project = args.project.resolve()
+    if not (project / "CMakeLists.txt").is_file():
+        raise ValueError(f"No CMakeLists.txt in {project}")
+    if args.previous_project and (not args.previous or (args.previous / gate.BASELINE_FILE).is_file()):
+        raise ValueError("--previous-project is for a previous CLAP bundle or build directory")
+    if args.timeout <= 0:
+        raise ValueError("Release timeout must be positive")
+    report_path = args.report.resolve() if args.report else None
+    if report_path and report_path.exists():
+        raise ValueError("Choose a new release report path")
+    report_root = project / ".cell-release"
+    report_root.mkdir(exist_ok=True)
+    report_dir = Path(tempfile.mkdtemp(prefix="run-", dir=report_root))
+    build = args.build_dir.resolve() if args.build_dir else report_dir / "build"
+    if build == project:
+        raise ValueError("Use an out-of-source build directory")
+    report_path = report_path or report_dir / "report.json"
+    report = {"schema": "cell.project-release.v1", "configuration": args.config,
+              "platform": gate.platform_key(), "status": "failed"}
+    print(f"Release logs: {report_dir}", flush=True)
+    try:
+        pipeline = desktop_pipeline(args, project, build, report_dir / "tests.xml",
+                                    extra_configure=("-DCELL_PROJECT_RELEASE_CHECK=ON", "-DBUILD_TESTING=ON"))
+        stages, passed = run_pipeline(pipeline, report_dir)
+        report["build_checks"] = [{key: stage[key] for key in ("name", "status", "tests") if key in stage}
+                                  for stage in stages]
+        if not passed:
+            raise ValueError("Candidate build or project checks failed")
+        scope, artifact, identity_exe = gate.artifact_receipt(build, args.config)
+        module = clap_module(artifact)
+        report["scope"] = scope
+        report["candidate"] = gate.artifact_fingerprint(artifact, module)
+        identity = gate.processor_snapshot(identity_exe, report_dir, run_stage, "candidate-identity")
+
+        helper_name = "cell-release-clap" + (".exe" if os.name == "nt" else "")
+        locations = [Path(__file__).resolve().with_name(helper_name)]
+        if args.sdk:
+            locations.append(args.sdk.resolve() / "bin" / helper_name)
+        helper = next((path for path in locations if path.is_file()), shutil.which(helper_name))
+        if helper is None:
+            raise ValueError("Install a desktop Cell SDK with the release host")
+        if args.capture:
+            baseline = args.capture.resolve()
+            fixture = gate.fixture_file(project, args.fixture)
+            gate.capture(helper, module, artifact, scope, identity, project, fixture,
+                         baseline, report_dir, args.timeout)
+            report.update(status="captured", baseline_sha256=gate.digest(baseline / gate.BASELINE_FILE))
+            print(f"Captured release baseline: {baseline}")
+        else:
+            previous = args.previous.resolve()
+            if (previous / gate.BASELINE_FILE).is_file():
+                if args.fixture:
+                    raise ValueError("A captured baseline supplies its own fixtures and tolerances")
+                baseline = previous
+            else:
+                previous_scope, previous_bundle, previous_identity = (
+                    ("shipping-clap", previous, None) if previous.suffix.lower() == ".clap"
+                    else gate.artifact_receipt(previous, args.config, previous=True))
+                if previous_scope != scope:
+                    raise ValueError("The previous and candidate builds need the same compatibility scope")
+                previous_project = args.previous_project.resolve() if args.previous_project else project
+                fixture = gate.fixture_file(previous_project, args.fixture)
+                if not args.previous_project and any(fixture.get(key) for key in
+                    ("assets", "input", "session_state", "preset_state")):
+                    raise ValueError("Supply --previous-project for the previous build's fixture files or use a saved baseline")
+                baseline = report_dir / "previous-baseline"
+                previous_mapping = gate.processor_snapshot(previous_identity, report_dir, run_stage, "previous-identity")
+                gate.capture(helper, clap_module(previous_bundle), previous_bundle, scope, previous_mapping,
+                             previous_project, fixture, baseline, report_dir, args.timeout)
+            manifest = gate.validate_baseline(baseline, scope, report)
+            report["processor_identity"] = gate.require_identity(manifest.get("processor_parameters"), identity)
+            gate.check_assets(manifest.get("assets"), project, report)
+            result = report_dir / "host-report.json"
+            code = gate.native_check(helper, "verify", module, artifact, baseline, result, project,
+                                     report_dir / "verify.log", args.timeout)
+            if not result.is_file():
+                raise ValueError(f"Release host exited with code {code} before writing evidence")
+            report["host"] = gate.read_object(result)
+            if code or report["host"].get("status") != "passed":
+                raise ValueError(report["host"].get("error", "Compatibility checks failed"))
+            report["status"] = "passed"
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        report["error"] = str(error)
+        print(f"cell release: {error}", file=sys.stderr)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    gate.write_object(report_path, report)
+    print(f"Report: {report_path}")
+    return 0 if report["status"] in {"passed", "captured"} else 1
+
+
 def build_options(parser):
     parser.add_argument("project", nargs="?", type=Path, default=Path("."))
     parser.add_argument("--sdk", type=Path, help="Installed desktop Cell SDK prefix")
@@ -721,6 +829,15 @@ def main():
     check.add_argument("--realtime", action="store_true", help="Pace CLAP replay and report real-time measurements")
     check.add_argument("--replay-host", help="Path to the Cell SDK's cell-doctor-clap executable")
     check.add_argument("--replay-timeout", type=int, default=120, metavar="SECONDS")
+    publish = commands.add_parser("release", help="Capture a release baseline or qualify a candidate build")
+    build_options(publish)
+    reference = publish.add_mutually_exclusive_group(required=True)
+    reference.add_argument("--capture", type=Path, metavar="DIRECTORY", help="Save a portable reference for this build")
+    reference.add_argument("--previous", type=Path, metavar="BASELINE_OR_BUILD", help="Saved baseline, previous build directory, or CLAP bundle")
+    publish.add_argument("--previous-project", type=Path, help="Project containing the previous build's declared assets")
+    publish.add_argument("--fixture", type=Path, help="Release fixture for capture or a previous built plug-in")
+    publish.add_argument("--report", type=Path, help="Write the portable JSON report to this path")
+    publish.add_argument("--timeout", type=int, default=120, metavar="SECONDS", help="Time limit per native host run")
     launch = commands.add_parser("run", help="Build and open a generated project in REAPER or on Android")
     build_options(launch)
     launch.add_argument("--host", help="Path to the REAPER executable")
@@ -741,6 +858,8 @@ def main():
             return doctor(args)
         if args.command == "run":
             return run_project(args)
+        if args.command == "release":
+            return release(args)
         new_project(args)
     except (OSError, ValueError) as error:
         print(f"cell: {error}", file=sys.stderr)

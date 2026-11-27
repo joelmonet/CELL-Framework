@@ -44,6 +44,69 @@ plug-in signing, mobile session recall, and additional audio file formats
 requires separate fixtures. The qualification host's JSON and preset
 filenames belong to the test fixture and are private to the harness.
 
+## Release checks for generated projects
+
+Every `cell new` project includes `release-fixture.json` and a native
+compatibility target. Use the installed SDK's release command to capture
+the outgoing stable build before rolling the project forward. Keep the
+baseline outside a disposable build directory.
+
+```sh
+cell release BankedTrim --build-dir build/previous --capture releases/0.1.0-reference
+cell release BankedTrim --build-dir build/candidate --previous releases/0.1.0-reference \
+  --report compatibility.json
+```
+
+You can also compare a previous build directory or `.clap` directly. Use
+`--previous-project` to locate the previous build's declared fixture and
+assets. A previous build directory can supply the SDK's parameter identity
+executable. A standalone CLAP bundle supplies the host-visible mappings.
+Older generated CLAP projects can qualify using their existing build
+receipts and processor identity executable.
+
+```sh
+cell release BankedTrim --previous /releases/previous-build \
+  --previous-project /releases/previous-source --report compatibility.json
+```
+
+The command builds and tests the candidate, opens the released state in an
+independent CLAP host, and checks the published plug-in ID and parameter
+mappings. A released baseline preserves processor keys, IDs, ranges,
+defaults, steps, skew, and automation flags. The host also checks CLAP's
+published names, ranges, flags, and audio layout. New parameters and factory
+slots can be added. Previous identities and factory load keys must still
+resolve. The default fixture records two sample-offset edits, a saved
+session, and a state-backed preset. The banked project also verifies the
+factory catalog and recalls two bank slots through CLAP. The instrument
+receives a MIDI note during its renders.
+
+The fixture can declare these fields in addition to its schema.
+
+| Field | Accepted values |
+| --- | --- |
+| `tolerances` | Required `peak` and `rms` absolute sample limits. The generated limits are `1e-6` and `1e-7`. |
+| `assets` | Relative asset paths whose bytes must still match in the candidate project. |
+| `input` | Relative input WAVE path. It is checked as an asset and copied into the portable baseline. The host generates a deterministic signal when this is omitted. |
+| `automation` | Ordered objects with `sample`, numeric CLAP `parameter` ID, and a plain `value` aligned to the released parameter's step. |
+| `session_state`, `preset_state` | Relative paths to optional raw CLAP state blobs from a product's host fixture. The previous build must open them. |
+| `factory_presets` | Up to 32 embedded CLAP factory load keys to recall and render. |
+
+The candidate resolves the released relative assets from its own project
+directory. Missing or changed assets fail qualification. The portable
+baseline locks the previous input WAVE, reference renders, and serialized
+state with SHA-256 digests. Keep baseline state and reference audio private
+when they contain session data. Ship the JSON report independently. It
+contains the build fingerprints, asset digests, native check results,
+and measured peak and RMS errors, with no state blobs or audio.
+
+Run the gate on the same platform and architecture as the baseline. A
+generated project that ships CLAP uses that bundle. Other templates use a
+desktop CLAP reference built from the same processor, which the report
+identifies as `processor-reference`. This covers shared processor behavior
+for the Android starter and other wrappers. Qualify their device builds
+and format-specific sessions separately. A baseline captured for a
+shipping CLAP bundle and a processor reference are different scopes.
+
 ## Release evidence
 
 The GitHub Actions `session-compatibility` job fails unless the release pin

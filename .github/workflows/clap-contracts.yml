@@ -50,6 +50,9 @@ jobs:
           node examples/sdk_banked/export.cjs "$RUNNER_TEMP/banked-exports"
           cmp examples/sdk_banked/cell-plugin-editor.html "$RUNNER_TEMP/banked-exports/cell-plugin-editor.html"
           cmp examples/sdk_banked/cell-ui-bindings.hpp "$RUNNER_TEMP/banked-exports/cell-ui-bindings.hpp"
+      - name: Qualify a generated banked release
+        run: |
+          python3 tests/test_cell_release.py "$RUNNER_TEMP/cell-sdk/bin/cell" "$RUNNER_TEMP/BankedTrim"
       - name: Exercise the banked Designer panel with a native parameter snapshot
         run: |
           npm install --prefix "$RUNNER_TEMP/cell-browser" --no-save --no-package-lock playwright@1.62.1

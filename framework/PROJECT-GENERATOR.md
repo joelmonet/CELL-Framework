@@ -246,6 +246,12 @@ Set the app label, version name, and Android version code in
 `bundleRelease` and configure release signing with your Android signing
 credentials. [Android SDK and toolchain setup](ANDROID.md#run-a-designer-layout-in-an-android-app)
 
+## Qualify a release
+
+Use `cell release` to compare a candidate with the previous build or a
+saved baseline. Each starter ships a fixture for identity, automation,
+presets, referenced assets, and offline audio. [Release compatibility guide](SESSION-COMPATIBILITY.md#release-checks-for-generated-projects)
+
 ## Check a project with Cell Doctor
 
 ```sh
