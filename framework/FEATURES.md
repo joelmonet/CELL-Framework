@@ -362,3 +362,7 @@ GUI GPU rendering, native accessibility providers, broad host/platform
 qualification and complete ARA document integration remain development work.
 The WebView module is an optional system browser, not an original browser engine
 or a substitute for a native GPU Canvas backend.
+
+## Prepared image-backed fader caps
+
+`ui_faders.hpp` supplies bounded image preparation and native cap drawing in either orientation. Thumb bounds, parameter/gesture mapping, asset selection and product style policy remain with the caller. See [FADERS.md](FADERS.md).

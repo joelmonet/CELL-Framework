@@ -210,6 +210,8 @@ def check_cmake_inputs(root, names):
                 raise ValueError(f'{script} references unpackaged CMake input: {path}')
 
 
+FILES.update({"framework/FADERS.md", "examples/native_fader/CMakeLists.txt", "examples/native_fader/main.cpp"})
+
 def source_files(root):
     root = Path(root).resolve(strict=True)
     names = set(FILES)

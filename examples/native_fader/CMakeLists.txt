@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.24)
+project(CellNativeFader LANGUAGES CXX)
+if(NOT TARGET Cell::UI)
+    find_package(Cell CONFIG REQUIRED COMPONENTS Core UI)
+endif()
+add_executable(cell_native_fader main.cpp)
+target_link_libraries(cell_native_fader PRIVATE Cell::UI Cell::Core)
