@@ -45,7 +45,8 @@ def check_rejection(candidate, project, expected):
     result = subprocess.run([host, "verify", plugin, project],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if result.returncode == 0 or expected not in result.stdout:
-        raise RuntimeError(f"Invalid fixture {project.name} did not fail at {expected!r}\n{result.stdout}")
+        raise RuntimeError(f"Invalid fixture {project.name} did not fail at {expected!r} "
+                           f"(host exit code {result.returncode})\n{result.stdout}")
     return {"case": project.name, "diagnostic": expected}
 
 

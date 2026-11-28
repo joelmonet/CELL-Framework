@@ -1,27 +1,6 @@
 name: Cell Android quickstart
 
-on:
-  push:
-    paths:
-      - '.github/workflows/android-quickstart.yml'
-      - 'examples/android_designer/**'
-      - 'examples/sdk_gain/**'
-      - 'framework/**'
-      - 'include/**'
-      - 'src/**'
-      - 'tools/cell.py'
-      - 'tools/project/**'
-  pull_request:
-    paths:
-      - '.github/workflows/android-quickstart.yml'
-      - 'examples/android_designer/**'
-      - 'examples/sdk_gain/**'
-      - 'framework/**'
-      - 'include/**'
-      - 'src/**'
-      - 'tools/cell.py'
-      - 'tools/project/**'
-  workflow_dispatch:
+on: [push, pull_request, workflow_dispatch]
 
 permissions:
   contents: read
