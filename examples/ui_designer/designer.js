@@ -19,6 +19,15 @@ const undoButton = query("#undo");
 const redoButton = query("#redo");
 const copyButton = query("#copy-controls");
 const pasteButton = query("#paste-controls");
+const componentSave = query("#component-save");
+const componentList = query("#component-list");
+const componentBindings = query("#component-bindings");
+const components = new Map();
+const componentStorage = "cell.ui-designer.components.v1";
+const liveButton = query("#live-host");
+const liveStatus = query("#live-host-status");
+let liveDirectory, liveTimer, liveWriting = false, liveRevision = 0, lastLivePage;
+
 const multiSelect = query("#multi-select");
 const editArt = query("#edit-art");
 const artworkElement = query("#artwork-element");
@@ -46,6 +55,7 @@ let previewProgram;
 const encoder = new TextEncoder();
 const historyLimit = 64;
 let theme = {...model.defaultTheme};
+let presentation = model.readPresentation();
 let catalog = null;
 let programs = null;
 let selected;
@@ -99,7 +109,7 @@ function controlsOnly() {
 }
 
 function documentText() {
-    return model.serialize(controlsOnly(), theme, catalog, programs);
+    return model.serialize(controlsOnly(), theme, catalog, programs, presentation);
 }
 
 function paintImage(image, artwork, fit) {
@@ -158,13 +168,13 @@ function applyArtwork(action) {
     catch (error) { status.textContent = error.message; }
 }
 
-function refreshProject() {
+function refreshProject(presentationOnly = false) {
     undoButton.disabled = !undoStack.length;
     redoButton.disabled = !redoStack.length;
     query("#project-state").textContent = documentText() === saved ? "" : "Unsaved changes";
     refreshCanvas();
     for (const name of Object.keys(model.defaultTheme)) {
-        const value = theme[name];
+        const value = model.displayTheme(theme, presentation)[name];
         themeForm.elements.namedItem(name).value = value;
         canvas.style.setProperty("--" + name, value);
     }
@@ -179,19 +189,22 @@ function refreshProject() {
         ? `${programs.banks.length} banks, ${programs.banks.reduce((count, bank) => count + bank.programs.length, 0)} programs`
         : "";
     query("#clear-parameters").disabled = !catalog;
-    if (!previewPanel.hidden) renderPreview();
+    refreshAppearance(presentationOnly);
+    refreshAppearanceBrowser();
+    if (!previewPanel.hidden && !presentationOnly) renderPreview();
+    queueLivePage();
 }
 
 function snapshot() {
-    return {layout: controlsOnly(), theme, catalog, programs, selection: selection.map(control => controls.indexOf(control))};
+    return {layout: controlsOnly(), theme, presentation, catalog, programs, selection: selection.map(control => controls.indexOf(control))};
 }
 
-function record(before) {
-    if (model.serialize(before.layout, before.theme, before.catalog, before.programs) === documentText()) return;
+function record(before, presentationOnly = false) {
+    if (model.serialize(before.layout, before.theme, before.catalog, before.programs, before.presentation) === documentText()) return;
     undoStack.push(before);
     if (undoStack.length > historyLimit) undoStack.shift();
     redoStack.length = 0;
-    refreshProject();
+    refreshProject(presentationOnly);
 }
 
 function refreshBindingSource(control) {
@@ -204,6 +217,7 @@ function select(items) {
     selection = items;
     selected = items.length === 1 ? items[0] : undefined;
     copyButton.disabled = !items.length;
+    componentSave.disabled = !items.length;
     form.hidden = !selected;
     query("#empty-inspector").hidden = Boolean(items.length);
     selectionTools.hidden = items.length < 2;
@@ -225,6 +239,8 @@ function select(items) {
         field(key).value = control[key];
     inspectPlacement(control);
     field("rotation").value = control.rotation ?? "";
+    query("#knob-meter-settings").hidden = control.kind !== "knob";
+    field("show-gain-reduction").checked = control.showGainReduction === true;
     query("#detent-settings").hidden = control.kind !== "knob";
     field("detent-label-mode").value = Array.isArray(control.detentLabels) ? "custom" : control.detentLabels ?? "none";
     field("detent-labels").value = Array.isArray(control.detentLabels) ? control.detentLabels.join("\n") : "";
@@ -270,6 +286,7 @@ function select(items) {
     field("thickness").disabled = control.kind !== "line";
     query("#artwork").hidden = !model.hasArtwork(control.kind);
     refreshControlArtwork(control);
+    refreshAppearanceBrowser();
 }
 
 function refreshRulePicker() {
@@ -441,7 +458,10 @@ function refreshCanvas() {
     canvas.style.setProperty("--columns", grid.columns);
     canvas.style.setProperty("--rows", visibleRows);
     canvasFrame.dataset.size = phone ? "phone" : "wide";
-    boxes.forEach((box, index) => position(controls[index].tile, box));
+    boxes.forEach((box, index) => {
+        controls[index].tile.dataset.lookIndex = index;
+        position(controls[index].tile, box);
+    });
     const functionalBoxes = boxes.flatMap((box, index) =>
         model.isPanelArt(controls[index].kind) ? [] : [{box, rule: controls[index].visibleWhen}]);
     query("#overlap-status").hidden = !functionalBoxes.some((entry, i) =>
@@ -553,6 +573,7 @@ function add(data) {
     tile.dataset.kind = data.kind;
     tile.toggleAttribute("data-panel-art", model.isPanelArt(data.kind));
     tile.innerHTML = '<img alt="" hidden><span class="tile-label"></span><span class="tile-kind"></span>';
+    runtime.addAppearanceLayers(tile);
     const control = {...data, ...model.constrain(data, wideGrid), tile};
     controls.push(control);
     canvas.append(tile);
@@ -692,7 +713,7 @@ function insertControls(copies) {
     return true;
 }
 
-function captureClipboard() {
+function selectedControls() {
     const phone = model.phonePlacements(controls);
     const chosen = new Set(selection);
     const copies = [];
@@ -701,8 +722,12 @@ function captureClipboard() {
         const {tile, ...data} = control;
         copies.push({...data, phone: phone[index]});
     });
+    return copies;
+}
+
+function captureClipboard() {
     try {
-        localClipboard = model.writeClipboard(copies);
+        localClipboard = model.writeClipboard(selectedControls());
         return localClipboard;
     } catch (error) {
         status.textContent = error.message;
@@ -718,15 +743,93 @@ function pasteControls(text) {
         status.textContent = error.message;
         return;
     }
+    if (placeCopiedControls(items, "paste these controls"))
+        status.textContent = items.length === 1 ? "Control pasted." : `${items.length} controls pasted.`;
+}
+
+function placeCopiedControls(items, action) {
     const wide = model.findGroupPlacement(items, controls, wideGrid);
     const phone = model.findGroupPlacement(model.phonePlacements(items), model.phonePlacements(controls), phoneGrid);
     if (!wide || !phone) {
-        status.textContent = `Make room on the ${wide ? "phone" : "wide"} grid to paste these controls.`;
-        return;
+        status.textContent = `Make room on the ${wide ? "phone" : "wide"} grid to ${action}.`;
+        return false;
     }
     const copies = items.map((control, i) => ({...control, ...wide[i], phone: phone[i]}));
-    if (insertControls(copies)) status.textContent = items.length === 1 ? "Control pasted." : `${items.length} controls pasted.`;
+    return insertControls(copies);
 }
+
+function showComponentBindings() {
+    const component = components.get(componentList.value);
+    const rows = [];
+    const add = (key, kind) => {
+        const label = document.createElement("label");
+        label.textContent = kind + " " + key;
+        const input = document.createElement("input");
+        input.value = key;
+        input.dataset.key = key;
+        input.dataset.binding = kind;
+        input.maxLength = 80;
+        if (kind === "Parameter") input.setAttribute("list", "parameter-keys");
+        label.append(input);
+        rows.push(label);
+    };
+    if (component) {
+        model.parameterKeys(component.controls).forEach(key => add(key, "Parameter"));
+        new Set(model.actionBindings(component.controls).map(binding => binding.key)).forEach(key => add(key, "Action"));
+    }
+    componentBindings.replaceChildren(...rows);
+    for (const id of ["insert", "export", "remove"]) query("#component-" + id).disabled = !component;
+}
+
+function refreshComponents(name) {
+    const names = [...components.keys()];
+    componentList.replaceChildren(...(names.length ? names : ["No saved components"]).map(value =>
+        new Option(value, names.length ? value : "")));
+    if (name) componentList.value = name;
+    showComponentBindings();
+}
+
+function persistComponents() {
+    try {
+        localStorage.setItem(componentStorage, JSON.stringify([...components.values()]));
+        return "";
+    } catch {
+        return " This browser could not save the library. Export components to keep them.";
+    }
+}
+
+function addComponent(component) {
+    if (components.has(component.name)) throw new Error("A component with this name already exists.");
+    if (components.size >= 32) throw new Error("The component library can hold up to 32 components.");
+    components.set(component.name, component);
+    refreshComponents(component.name);
+    status.textContent = component.name + " saved." + persistComponents();
+}
+
+componentList.onchange = showComponentBindings;
+componentSave.onclick = () => applyArtwork(() => addComponent(
+    model.namedComponent(query("#component-name").value, selectedControls())));
+query("#component-insert").onclick = () => applyArtwork(() => {
+    const component = components.get(componentList.value);
+    const collect = kind => new Map([...componentBindings.querySelectorAll("input")]
+        .filter(input => input.dataset.binding === kind)
+        .map(input => [input.dataset.key, input.value]));
+    const controls = model.instantiateComponent(component, collect("Parameter"), collect("Action"));
+    if (placeCopiedControls(controls, "insert the component")) status.textContent = component.name + " inserted.";
+});
+query("#component-export").onclick = () => {
+    const component = components.get(componentList.value);
+    download(JSON.stringify(component), "application/json", "cell-component.json");
+};
+query("#component-remove").onclick = () => {
+    components.delete(componentList.value);
+    refreshComponents();
+    status.textContent = "Component removed." + persistComponents();
+};
+bindFile(query("#component-import"), query("#component-file"), async file => {
+    if (file.size > model.maxProjectBytes) throw new Error("The component file exceeds 2 MiB.");
+    addComponent(model.readComponent(await file.text()));
+});
 
 function isTextInput(target) {
     return target instanceof HTMLElement && (target.isContentEditable || target.matches("input,select,textarea"));
@@ -806,7 +909,15 @@ canvas.ondrop = event => {
     const kind = event.dataTransfer.getData("text/plain");
     const point = cellAt(event);
     const quantize = snapPlacement.checked ? Math.floor : finePosition;
-    if (Object.hasOwn(kinds, kind)) addControl(kind, {x: quantize(point.x), y: quantize(point.y)});
+    const target = {x: quantize(point.x), y: quantize(point.y)};
+    const payload = event.dataTransfer.getData(assetDrag);
+    if (payload) {
+        applyArtwork(() => {
+            const [type, id] = JSON.parse(payload);
+            if (["asset", "stock", "style"].includes(type)) placeAppearance(type, id,
+                controls.find(control => control.tile === event.target.closest(".tile")), target);
+        });
+    } else if (Object.hasOwn(kinds, kind)) addControl(kind, target);
 };
 canvas.onclick = event => { if (event.target === canvas) select([]); };
 editArt.onclick = () => {
@@ -940,6 +1051,8 @@ form.onsubmit = event => {
     }
     if (displayCodes?.length) selected.displayCodes = displayCodes;
     else delete selected.displayCodes;
+    if (kind === "knob" && field("show-gain-reduction").checked) selected.showGainReduction = true;
+    else delete selected.showGainReduction;
     if (detentLabels) selected.detentLabels = detentLabels;
     else delete selected.detentLabels;
     if (rotation) selected.rotation = rotation;
@@ -951,22 +1064,27 @@ form.onsubmit = event => {
     record(before);
     status.textContent = "Control updated.";
 };
-themeForm.onchange = () => {
-    const before = snapshot();
-    theme = {...theme, ...Object.fromEntries(new FormData(themeForm))};
-    record(before);
-};
-query("#reset-theme").onclick = () => {
-    const before = snapshot();
-    theme = {...theme, ...model.defaultTheme};
-    record(before);
-};
+function applyPalette(colors) {
+    const active = model.activeAppearanceTheme(presentation);
+    if (active) {
+        const authored = presentation.themes[presentation.activeTheme];
+        const themes = {...presentation.themes, [presentation.activeTheme]: {...authored, colors: {...authored.colors, ...colors}}};
+        setPresentation(model.readPresentation({...presentation, themes}), true);
+    } else {
+        const before = snapshot();
+        theme = {...theme, ...colors};
+        record(before);
+    }
+}
+themeForm.onchange = () => applyArtwork(() => applyPalette(Object.fromEntries(new FormData(themeForm))));
+query("#reset-theme").onclick = () => applyArtwork(() => applyPalette(model.defaultTheme));
 
 function restore(state) {
     ++layoutVersion;
     controls.length = 0;
     canvas.replaceChildren(backgroundImage);
     theme = state.theme;
+    presentation = state.presentation ?? model.readPresentation();
     catalog = state.catalog;
     programs = state.programs;
     previewProgram = undefined;
@@ -992,11 +1110,11 @@ query("#reset-phone-layout").onclick = () => {
     record(before);
     status.textContent = "Phone layout reset to automatic placement.";
 };
-function loadShowcase(layout, colors, parameters, selection, message) {
+function loadShowcase(layout, colors, parameters, selection, message, looks) {
     const before = snapshot();
-    const project = model.readProject(model.serialize(layout, colors, parameters));
+    const project = model.readProject(model.serialize(layout, colors, parameters, null, looks));
     previewValues.clear();
-    restore({layout: project.controls, theme: project.theme, catalog: project.catalog, programs: null, selection});
+    restore({layout: project.controls, theme: project.theme, presentation: project.presentation, catalog: project.catalog, programs: null, selection});
     record(before);
     togglePreview(true);
     status.textContent = message;
@@ -1143,7 +1261,7 @@ bindFile(query("#open"), query("#layout-file"), async file => {
     if (documentText() !== saved && !window.confirm("Replace the layout and discard unsaved changes?")) return;
     undoStack.length = redoStack.length = 0;
     previewValues.clear();
-    restore({layout: project.controls, theme: project.theme,
+    restore({layout: project.controls, theme: project.theme, presentation: project.presentation,
         catalog: project.catalog === undefined ? catalog : project.catalog,
         programs: project.programs === undefined ? programs : project.programs, selection: [0]});
     saved = documentText();
@@ -1196,12 +1314,20 @@ async function readArtwork(file, panel) {
 }
 
 function setControlArtwork(control, artwork, artworkMode, message) {
+    if (artwork && !model.validArtwork(artwork, control.kind === "image" ? model.maxPanelAssetBytes : model.maxAssetBytes))
+        throw new Error("Artwork is invalid or too large for that control.");
     const before = snapshot();
     const priorArtwork = control.artwork;
     const priorMode = control.artworkMode;
     Object.assign(control, {artwork, artworkMode});
+    if (artwork) {
+        const assets = {...presentation.assets};
+        model.registerAsset(assets, artwork, control.label);
+        presentation = {...presentation, assets};
+    }
     if (encoder.encode(documentText()).length > model.maxProjectBytes) {
         Object.assign(control, {artwork: priorArtwork, artworkMode: priorMode});
+        presentation = before.presentation;
         throw new Error("This artwork would take the layout over 2 MiB.");
     }
     paint(control);
@@ -1214,7 +1340,7 @@ function setBackgroundArtwork(backgroundArtwork, message) {
     const next = {...theme};
     if (backgroundArtwork) next.backgroundArtwork = backgroundArtwork;
     else delete next.backgroundArtwork;
-    if (encoder.encode(model.serialize(controlsOnly(), next, catalog, programs)).length > model.maxProjectBytes)
+    if (encoder.encode(model.serialize(controlsOnly(), next, catalog, programs, presentation)).length > model.maxProjectBytes)
         throw new Error("This artwork would take the layout over 2 MiB.");
     const before = snapshot();
     theme = next;
@@ -1252,7 +1378,7 @@ clearBackground.onclick = () => setBackgroundArtwork("", "Background removed.");
 function renderPreview() {
     previewFrame.srcdoc = CellDesignerRuntime.html(controlsOnly(), theme,
         {catalog, programs: programs && {...programs, active: previewProgram ?? programs.active},
-            values: [...previewValues], generation: ++generation});
+            values: [...previewValues], generation: ++generation, state: query("#appearance-state").value}, presentation);
 }
 
 function togglePreview(show) {
@@ -1303,6 +1429,739 @@ query("#check-bindings").onclick = () => {
         !catalog ? "Load a parameter snapshot to verify parameter bindings." :
         !controls.length ? "Add a control to check its binding." : "All parameter bindings match the snapshot.";
 };
+function queueLivePage() {
+    if (!liveDirectory) return;
+    ++liveRevision;
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(publishLivePage, 200);
+}
+
+function liveContent() {
+    const layout = controlsOnly();
+    if (model.parameterKeys(layout).length > 128 || model.actionBindings(layout).length > 128)
+        throw new Error("Live pages can contain up to 128 parameters and 128 actions.");
+    return runtime.liveHtml(layout, theme, presentation);
+}
+
+async function publishLivePage() {
+    if (!liveDirectory || liveWriting) return;
+    const directory = liveDirectory;
+    const revision = liveRevision;
+    liveWriting = true;
+    let writable;
+    try {
+        const content = liveContent();
+        if (content !== lastLivePage) {
+            const file = await directory.getFileHandle("cell-designer-live.html", {create: true});
+            writable = await file.createWritable();
+            await writable.write(content);
+            await writable.close();
+            if (directory === liveDirectory) lastLivePage = content;
+        }
+        if (directory === liveDirectory) liveStatus.textContent = "Published to " + directory.name;
+    } catch (error) {
+        if (writable) await writable.abort().catch(() => {});
+        if (directory === liveDirectory) liveStatus.textContent = error.message;
+    } finally {
+        liveWriting = false;
+        if (liveDirectory && revision !== liveRevision) queueLivePage();
+    }
+}
+
+liveButton.onclick = async () => {
+    liveStatus.hidden = false;
+    if (liveDirectory) {
+        liveDirectory = undefined;
+        clearTimeout(liveTimer);
+        liveButton.setAttribute("aria-pressed", "false");
+        liveStatus.textContent = "Live publishing paused.";
+        return;
+    }
+    if (!window.showDirectoryPicker) {
+        liveStatus.textContent = "This browser cannot write directly to a folder. Use Export live page.";
+        return;
+    }
+    try {
+        liveDirectory = await window.showDirectoryPicker({mode: "readwrite"});
+        lastLivePage = undefined;
+        liveButton.setAttribute("aria-pressed", "true");
+        queueLivePage();
+    } catch (error) {
+        if (error.name !== "AbortError") liveStatus.textContent = error.message;
+    }
+};
+const themeSelection = query("#appearance-theme");
+const assetResults = query("#appearance-results");
+const materialFields = query("#appearance-fields");
+const assetDrag = "application/x-cell-appearance";
+const stockArtwork = new Map(Object.entries(CellDesignerArtwork).flatMap(([group, entries]) =>
+    entries.map((asset, index) => [`stock-${group}-${index + 1}`, {...asset, group}])));
+let libraryPreview;
+const appearanceStyle = document.createElement("style");
+document.head.append(appearanceStyle);
+
+function refreshAppearance(onlyPreview = false) {
+    const colors = model.displayTheme(theme, presentation);
+    const extraColors = query("#appearance-extra-colors");
+    extraColors.hidden = extraColors.disabled = !presentation.activeTheme;
+    if (!extraColors.hidden)
+        for (const field of extraColors.querySelectorAll("input")) field.value = colors[field.name];
+    for (const name of Object.keys(model.defaultTheme)) canvas.style.setProperty("--" + name, colors[name]);
+    const css = runtime.appearanceCss(controls, presentation, "#canvas > ");
+    if (appearanceStyle.textContent !== css) appearanceStyle.textContent = css;
+    canvas.toggleAttribute("data-themed", Boolean(presentation.activeTheme));
+    if (onlyPreview && !previewPanel.hidden && previewFrame.contentWindow) {
+        previewFrame.contentWindow.postMessage({type: "cell-preview-appearance",
+            css: runtime.presentationCss(controlsOnly(), theme, presentation),
+            fonts: runtime.presentationFonts(presentation), looks: runtime.appearanceData(controlsOnly(), presentation),
+            state: query("#appearance-state").value}, "*");
+    }
+}
+
+let copiedAppearance;
+const stackEditor = query("#appearance-stack");
+const geometryEditor = query("#appearance-geometry");
+const pivotEditor = query("#appearance-pivot");
+const pivotFields = [...pivotEditor.querySelectorAll("input")];
+
+const slotMenu = query("#appearance-slot");
+const overrideMenu = query("#appearance-override");
+for (const role of model.appearanceLayers) slotMenu.add(new Option(role, role));
+
+function refreshLocalAppearance() {
+    const target = selected ?? selection[0];
+    const look = target && model.appearanceSource(target, presentation);
+    const role = slotMenu.value;
+    overrideMenu.replaceChildren(new Option("Inherit", ""), new Option("Hide layer", "-hidden"),
+        ...Object.keys(look?.theme.materials ?? {}).map(id => new Option(id, id)));
+    const local = target?.visualOverrides?.layers;
+    overrideMenu.value = local && Object.hasOwn(local, role) ? local[role] ?? "-hidden" : "";
+    overrideMenu.disabled = !look;
+    query("#appearance-reset-local").disabled = !selection.some(control => control.visualOverrides);
+    query("#appearance-detach").disabled = !selected || !look || selected.visualOverrides?.detached;
+    query("#appearance-copy-look").disabled = !selected || !look;
+    query("#appearance-paste-look").disabled = !copiedAppearance || !selection.length || !model.activeAppearanceTheme(presentation);
+    query("#appearance-export-template").disabled = !selected || !look;
+    query("#appearance-import-template").disabled = !model.activeAppearanceTheme(presentation);
+    query("#appearance-apply-layers").disabled = !selected || !look;
+    const displays = query("#appearance-display");
+    displays.replaceChildren(new Option("Inherit", ""), ...Object.keys(look?.theme.displays ?? {}).map(id => new Option(id, id)));
+    displays.value = target?.visualOverrides?.analysis ?? "";
+    stackEditor.value = look?.stack ? JSON.stringify(look.stack, null, 2) : "";
+    geometryEditor.value = look?.geometry ? JSON.stringify(look.geometry, null, 2) : "";
+    pivotEditor.hidden = look?.kind !== "knob";
+    pivotEditor.disabled = !selected || pivotEditor.hidden;
+    pivotFields.forEach((field, i) => {field.value = look?.geometry?.pivot?.[i] ?? .5;});
+    const origin = look?.sources[role];
+    const source = origin ? `${look.layers[role]} · ${origin}` : "No material for this slot";
+    query("#appearance-source").textContent = [source, ...(look?.diagnostics ?? [])].join(". ");
+}
+
+slotMenu.onchange = refreshLocalAppearance;
+pivotEditor.onchange = () => applyArtwork(() => {
+    if (pivotFields.some(field => !field.value || !field.checkValidity())) {
+        throw new Error("Rotary pivot coordinates must be between 0 and 1.");
+    }
+    const geometry = JSON.parse(geometryEditor.value.trim() || "{}");
+    geometry.pivot = pivotFields.map(field => field.valueAsNumber);
+    geometryEditor.value = JSON.stringify(geometry, null, 2);
+});
+overrideMenu.onchange = () => {
+    const before = snapshot();
+    for (const control of selection) {
+        const local = control.visualOverrides ?? {};
+        const layers = {...local.layers};
+        if (overrideMenu.value) layers[slotMenu.value] = overrideMenu.value === "-hidden" ? null : overrideMenu.value;
+        else delete layers[slotMenu.value];
+        control.visualOverrides = {...local, layers};
+    }
+    record(before, true);
+};
+query("#appearance-reset-local").onclick = () => {
+    const before = snapshot();
+    for (const control of selection) delete control.visualOverrides;
+    record(before, true);
+};
+query("#appearance-detach").onclick = () => {
+    if (!selected) return;
+    const look = model.appearanceSource(selected, presentation);
+    if (!look) return;
+    const before = snapshot();
+    selected.visualOverrides = {detached: true, kind: look.kind, layers: look.layers, states: look.states,
+        stack: look.stack, geometry: look.geometry, analysis: look.analysis};
+    delete selected.visualStyle;
+    record(before, true);
+};
+
+query("#appearance-apply-layers").onclick = () => applyArtwork(() => {
+    if (!selected) return;
+    const before = snapshot();
+    const overrides = {...selected.visualOverrides};
+    const stack = stackEditor.value.trim();
+    const geometry = geometryEditor.value.trim();
+    if (stack) overrides.stack = JSON.parse(stack);
+    else delete overrides.stack;
+    if (geometry) overrides.geometry = JSON.parse(geometry);
+    else delete overrides.geometry;
+    const display = query("#appearance-display").value;
+    if (display) overrides.analysis = display;
+    else delete overrides.analysis;
+    selected.visualOverrides = model.readLocalAppearance(overrides, model.appearanceKind(selected.kind));
+    record(before, true);
+});
+query("#appearance-copy-look").onclick = () => applyArtwork(() => {
+    if (!selected) return;
+    copiedAppearance = model.visualTemplate(selected, presentation, selected.label.trim().split(String.fromCharCode(10))[0].slice(0, 80));
+    refreshLocalAppearance();
+    status.textContent = "Appearance copied.";
+});
+function useVisualTemplate(text, controlsToUpdate = []) {
+    const imported = model.importVisualTemplate(text, presentation);
+    if (encoder.encode(model.serialize(controlsOnly(), theme, catalog, programs, imported.presentation)).length > model.maxProjectBytes)
+        throw new Error("The template would take this layout over 2 MiB.");
+    const style = model.activeAppearanceTheme(imported.presentation).components[imported.id];
+    const before = snapshot();
+    for (const control of controlsToUpdate) {
+        if (!model.matchesAppearance(model.appearanceKind(control.kind), style)) continue;
+        control.visualStyle = imported.id;
+        delete control.visualOverrides;
+    }
+    presentation = imported.presentation;
+    record(before, true);
+}
+query("#appearance-paste-look").onclick = () => applyArtwork(() => {
+    if (copiedAppearance) useVisualTemplate(copiedAppearance, selection);
+    status.textContent = "Appearance pasted.";
+});
+query("#appearance-save-class").onclick = () => applyArtwork(() => {
+    if (!selected) return;
+    const id = query("#appearance-class-id").value.trim();
+    const name = query("#appearance-class-name").value.trim();
+    if (!id || !name) throw new Error("Enter a style ID and name.");
+    if (Object.hasOwn(model.activeAppearanceTheme(presentation).components, id))
+        throw new Error("This theme already has a style with that ID.");
+    useVisualTemplate(model.visualTemplate(selected, presentation, name, id), [selected]);
+    status.textContent = "Saved " + id + ".";
+});
+query("#appearance-export-template").onclick = () => applyArtwork(() => {
+    if (!selected) return;
+    const name = selected.label.trim().split(String.fromCharCode(10))[0].slice(0, 80);
+    download(model.visualTemplate(selected, presentation, name), "application/json", "cell-visual-template.json");
+});
+bindFile(query("#appearance-import-template"), query("#appearance-template-file"), async file => {
+    if (file.size > model.maxProjectBytes) throw new Error("Template exceeds 2 MiB.");
+    useVisualTemplate(await file.text(), selection);
+});
+
+function refreshAppearanceBrowser() {
+    const active = model.activeAppearanceTheme(presentation);
+    const term = query("#appearance-search").value.trim().toLowerCase();
+    themeSelection.replaceChildren(new Option("Layout colors", ""),
+        ...Object.entries(presentation.themes).map(([id, theme]) => new Option(theme.name, id)));
+    themeSelection.value = presentation.activeTheme;
+    query("#appearance-export").disabled = !Object.keys(presentation.themes).length;
+    query("#appearance-native").disabled = !active;
+    if (query("#appearance-library").open && (term !== libraryPreview?.term ||
+        presentation.assets !== libraryPreview.assets || active !== libraryPreview.active)) {
+        libraryPreview = {term, assets: presentation.assets, active};
+        const registered = new Set(Object.values(presentation.assets).map(asset => asset.data));
+        const entries = [
+            ...Object.entries(presentation.assets).map(([id, asset]) => ({id, name: asset.name, type: "asset", asset})),
+            ...Object.entries(active?.components ?? {}).map(([id, style]) => ({id, name: style.name, type: "style", style})),
+            ...Object.entries(active?.icons ?? {}).map(([id, icon]) => ({id, name: icon.name, type: "icon", icon})),
+            ...[...stockArtwork].filter(([, asset]) => !registered.has(asset.artwork))
+                .map(([id, asset]) => ({id, name: asset.name, type: "stock", asset: {...asset, data: asset.artwork}}))
+        ].filter(entry => (entry.name + " " + entry.id + " " + (entry.style?.kind ?? "artwork") + " " +
+            (entry.icon ? entry.icon.category + " " + entry.icon.keywords.join(" ") : ""))
+            .toLowerCase().includes(term));
+        assetResults.replaceChildren(...entries.map(entry => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.draggable = entry.type !== "icon";
+            button.textContent = entry.name + (entry.style ? ` · ${entry.style.kind}` : "");
+            if (entry.asset || entry.icon) {
+                const image = document.createElement("img");
+                image.alt = "";
+                image.loading = "lazy";
+                image.src = entry.asset?.data ?? model.iconDataUrl(entry.icon, active.colors[entry.icon.color] ?? entry.icon.color);
+                if (entry.icon) image.style.setProperty("--artwork-preview-size", query("#appearance-icon-size").value + "px");
+                button.prepend(image);
+            }
+            button.onclick = () => applyArtwork(() => placeAppearance(entry.type, entry.id, selected));
+            button.ondragstart = event => event.dataTransfer.setData(assetDrag, JSON.stringify([entry.type, entry.id]));
+            return button;
+        }));
+        const dependencies = new Map();
+        for (const [id, material] of Object.entries(active?.materials ?? {})) {
+            for (const [role, asset] of [["artwork", material.asset], ["mask", material.mask], ["texture", material.texture?.asset]]) {
+                if (!asset) continue;
+                if (!dependencies.has(asset)) dependencies.set(asset, []);
+                dependencies.get(asset).push(`${id} (${role})`);
+            }
+        }
+        const list = query("#appearance-dependencies");
+        list.replaceChildren(...[...dependencies].map(([id, references]) => {
+            const item = document.createElement("li");
+            item.textContent = `${presentation.assets[id]?.name ?? "Missing artwork"} (${id}) · ${references.join(", ")}`;
+            return item;
+        }));
+        if (!dependencies.size) {
+            const item = document.createElement("li");
+            item.textContent = "This theme has no artwork dependencies.";
+            list.append(item);
+        }
+    }
+    const selectedStyle = selected && active ?
+        (active.components[selected.visualStyle] ?? active.components[active.defaults[model.appearanceKind(selected.kind)]]) : undefined;
+    const styleSelect = query("#appearance-style");
+    styleSelect.replaceChildren(new Option("Theme default", ""), ...Object.entries(active?.components ?? {})
+        .filter(([, style]) => selected && model.matchesAppearance(model.appearanceKind(selected.kind), style))
+        .map(([id, style]) => new Option(style.name, id)));
+    styleSelect.disabled = !selected || !active;
+    query("#appearance-save-class").disabled = !selected || !active;
+    styleSelect.value = selected?.visualStyle ?? "";
+    const materialSelect = query("#appearance-material");
+    const material = materialSelect.value;
+    const materialIds = new Set(selectedStyle ? [
+        ...Object.values(selectedStyle.layers), ...Object.values(selectedStyle.states).flatMap(Object.values),
+        ...(selectedStyle.stack ?? []).map(layer => layer.material)
+    ] : Object.keys(active?.materials ?? {}));
+    materialSelect.replaceChildren(new Option("Choose a material", ""),
+        ...[...materialIds].map(id => new Option(id, id)));
+    materialSelect.value = materialIds.has(material) ? material : "";
+    readMaterialFields();
+    refreshLocalAppearance();
+}
+
+function materialOption(name) {
+    return materialFields.elements.namedItem(name);
+}
+
+function updateSliceGuide() {
+    const guide = query("#appearance-slice-guide");
+    const asset = presentation.assets[materialOption("asset").value];
+    const show = materialOption("slice-enable").checked && asset;
+    guide.hidden = !show;
+    if (!show) return;
+    const bitmap = guide.querySelector("image");
+    const image = new Image();
+    image.onload = () => {
+        if (presentation.assets[materialOption("asset").value] !== asset || guide.hidden) return;
+        const width = image.naturalWidth, height = image.naturalHeight;
+        const insets = materialOption("slice-insets").value.trim().split(/\s+/).map(Number);
+        const [top, right, bottom, left] = insets.length === 4 && insets.every(Number.isFinite) ? insets : [0, 0, 0, 0];
+        guide.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        bitmap.setAttribute("width", width);
+        bitmap.setAttribute("height", height);
+        bitmap.setAttribute("href", asset.data);
+        guide.querySelector("path").setAttribute("d",
+            `M${left} 0V${height} M${width - right} 0V${height} M0 ${top}H${width} M0 ${height - bottom}H${width}`);
+    };
+    image.src = asset.data;
+}
+
+function showAdvancedMaterial(material) {
+    const gradient = material.gradient, slices = material.slices;
+    materialOption("gradient-kind").value = gradient?.kind ?? "";
+    materialOption("gradient-angle").value = gradient?.angle ?? 180;
+    materialOption("gradient-center").value = gradient?.center.join(" ") ?? ".5 .5";
+    materialOption("gradient-stops").value = gradient?.stops.map(stop =>
+        `${stop.at} ${stop.color} ${stop.opacity}`).join("\n") ?? "";
+    materialOption("slice-enable").checked = Boolean(slices);
+    materialOption("slice-insets").value = slices?.insets.join(" ") ?? "8 8 8 8";
+    materialOption("slice-minimum").value = slices?.minimum.join(" ") ?? "0 0";
+    materialOption("slice-edges").value = slices?.edges ?? "stretch";
+    materialOption("slice-center").value = slices?.center ?? "stretch";
+    materialOption("slice-transparent").checked = Boolean(slices?.transparentCenter);
+    const extras = Object.fromEntries(["corners", "borders", "bevel", "texture", "lighting", "finish"]
+        .filter(name => material[name] !== undefined).map(name => [name, material[name]]));
+    materialOption("material-extra").value = JSON.stringify(extras, null, 2);
+    updateSliceGuide();
+}
+
+function readAdvancedMaterial() {
+    const checklist = name => materialOption(name).value.trim().split(/\s+/).map(Number);
+    const draft = JSON.parse(materialOption("material-extra").value || "{}");
+    const keys = ["corners", "borders", "bevel", "texture", "lighting", "finish"];
+    if (!draft || typeof draft !== "object" || Array.isArray(draft) || Object.keys(draft).some(key => !keys.includes(key)))
+        throw new Error("Use the documented advanced material fields.");
+    const result = Object.fromEntries(keys.map(key => [key, draft[key]]));
+    if (materialOption("gradient-kind").value) {
+        result.gradient = {kind: materialOption("gradient-kind").value, angle: materialOption("gradient-angle").valueAsNumber,
+            center: checklist("gradient-center"), stops: materialOption("gradient-stops").value.trim().split(/\n/).filter(Boolean)
+                .map(line => {
+                    const [at, color, opacity = "1", extra] = line.trim().split(/\s+/);
+                    if (extra !== undefined) throw new Error("A gradient stop uses position, color, and optional opacity.");
+                    return {at: Number(at), color, opacity: Number(opacity)};
+                })};
+    }
+    if (materialOption("slice-enable").checked) {
+        result.slices = {insets: checklist("slice-insets"), minimum: checklist("slice-minimum"),
+            edges: materialOption("slice-edges").value, center: materialOption("slice-center").value,
+            transparentCenter: materialOption("slice-transparent").checked};
+    }
+    return {gradient: result.gradient, slices: result.slices, ...result};
+}
+
+for (const name of ["asset", "slice-enable", "slice-insets"])
+    materialOption(name).addEventListener("input", updateSliceGuide);
+
+function readMaterialFields() {
+    const current = model.activeAppearanceTheme(presentation)?.materials[query("#appearance-material").value];
+    materialFields.hidden = !current;
+    if (!current) return;
+    for (const name of ["fill", "end", "edge", "edgeWidth", "highlight", "radius", "opacity", "shape"])
+        materialFields.elements.namedItem(name).value = current[name];
+    for (const kind of ["shadow", "innerShadow", "glow"]) {
+        for (const key of ["color", "sigma", "x", "y"])
+            materialFields.elements.namedItem(kind + "-" + key).value = current[kind]?.[key] ?? "";
+    }
+    for (const name of ["asset", "mask"]) {
+        const menu = materialFields.elements.namedItem(name);
+        menu.replaceChildren(new Option("None", ""), ...Object.entries(presentation.assets).map(([id, asset]) => new Option(asset.name, id)));
+        menu.value = current[name] ?? "";
+    }
+    const icons = model.activeAppearanceTheme(presentation).icons;
+    const iconMenu = materialOption("icon");
+    iconMenu.replaceChildren(new Option("None", ""), ...Object.entries(icons).map(([id, icon]) => new Option(icon.name, id)));
+    iconMenu.value = current.icon ?? "";
+    showAdvancedMaterial(current);
+}
+
+function placeAppearance(type, id, target, point) {
+    if (type === "icon") {
+        const material = query("#appearance-material").value;
+        if (!material) throw new Error("Choose a material for the icon first.");
+        const next = structuredClone(presentation);
+        const theme = next.themes[next.activeTheme];
+        (theme.materials ??= {})[material] = {...theme.materials?.[material], icon: id};
+        setPresentation(model.readPresentation(next), true);
+        return;
+    }
+    if (type === "asset" || type === "stock") {
+        const stock = type === "stock" ? stockArtwork.get(id) : undefined;
+        const asset = stock ? {name: stock.name, data: stock.artwork} :
+            Object.hasOwn(presentation.assets, id) ? presentation.assets[id] : undefined;
+        if (!asset) return;
+        if (target && model.hasArtwork(target.kind)) {
+            setControlArtwork(target, asset.data, model.hasCapArtwork(target.kind) ? target.artworkMode ?? "cap" : undefined,
+                asset.name + " applied.");
+        } else {
+            placeNew({...starter("image"), label: asset.name, artwork: asset.data}, point, model.phoneSize("image"));
+        }
+        return;
+    }
+    const pack = model.activeAppearanceTheme(presentation);
+    const style = pack?.components[id];
+    if (!style || !Object.hasOwn(pack.components, id)) return;
+    if (target) {
+        if (!model.matchesAppearance(model.appearanceKind(target.kind), style)) throw new Error("Choose a compatible control.");
+        const before = snapshot();
+        target.visualStyle = id;
+        record(before);
+    } else {
+        const kind = {panel: "rectangle", button: "toggle", dropdown: "choice", tab: "toggle", "icon-button": "action"}[style.kind] ?? style.kind;
+        placeNew({...starter(kind), visualStyle: id}, point, model.phoneSize(kind));
+    }
+}
+
+function setPresentation(next, previewOnly = false) {
+    if (encoder.encode(model.serialize(controlsOnly(), theme, catalog, programs, next)).length > model.maxProjectBytes)
+        throw new Error("The theme dependencies would take this layout over 2 MiB.");
+    const before = snapshot();
+    presentation = next;
+    record(before, previewOnly);
+}
+
+const previewState = query("#appearance-state");
+for (const state of model.appearanceStates) previewState.add(new Option(state, state));
+previewState.onchange = () => refreshAppearance(true);
+query("#appearance-compare").onclick = () => {
+    const comparison = query("#appearance-comparison");
+    if (!comparison.hidden) {
+        comparison.hidden = true;
+        for (const frame of comparison.querySelectorAll("iframe")) frame.removeAttribute("srcdoc");
+        return;
+    }
+    const ids = Object.keys(presentation.themes);
+    if (ids.length < 2) {
+        status.textContent = "Load two themes to compare their appearance.";
+        return;
+    }
+    const current = presentation.activeTheme || ids[0];
+    const views = [current, ids.find(id => id !== current)];
+    for (const [i, frame] of [...comparison.querySelectorAll("iframe")].entries()) {
+        const id = views[i];
+        frame.title = presentation.themes[id].name + " comparison preview";
+        frame.srcdoc = runtime.html(controlsOnly(), theme,
+            {catalog, programs, values: [...previewValues], generation: -1, state: previewState.value},
+            {...presentation, activeTheme: id});
+    }
+    comparison.hidden = false;
+};
+
+themeSelection.onchange = () => applyArtwork(() => setPresentation({...presentation, activeTheme: themeSelection.value}, true));
+query("#appearance-search").oninput = refreshAppearanceBrowser;
+query("#appearance-icon-size").onchange = () => {
+    libraryPreview = undefined;
+    refreshAppearanceBrowser();
+};
+query("#appearance-library").ontoggle = refreshAppearanceBrowser;
+query("#appearance-style").onchange = event => {
+    if (!selected) return;
+    const before = snapshot();
+    if (event.target.value) selected.visualStyle = event.target.value;
+    else delete selected.visualStyle;
+    record(before, true);
+};
+query("#appearance-material").onchange = readMaterialFields;
+materialFields.onsubmit = event => {
+    event.preventDefault();
+    applyArtwork(() => {
+        const id = query("#appearance-material").value;
+        if (!id) return;
+        const next = structuredClone(presentation);
+        const authored = next.themes[next.activeTheme];
+        const current = model.activeAppearanceTheme(presentation).materials[id];
+        const material = {...current};
+        for (const name of ["fill", "end", "edge", "edgeWidth", "highlight", "radius", "opacity", "shape", "asset", "mask", "icon"]) {
+            const field = materialFields.elements.namedItem(name);
+            const value = field.type === "number" ? field.valueAsNumber : field.value;
+            material[name] = value === "" ? undefined : value;
+        }
+        for (const kind of ["shadow", "innerShadow", "glow"]) {
+            const color = materialFields.elements.namedItem(kind + "-color").value;
+            const value = name => materialFields.elements.namedItem(kind + "-" + name).valueAsNumber;
+            material[kind] = color ? {color, sigma: value("sigma") || 0, x: value("x") || 0, y: value("y") || 0} : undefined;
+        }
+        Object.assign(material, readAdvancedMaterial());
+        const patch = {...authored.materials?.[id]};
+        for (const [key, value] of Object.entries(material)) {
+            if (JSON.stringify(value) !== JSON.stringify(current[key])) patch[key] = value ?? null;
+        }
+        (authored.materials ??= {})[id] = patch;
+        setPresentation(model.readPresentation(next), true);
+    });
+};
+bindFile(query("#appearance-import"), query("#appearance-pack-file"), async file => {
+    if (file.size > model.maxProjectBytes) throw new Error("The theme pack exceeds 2 MiB.");
+    const importVersion = layoutVersion;
+    const next = model.readThemePack(await file.text(), presentation);
+    if (importVersion === layoutVersion) setPresentation(next, true);
+});
+const packFolder = query("#appearance-pack-folder");
+const packManifest = "cell-theme-pack.json";
+
+async function readFolderPack(definition, getAsset, previous) {
+    if (!definition || definition.size > model.maxProjectBytes)
+        throw new Error("Choose a folder with a cell-theme-pack.json file at its root.");
+    const manifestStamp = definition.lastModified + ":" + definition.size;
+    const sameManifest = previous?.manifestStamp === manifestStamp;
+    const text = sameManifest ? previous.text : await definition.text();
+    const paths = sameManifest ? previous.paths : model.packAssetPaths(text);
+    let bytes = definition.size;
+    const found = new Map(), stamps = new Map();
+    for (const path of paths) {
+        const file = await getAsset(path);
+        if (!file) throw new Error("Missing relative asset " + path);
+        bytes += file.size;
+        if (bytes > model.maxProjectBytes) throw new Error("The pack and its assets exceed 2 MiB.");
+        found.set(path, file);
+        stamps.set(path, file.lastModified + ":" + file.size);
+    }
+    if (sameManifest && [...stamps].every(([path, stamp]) => previous.stamps.get(path) === stamp)) return undefined;
+    const files = new Map();
+    for (const [path, file] of found) {
+        const artwork = previous?.stamps.get(path) === stamps.get(path)
+            ? previous.files.get(path) : await readArtwork(file, true);
+        files.set(path, artwork);
+    }
+    return {text, files, paths, manifestStamp, stamps};
+}
+
+query("#appearance-import-folder").onclick = () => packFolder.click();
+packFolder.onchange = async () => {
+    const version = layoutVersion;
+    try {
+        const selectedFiles = [...packFolder.files];
+        if (!selectedFiles.length) return;
+        if (selectedFiles.length > 1024) throw new Error("The pack folder contains too many files.");
+        const byPath = new Map(selectedFiles.map(file => [file.webkitRelativePath.split("/").slice(1).join("/"), file]));
+        const {text, files} = await readFolderPack(byPath.get(packManifest), path => byPath.get(path));
+        if (version === layoutVersion) {
+            setPresentation(model.readThemePack(text, presentation, files), true);
+            status.textContent = "Theme pack folder imported.";
+        }
+    } catch (error) {
+        status.textContent = error.message;
+    } finally {
+        packFolder.value = "";
+    }
+};
+const watchButton = query("#appearance-watch");
+const watchFolderButton = query("#appearance-watch-folder");
+let watchedPack;
+watchButton.disabled = typeof window.showOpenFilePicker !== "function";
+watchFolderButton.disabled = typeof window.showDirectoryPicker !== "function";
+
+function stopWatchingPack() {
+    if (!watchedPack) return;
+    clearInterval(watchedPack.timer);
+    watchedPack.button.textContent = watchedPack.label;
+    watchedPack.button.setAttribute("aria-pressed", "false");
+    watchedPack = undefined;
+}
+
+async function folderAsset(root, path) {
+    const parts = path.split("/");
+    const filename = parts.pop();
+    try {
+        let directory = root;
+        for (const part of parts) directory = await directory.getDirectoryHandle(part);
+        return await (await directory.getFileHandle(filename)).getFile();
+    } catch (error) {
+        if (error.name !== "NotFoundError") throw error;
+    }
+}
+
+function updateWatchedPack(watcher, text, files) {
+    const previous = presentation;
+    const active = previous.activeTheme;
+    const remaining = Object.entries(previous.themes).filter(([id]) => !watcher.themes.has(id));
+    const usedAssets = new Set([theme.backgroundAsset, ...controls.map(control => control.assetId),
+        ...(previous.previewAssets ?? []).filter(id => !watcher.previews.has(id))]);
+    const usedIcons = new Set();
+    for (const [, theme] of remaining) {
+        for (const material of Object.values(theme.materials ?? {})) {
+            for (const id of [material?.asset, material?.mask, material?.texture?.asset]) usedAssets.add(id);
+            usedIcons.add(material?.icon);
+        }
+    }
+    const replace = {themes: watcher.themes, previews: watcher.previews,
+        assets: new Set([...watcher.assets].filter(id => !usedAssets.has(id))),
+        icons: new Set([...watcher.icons].filter(id => !usedIcons.has(id)))};
+    const next = model.readThemePack(text, previous, files, replace);
+    const owned = {};
+    for (const domain of ["themes", "assets", "icons"])
+        owned[domain] = new Set(Object.keys(next[domain]).filter(id => replace[domain].has(id) || !Object.hasOwn(previous[domain], id)));
+    owned.previews = new Set((next.previewAssets ?? []).filter(id =>
+        replace.previews.has(id) || !previous.previewAssets?.includes(id)));
+    if (!watcher.themes.size || watcher.themes.has(active))
+        next.activeTheme = owned.themes.has(active) ? active : [...owned.themes][0];
+    setPresentation(next, true);
+    Object.assign(watcher, owned);
+}
+
+async function watchTheme(button, pick) {
+    const wasWatching = watchedPack?.button === button;
+    stopWatchingPack();
+    if (wasWatching) return;
+    const version = layoutVersion;
+    try {
+        const handle = await pick();
+        if (!handle || version !== layoutVersion) return;
+        const watcher = watchedPack = {button, label: button.textContent, version, busy: false,
+            themes: new Set(), assets: new Set(), icons: new Set(), previews: new Set()};
+        button.textContent = "Stop watching";
+        button.setAttribute("aria-pressed", "true");
+        const refresh = async () => {
+            if (watcher !== watchedPack || watcher.busy || document.hidden) return;
+            if (watcher.version !== layoutVersion) {
+                stopWatchingPack();
+                return;
+            }
+            watcher.busy = true;
+            try {
+                const directory = handle.kind === "directory";
+                const file = directory ? await folderAsset(handle, packManifest) : await handle.getFile();
+                const pack = await readFolderPack(file, directory ? path => folderAsset(handle, path) : () => undefined,
+                    watcher.source);
+                if (watchedPack !== watcher || layoutVersion !== watcher.version) return;
+                if (!pack) return;
+                updateWatchedPack(watcher, pack.text, pack.files);
+                watcher.source = pack;
+                status.textContent = "Watching " + handle.name + ".";
+            } catch (error) {
+                if (watchedPack === watcher) status.textContent = error.message;
+            } finally {
+                watcher.busy = false;
+            }
+        };
+        watcher.timer = setInterval(refresh, 1000);
+        await refresh();
+    } catch (error) {
+        if (error.name !== "AbortError") status.textContent = error.message;
+    }
+}
+
+watchButton.onclick = () => watchTheme(watchButton, async () => {
+    const [handle] = await window.showOpenFilePicker({multiple: false,
+        types: [{description: "Cell theme pack", accept: {"application/json": [".json"]}}]});
+    return handle;
+});
+watchFolderButton.onclick = () => watchTheme(watchFolderButton, () => window.showDirectoryPicker({mode: "read"}));
+
+bindFile(query("#appearance-asset"), query("#appearance-asset-file"), async file => {
+    const importVersion = layoutVersion;
+    const data = await readArtwork(file, true);
+    if (importVersion !== layoutVersion) return;
+    const assets = {...presentation.assets};
+    model.registerAsset(assets, data, file.name);
+    setPresentation(model.readPresentation({...presentation, assets}));
+});
+query("#appearance-export").onclick = () => applyArtwork(() =>
+    download(model.writeThemePack(presentation), "application/json", "cell-theme-pack.json"));
+query("#appearance-native").onclick = async () => {
+    const button = query("#appearance-native");
+    button.disabled = true;
+    try {
+        const name = presentation.activeTheme;
+        const layout = grid === phoneGrid ? "portrait" : "wide";
+        const scene = await model.nativeScene(controlsOnly(), theme, presentation,
+            {phone: grid === phoneGrid, catalog, values: [...previewValues], visualState: query("#appearance-state").value}, async data => {
+                const image = new Image();
+                image.src = data;
+                await image.decode();
+                const scale = Math.min(1, 768 / Math.max(image.naturalWidth, image.naturalHeight));
+                const bitmap = document.createElement("canvas");
+                bitmap.width = Math.max(1, Math.round(image.naturalWidth * scale));
+                bitmap.height = Math.max(1, Math.round(image.naturalHeight * scale));
+                bitmap.getContext("2d").drawImage(image, 0, 0, bitmap.width, bitmap.height);
+                return {png: bitmap.toDataURL("image/png").split(",")[1],
+                    sourceScale: [bitmap.width / image.naturalWidth, bitmap.height / image.naturalHeight]};
+            });
+        download(scene, "application/json", `cell-${name}-${layout}.cellskin.json`);
+        status.textContent = "Run cell_skin_preview to render this scene through the native Canvas.";
+    } catch (error) {
+        status.textContent = error.message;
+    } finally {
+        button.disabled = !presentation.activeTheme;
+    }
+};
+query("#appearance-demo").onclick = () => {
+    const looks = model.readThemePack(JSON.stringify(CellDesignerThemeExamples));
+    const gain = {key: "gain", name: "Gain", value: .62, minimum: 0, maximum: 1, step: .01, choices: []};
+    const demo = [
+        {kind: "rectangle", label: "Backplate", x: 0, y: 0, width: 12, height: 6},
+        {kind: "knob", label: "Drive", key: "gain", x: 0, y: 0, width: 4, height: 4, showGainReduction: true},
+        {kind: "fader", label: "Level", key: "gain", x: 4, y: 0, width: 3, height: 5},
+        {kind: "meter", label: "Output", key: "output-peak", x: 7, y: 0, width: 5, height: 1},
+        {kind: "slider", label: "Mix", key: "gain", x: 0, y: 4, width: 4, height: 1},
+        {kind: "choice", label: "Mode", key: "mode", x: 7, y: 1, width: 5, height: 1},
+        {kind: "rectangle", label: "Response", visualStyle: "analysis", x: 7, y: 2, width: 5, height: 3},
+        {kind: "toggle", label: "Active", key: "bypass", x: 0, y: 5, width: 4, height: 1},
+        {kind: "toggle", label: "Alternate", key: "bypass", visualStyle: "tab", x: 4, y: 5, width: 4, height: 1},
+        {kind: "action", label: "Reset", action: "reset", visualStyle: "icon-button", x: 8, y: 5, width: 4, height: 1}
+    ];
+    const parameters = [gain, {key: "mode", name: "Mode", value: 1, minimum: 0, maximum: 2, step: 1, choices: ["Clean", "Warm", "Hot"]},
+        {key: "bypass", name: "Bypass", value: 0, minimum: 0, maximum: 1, step: 1, choices: ["On", "Off"]}]
+        .map(parameter => ({unit: "", readonly: false, ...parameter}));
+    loadShowcase(demo, model.defaultTheme, parameters, [1], "Theme comparison loaded.", looks);
+};
+
+query("#export-live").onclick = () => applyArtwork(() =>
+    download(liveContent(), "text/html", "cell-designer-live.html"));
+
 function exportEditor(bindings) {
     if (!controls.length && (bindings || !theme.backgroundArtwork)) {
         status.textContent = bindings ? "Add a control before exporting bindings." : "Add a control or background image before exporting.";
@@ -1318,7 +2177,7 @@ function exportEditor(bindings) {
     }
     const layout = controlsOnly();
     if (bindings) download(model.cppBindings(layout), "text/plain", "cell-ui-bindings.hpp");
-    else download(CellDesignerRuntime.html(layout, theme), "text/html", "cell-plugin-editor.html");
+    else download(CellDesignerRuntime.html(layout, theme, undefined, presentation), "text/html", "cell-plugin-editor.html");
     const issues = exportIssues();
     status.textContent = (bindings ? "C++ bindings exported." : "WebView HTML exported.") +
         (issues.length ? " " + issues.join(". ") + "." : "");
@@ -1331,5 +2190,12 @@ window.addEventListener("beforeunload", event => {
     event.returnValue = true;
 });
 
+try {
+    for (const data of JSON.parse(localStorage.getItem(componentStorage) ?? "[]").slice(0, 32)) {
+        const component = model.readComponent(JSON.stringify(data));
+        components.set(component.name, component);
+    }
+} catch { /* An unavailable library does not prevent editing a layout. */ }
+refreshComponents();
 select([]);
 refreshProject();

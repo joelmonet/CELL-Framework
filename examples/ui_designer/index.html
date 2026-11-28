@@ -97,10 +97,23 @@ summary{cursor:pointer;font-weight:600}
 #preview-panel iframe{display:block;margin:0 auto;width:max(100%,540px);height:clamp(320px,64vh,640px);background:#111b20;border:1px solid #577076;border-radius:8px}
 #preview-panel iframe[data-size=phone]{width:min(100%,390px)}
 @media(max-width:850px){main{padding:12px}.workspace{grid-template-columns:1fr}}
+#appearance-results{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;max-height:240px;overflow:auto}
+#appearance-results button{display:flex;align-items:center;gap:6px;text-align:left;font-size:12px}
+#appearance-results img{width:var(--artwork-preview-size,26px);height:var(--artwork-preview-size,24px);object-fit:contain}
+#appearance-fields label{font-size:12px}
+#appearance-fields input:not([type=checkbox]),#appearance-fields select,#appearance-fields textarea{width:100%;min-width:0}
+#appearance-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+#appearance-comparison[hidden]{display:none}
+#appearance-comparison iframe{width:100%;height:520px}
+#appearance-slice-guide{width:100%;height:120px;background:#101919;border-radius:5px}
+#canvas[data-themed] .tile{color:var(--text)}
+.cell-look-icon,.cell-look-indicator{display:none}
+.cell-look-highlight,.cell-look-foreground{position:absolute;inset:0;visibility:hidden;pointer-events:none;border-radius:inherit}
 </style>
 <script src="model.js" defer></script>
 <script src="fonts.js" defer></script>
 <script src="artwork.js" defer></script>
+<script src="theme_examples.js" defer></script>
 <script src="runtime.js" defer></script>
 <script src="designer.js" defer></script>
 </head>
@@ -119,15 +132,34 @@ summary{cursor:pointer;font-weight:600}
 <button type="button" id="paste-controls">Paste controls</button>
 <button type="button" id="preview" aria-controls="preview-panel" aria-expanded="false">Live preview</button>
 <button type="button" id="check-bindings">Check bindings</button>
+<button type="button" id="live-host" aria-pressed="false">Connect live host</button>
+<button type="button" id="export-live">Export live page</button>
 <button type="button" id="export">Export WebView HTML</button>
 <button type="button" id="export-cpp" class="primary">Export C++ bindings</button>
 </nav>
+<p id="live-host-status" class="help" role="status" hidden></p>
 <div class="workspace">
 <section class="panel design" aria-label="Design tools">
 <div class="section-head">
 <h2>Controls</h2>
 <div id="palette" class="action-row" aria-label="Control palette"></div>
 </div>
+<details id="component-library">
+<summary>Components</summary>
+<div class="action-row">
+<label>Component name <input id="component-name" maxlength="80"></label>
+<button id="component-save" type="button" disabled>Save selection</button>
+<button id="component-import" type="button">Import component</button>
+<input id="component-file" type="file" accept=".json,application/json" hidden>
+</div>
+<div class="action-row">
+<label>Saved components <select id="component-list"></select></label>
+<button id="component-insert" type="button" disabled>Insert component</button>
+<button id="component-export" type="button" disabled>Export component</button>
+<button id="component-remove" type="button" disabled>Remove component</button>
+</div>
+<div id="component-bindings" class="action-row" aria-label="Component bindings"></div>
+</details>
 <div class="layout-options">
 <label>Edit layout <select id="layout-size"><option value="wide">Wide</option><option value="phone">Phone</option></select></label>
 <label><input type="checkbox" id="snap-placement" checked> Snap to grid</label>
@@ -194,6 +226,9 @@ summary{cursor:pointer;font-weight:600}
 </div>
 <label>Rotation (degrees)<input name="rotation" type="number" step="any" placeholder="0"></label>
 <button id="auto-phone-position" type="button" hidden>Auto-place on phone</button>
+<div id="knob-meter-settings" hidden>
+<label class="check"><input type="checkbox" name="show-gain-reduction">Show gain reduction</label>
+</div>
 <div id="detent-settings" hidden>
 <label>Detent labels<select name="detent-label-mode">
 <option value="none">None</option><option value="choices">Parameter choices</option><option value="custom">Custom labels</option>
@@ -307,7 +342,110 @@ aria-describedby="display-code-help"></textarea></label>
 <label>Text<input type="color" name="text"></label>
 <label>Accent<input type="color" name="accent"></label>
 </div>
+<fieldset id="appearance-extra-colors" class="theme-grid" hidden disabled>
+<legend>Theme palette</legend>
+<label>Edge<input type="color" name="edge"></label>
+<label>Muted<input type="color" name="muted"></label>
+<label>Metal<input type="color" name="metal"></label>
+<label>Highlight<input type="color" name="highlight"></label>
+<label>Shadow<input type="color" name="shadow"></label>
+</fieldset>
 <button type="button" id="reset-theme">Reset colors</button>
+</form>
+</details>
+<details id="appearance-library">
+<summary>Theme and asset library</summary>
+<label>Theme<select id="appearance-theme"></select></label>
+<label>Preview visual state<select id="appearance-state"><option value="">Live states</option></select></label>
+<div class="action-row">
+<button id="appearance-demo" type="button">Load HDR / MODERN comparison</button>
+<button id="appearance-import" type="button">Import theme pack</button>
+<button id="appearance-import-folder" type="button">Import pack folder</button>
+<button id="appearance-watch" type="button" aria-pressed="false">Watch theme file</button>
+<button id="appearance-watch-folder" type="button" aria-pressed="false">Watch theme folder</button>
+<button id="appearance-export" type="button">Export theme pack</button>
+<button id="appearance-asset" type="button">Import asset</button>
+<button id="appearance-native" type="button">Export native preview</button>
+<button id="appearance-compare" type="button">Compare themes</button>
+</div>
+<input id="appearance-pack-folder" type="file" webkitdirectory multiple hidden>
+<input id="appearance-pack-file" type="file" accept=".json,application/json" hidden>
+<input id="appearance-asset-file" type="file" accept=".svg,image/svg+xml,image/png,image/webp" hidden>
+<label>Search assets and styles<input id="appearance-search" type="search"></label>
+<label>Icon preview size<select id="appearance-icon-size"><option>12</option><option>16</option><option>20</option><option selected>24</option><option>32</option><option>48</option></select></label>
+<div id="appearance-results" aria-label="Theme assets and styles"></div>
+<details><summary>Artwork dependencies</summary><ul id="appearance-dependencies"></ul></details>
+<label>Selected control style<select id="appearance-style"></select></label>
+<details>
+<summary>Save a style class</summary>
+<label>Style ID<input id="appearance-class-id" type="text" maxlength="64" placeholder="knob.primary"></label>
+<label>Style name<input id="appearance-class-name" type="text" maxlength="80"></label>
+<button id="appearance-save-class" type="button">Save style class</button>
+</details>
+<details id="appearance-local">
+<summary>Local appearance and sources</summary>
+<label>Visual slot<select id="appearance-slot"></select></label>
+<label>Slot material<select id="appearance-override"></select></label>
+<output id="appearance-source"></output>
+<div class="action-row">
+<button id="appearance-reset-local" type="button">Reset local appearance</button>
+<button id="appearance-detach" type="button">Detach style</button>
+<button id="appearance-copy-look" type="button">Copy appearance</button>
+<button id="appearance-paste-look" type="button">Paste appearance</button>
+<button id="appearance-export-template" type="button">Export visual template</button>
+<button id="appearance-import-template" type="button">Import visual template</button>
+<input id="appearance-template-file" type="file" accept=".json,application/json" hidden>
+</div>
+<label>Visual layers JSON<textarea id="appearance-stack" rows="5" spellcheck="false"></textarea></label>
+<label>Analytical display<select id="appearance-display"></select></label>
+<fieldset id="appearance-pivot" hidden>
+<legend>Rotary pivot</legend>
+<div class="theme-grid">
+<label>Horizontal pivot<input type="number" min="0" max="1" step="any" value="0.5"></label>
+<label>Vertical pivot<input type="number" min="0" max="1" step="any" value="0.5"></label>
+</div>
+</fieldset>
+<label>Visual control geometry JSON<textarea id="appearance-geometry" rows="3" spellcheck="false"></textarea></label>
+<button id="appearance-apply-layers" type="button">Apply layers and geometry</button>
+</details>
+<label>Material<select id="appearance-material"></select></label>
+<form id="appearance-fields" hidden>
+<div class="theme-grid">
+<label>Fill<input name="fill"></label><label>Gradient end<input name="end"></label>
+<label>Border color<input name="edge"></label><label>Border stroke<input name="edgeWidth" type="number" min="0" max="6" step=".1"></label>
+<label>Edge highlight<input name="highlight"></label><label>Radius<input name="radius" type="number" min="0" max="48" step=".1"></label>
+<label>Opacity<input name="opacity" type="number" min="0" max="1" step=".01"></label>
+<label>Shape<select name="shape"><option value="rounded">Rounded</option><option value="ellipse">Ellipse</option></select></label>
+<label>Artwork<select name="asset"></select></label><label>Alpha mask<select name="mask"></select></label>
+<label>Vector icon<select name="icon"></select></label>
+<label>Drop shadow color<input name="shadow-color" placeholder="None"></label><label>Blur<input name="shadow-sigma" type="number" min="0" max="18" step=".1" value="3"></label><label>X offset<input name="shadow-x" type="number" min="-16" max="16" step=".1" value="0"></label><label>Y offset<input name="shadow-y" type="number" min="-16" max="16" step=".1" value="0"></label><label>Inner shadow color<input name="innerShadow-color" placeholder="None"></label><label>Blur<input name="innerShadow-sigma" type="number" min="0" max="18" step=".1" value="3"></label><label>X offset<input name="innerShadow-x" type="number" min="-16" max="16" step=".1" value="0"></label><label>Y offset<input name="innerShadow-y" type="number" min="-16" max="16" step=".1" value="0"></label><label>Glow color<input name="glow-color" placeholder="None"></label><label>Blur<input name="glow-sigma" type="number" min="0" max="18" step=".1" value="3"></label><label>X offset<input name="glow-x" type="number" min="-16" max="16" step=".1" value="0"></label><label>Y offset<input name="glow-y" type="number" min="-16" max="16" step=".1" value="0"></label></div>
+<details>
+<summary>Gradient stops</summary>
+<div class="theme-grid">
+<label>Fill geometry<select name="gradient-kind"><option value="">Legacy fill</option><option>solid</option><option>linear</option><option>radial</option><option>conic</option></select></label>
+<label>Gradient angle<input type="number" name="gradient-angle" min="-360" max="360" step="1"></label>
+<label>Gradient center<input name="gradient-center"></label>
+</div>
+<label>Stops (position, color, opacity)<textarea name="gradient-stops" rows="4" placeholder="0 surface 1&#10;1 shadow 1"></textarea></label>
+</details>
+<details>
+<summary>Stretchable artwork</summary>
+<label><input type="checkbox" name="slice-enable"> Enable slicing</label>
+<div class="theme-grid">
+<label>Insets (top right bottom left)<input name="slice-insets"></label>
+<label>Minimum size<input name="slice-minimum"></label>
+<label>Edge mode<select name="slice-edges"><option>stretch</option><option>tile</option></select></label>
+<label>Center mode<select name="slice-center"><option>stretch</option><option>tile</option></select></label>
+</div>
+<label><input type="checkbox" name="slice-transparent"> Transparent center</label>
+<svg id="appearance-slice-guide" role="img" aria-label="Artwork slice boundaries" hidden>
+<image x="0" y="0"></image><path fill="none" stroke="#5deadc" stroke-dasharray="4 3" vector-effect="non-scaling-stroke" stroke-width="2"></path>
+</svg>
+</details>
+<details><summary>Texture, corners and lighting</summary>
+<label>Advanced material JSON<textarea name="material-extra" rows="5" spellcheck="false"></textarea></label>
+</details>
+<button type="submit">Apply material</button>
 </form>
 </details>
 <details>
@@ -337,6 +475,10 @@ aria-describedby="display-code-help"></textarea></label>
 </aside>
 </div>
 <p id="status" role="status"></p>
+<section id="appearance-comparison" aria-label="Theme comparison" hidden>
+<iframe title="First theme" sandbox="allow-scripts"></iframe>
+<iframe title="Second theme" sandbox="allow-scripts"></iframe>
+</section>
 <section id="preview-panel" class="panel" aria-labelledby="preview-title" hidden>
 <div class="section-head">
 <h2 id="preview-title">Live preview</h2>

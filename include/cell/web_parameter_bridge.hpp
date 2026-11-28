@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cell/plugin.hpp>
+#include <cell/base64.hpp>
 #include <cell/json.hpp>
 #include <cell/commands.hpp>
 #include <map>
@@ -17,42 +18,11 @@ struct EditorFileRequest {
 };
 
 namespace detail {
-inline constexpr std::string_view base64Digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
 inline std::string encodeFileBytes(std::span<const std::byte> bytes) {
-    std::string result;
-    result.reserve(((bytes.size() + 2) / 3) * 4);
-    for (std::size_t i = 0; i < bytes.size(); i += 3) {
-        const auto remaining = bytes.size() - i;
-        const auto a = std::to_integer<unsigned>(bytes[i]);
-        const auto b = remaining > 1 ? std::to_integer<unsigned>(bytes[i + 1]) : 0;
-        const auto c = remaining > 2 ? std::to_integer<unsigned>(bytes[i + 2]) : 0;
-        result += base64Digits[a >> 2];
-        result += base64Digits[((a & 3) << 4) | (b >> 4)];
-        result += remaining > 1 ? base64Digits[((b & 15) << 2) | (c >> 6)] : '=';
-        result += remaining > 2 ? base64Digits[c & 63] : '=';
-    }
-    return result;
+    return encoding::encodeBase64(bytes);
 }
-
 inline std::optional<std::vector<std::byte>> decodeFileBytes(std::string_view text) {
-    if (text.size() % 4 || text.size() > maxEditorFileBytes / 3 * 4) return {};
-    std::vector<std::byte> result;
-    result.reserve(text.size() / 4 * 3);
-    for (std::size_t i = 0; i < text.size(); i += 4) {
-        const auto a = base64Digits.find(text[i]), b = base64Digits.find(text[i + 1]);
-        const auto c = base64Digits.find(text[i + 2]), d = base64Digits.find(text[i + 3]);
-        if (a == base64Digits.npos || b == base64Digits.npos) return {};
-        const bool final = i + 4 == text.size();
-        if (c == base64Digits.npos &&
-            (!final || text[i + 2] != '=' || text[i + 3] != '=' || (b & 15))) return {};
-        if (c != base64Digits.npos && d == base64Digits.npos &&
-            (!final || text[i + 3] != '=' || (c & 3))) return {};
-        result.push_back(std::byte((a << 2) | (b >> 4)));
-        if (c != base64Digits.npos) result.push_back(std::byte(((b & 15) << 4) | (c >> 2)));
-        if (d != base64Digits.npos) result.push_back(std::byte(((c & 3) << 6) | d));
-    }
-    return result;
+    return encoding::decodeBase64(text, maxEditorFileBytes);
 }
 inline json::Value parameterSnapshotField(const Parameter& field, double value,
                                           bool hidden = false, bool readOnly = false,
@@ -346,12 +316,23 @@ public:
             {"message", V(std::string(error.substr(0, 512)))}}));
     }
 
+    bool allowsParameter(std::string_view key, bool writable) const {
+        const auto id = stableId(key);
+        const auto field = allowed_.find(id);
+        return field != allowed_.end() && field->second->key == key && (!writable || !readOnly_.contains(id));
+    }
+    bool allowsAction(std::string_view key, ActionMode mode) const {
+        return allowedActions_.contains({std::string(key), mode});
+    }
+
     std::string snapshot() const { return encodeSnapshot(json::Value(snapshotValue())); }
     void advertiseParameterDeltas() noexcept { advertiseDeltas_ = true; }
+    void advertiseHostShortcuts() noexcept { hostShortcuts_ = true; }
     bool usesParameterDeltas() const noexcept { return deltas_; }
     void resetParameterUpdates() noexcept { lastSnapshot_.reset(); }
     void resetPage() noexcept {
         deltas_ = false;
+        catalogRevision_.reset();
         resetParameterUpdates();
         reply_.clear();
         fileRequest_.reset();
@@ -418,6 +399,7 @@ private:
         }
         V::Object snapshot{{"type", V("parameters")}, {"parameters", V(std::move(parameters))}};
         if (advertiseDeltas_) snapshot.emplace("supportsDeltas", V(true));
+        if (hostShortcuts_) snapshot.emplace("hostShortcuts", V(true));
         if (openFile_) {
             V::Array extensions;
             for (const auto& extension : fileExtensions_) extensions.emplace_back(extension);
@@ -593,6 +575,7 @@ private:
     mutable json::Value catalog_;
     std::string reply_;
     bool deltas_{}, advertiseDeltas_{};
+    bool hostShortcuts_{};
     std::uint64_t revision_{}, committedRevision_{};
     std::optional<json::Value::Object> lastSnapshot_;
     std::vector<std::string> fileExtensions_;

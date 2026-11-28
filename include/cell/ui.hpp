@@ -2,6 +2,7 @@
 
 #include <cell/plugin.hpp>
 #include <cell/commands.hpp>
+#include <array>
 #include <functional>
 #include <string_view>
 
@@ -23,6 +24,13 @@ struct Color {
     constexpr explicit Color(std::uint32_t value) : argb(value) {}
 };
 struct GradientStop { double offset{}; Color color{0xff000000}; };
+enum class GradientKind { solid, linear, radial, conic };
+enum class PaintBlend { normal, multiply, screen };
+struct FillGeometry {
+    GradientKind kind = GradientKind::solid;
+    Point from, to;
+    double angleRadians{};
+};
 class Surface;
 struct VectorCommand {
     enum class Kind {move,line,quadratic,cubic,close};
@@ -46,6 +54,7 @@ public:
     void rotate(double radians);
     void transform(double a,double b,double c,double d,double e,double f);
     void opacity(double amount);
+    void blend(PaintBlend operation);
     void clip(Rect);
     void fill(Rect, Color);
     void rounded(Rect, double radius, Color);
@@ -53,6 +62,9 @@ public:
     void gradient(Rect, Color top, Color bottom, double radius = 0);
     void gradient(Rect,std::span<const GradientStop>,Point from,Point to,double radius=0,bool ellipse=false);
     void gradientPolygon(std::span<const Point>,Color first,Color last,Point from,Point to);
+    void fillGeometry(Rect, std::span<const GradientStop>, FillGeometry,
+                      std::array<double, 4> corners = {}, bool ellipse = false, double strokeWidth = 0);
+    void strokeCorners(Rect, std::array<double, 4> corners, Color, double width);
     void circle(Point, double radius, Color);
     void strokeCircle(Point,double radius,Color,double width=1);
     void ellipse(Rect,Color,double strokeWidth=0);
@@ -70,8 +82,10 @@ public:
     void textMono(Point baseline,std::string_view,double size,Color);
     double monoWidth(std::string_view,double size)const;
     bool svgPath(std::string_view,Rect,Color,double stroke=1.8);
+    bool svgPath(std::string_view, Rect bounds, Color, double stroke, Rect viewBox, Point opticalOffset);
     void image(const Surface&,Rect destination);
     void image(const Surface&,Rect destination,Rect source,bool nearest);
+    void tileImage(const Surface&, Rect destination, Rect source, Point repeatSize, Point origin);
 private:
     void* context_{};
     void* fontFace_{};

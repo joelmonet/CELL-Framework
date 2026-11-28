@@ -121,7 +121,7 @@ target_link_libraries(my_processor PUBLIC Cell::Core Cell::DSP)
 | --- | --- | --- |
 | `CELL_SDK_STATE` | ON | Standard-library legacy readers, migration and project state |
 | `CELL_SDK_KSP` | ON | Independent bounded script-subset compiler/runtime |
-| `CELL_SDK_UI` | OFF | Separately installed Blend2D; platform window libraries; Python 3 at build time for font embedding |
+| `CELL_SDK_UI` | OFF | Separately installed Blend2D; platform window libraries; Python 3 at build time for font embedding  [Native Theme Editor](THEME-FORMAT.md) |
 | `CELL_SDK_WEBVIEW` | OFF | System browser runtime; Windows additionally needs `CELL_WEBVIEW2_INCLUDE_DIR` |
 | `CELL_SDK_AUDIO_DEVICE` | OFF | Supplied `CELL_MINIAUDIO_INCLUDE_DIR` containing `miniaudio.h` |
 | `CELL_SDK_NETWORK_AUTH` | OFF | OpenSSL Crypto for paired UDP audio sessions in `Cell::NetworkAudio` |
@@ -146,9 +146,12 @@ example includes the complete processor and optional editor.
 
 ```cmake
 cell_add_clap_plugin(MyGain_CLAP
-    PROCESSOR my_processor ID com.example.gain NAME "My Gain"
-    CLAP_SDK /path/to/official/clap)
+    PROCESSOR my_processor ID com.example.gain NAME "My Gain")
 ```
+
+Cell uses its pinned CLAP headers by default. Set `CLAP_SDK` to an alternate
+official checkout when needed. Add `CLAP_INSTRUMENT` for a MIDI instrument
+with audio outputs and no audio inputs.
 
 For VST3, add the supported official SDK to the consuming project first and use
 `cell_add_vst3_plugin`. `examples/sdk_gain/CMakeLists.txt` shows the complete

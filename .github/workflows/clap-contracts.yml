@@ -23,10 +23,26 @@ jobs:
           ref: 91ee84082fdb4aeb1d8cdc96a285a886333ca895
           path: ci-clap-validator
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: blend2d/blend2d
+          ref: 58ca9460b4138af6e793184682e9324e0a8053b2
+          path: ci-blend2d
+          persist-credentials: false
       - name: Install the X11 and WebKit test runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev libgtk-3-0t64 libwebkit2gtk-4.1-0 xvfb xauth
+          sudo apt-get install -y libx11-dev libx11-xcb-dev libxcb1-dev libgtk-3-0t64 libwebkit2gtk-4.1-0 xvfb xauth
+      - name: Build the native Canvas renderer
+        run: |
+          cmake -S ci-blend2d -B "$RUNNER_TEMP/blend2d-build" -DCMAKE_BUILD_TYPE=Release \
+            -DBLEND2D_NO_JIT=ON -DBLEND2D_STATIC=ON
+          cmake --build "$RUNNER_TEMP/blend2d-build" --parallel 3
+          cmake --install "$RUNNER_TEMP/blend2d-build" --prefix "$RUNNER_TEMP/blend2d"
+          cmake -S framework -B "$RUNNER_TEMP/cell-renderer" -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_PREFIX_PATH=$RUNNER_TEMP/blend2d" -DCELL_SDK_UI=ON -DCELL_SDK_EXAMPLES=ON -DCELL_SDK_TESTS=ON
+          cmake --build "$RUNNER_TEMP/cell-renderer" --parallel 3 --target cell_skin_preview cell_ui_skin_scene_tests
+          ctest --test-dir "$RUNNER_TEMP/cell-renderer" -R '^cell_ui_skin_scene$' --output-on-failure --no-tests=error
       - name: Build the installed SDK and CLAP fixtures
         run: |
           cmake -S framework -B "$RUNNER_TEMP/cell-build" -DCMAKE_BUILD_TYPE=Release -DCELL_SDK_WEBVIEW=ON
@@ -37,6 +53,34 @@ jobs:
             "-DCELL_TRANSPORT_CLAP_SDK=$GITHUB_WORKSPACE/ci-clap" -DCELL_TRANSPORT_CLAP_EDITOR_TEST=ON
           cmake --build "$RUNNER_TEMP/cell-host" --parallel 3
           xvfb-run -a ctest --test-dir "$RUNNER_TEMP/cell-host" --output-on-failure --no-tests=error
+      - name: Build the generated quickstart projects from the installed SDK
+        run: |
+          cell="$RUNNER_TEMP/cell-sdk/bin/cell"
+          "$cell" new BankedTrim --template banked --output "$RUNNER_TEMP/BankedTrim"
+          "$cell" new PolySine --template instrument --output "$RUNNER_TEMP/PolySine"
+          "$cell" run "$RUNNER_TEMP/BankedTrim" --build-only --build-dir "$RUNNER_TEMP/cell-banked-build" \
+            --cmake-arg=-DCELL_PROJECT_DOCTOR_ALLOCATIONS=ON
+          python3 tests/test_doctor_clap.py "$cell" "$RUNNER_TEMP/cell-banked-build" --instrumented
+          "$cell" run "$RUNNER_TEMP/PolySine" --build-only --build-dir "$RUNNER_TEMP/cell-instrument-build"
+          python3 tests/test_project_generator.py "$cell"
+          node examples/sdk_banked/export.cjs "$RUNNER_TEMP/banked-exports"
+          cmp examples/sdk_banked/cell-plugin-editor.html "$RUNNER_TEMP/banked-exports/cell-plugin-editor.html"
+          cmp examples/sdk_banked/cell-ui-bindings.hpp "$RUNNER_TEMP/banked-exports/cell-ui-bindings.hpp"
+      - name: Qualify a generated banked release
+        run: |
+          python3 tests/test_cell_release.py "$RUNNER_TEMP/cell-sdk/bin/cell" "$RUNNER_TEMP/BankedTrim"
+      - name: Exercise the banked Designer panel with a native parameter snapshot
+        run: |
+          npm install --prefix "$RUNNER_TEMP/cell-browser" --no-save --no-package-lock playwright@1.62.1
+          chromium=$(command -v google-chrome || command -v chromium || true)
+          if [[ -z "$chromium" ]]; then
+            node "$RUNNER_TEMP/cell-browser/node_modules/playwright/cli.js" install chromium
+          fi
+          export CELL_CHROMIUM="$chromium"
+          export CELL_PLAYWRIGHT_MODULE="$RUNNER_TEMP/cell-browser/node_modules/playwright"
+          export CELL_BANKED_FIXTURE="$RUNNER_TEMP/cell-banked-build/project_banked_check"
+          export CELL_SKIN_PREVIEW="$RUNNER_TEMP/cell-renderer/cell_skin_preview"
+          node tests/ui_designer_browser_tests.cjs
       - name: Validate parameter events, conversions and preset discovery
         run: |
           rustup toolchain install 1.95.0 --profile minimal

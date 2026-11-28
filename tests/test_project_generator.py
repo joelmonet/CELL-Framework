@@ -1,4 +1,5 @@
 """Exercise the source or installed generator in an isolated directory."""
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -23,7 +24,7 @@ def test(script):
         assert config.startswith("cmake_minimum_required")
         assert "{{" not in config and "project(Custom VERSION" in config
         assert config.count(f'set(project_plugin_id "{custom}")') == 1 and custom in processor
-        assert config.count('ID "${project_plugin_id}"') == 3
+        assert config.count('ID "${project_plugin_id}"') == 4
         assert (output / "plugin-id.txt").read_text(encoding="ascii") == custom + "\n"
         for option in ("CLAP", "VST3", "LV2", "AU", "AUV3", "UI"):
             assert f"option(CELL_PROJECT_{option} " in config
@@ -34,6 +35,9 @@ def test(script):
         assert "-DCELL_PROJECT_AUV3=OFF" in workflow
         assert (output / "parameter-ids.tsv").read_text(encoding="ascii").startswith("gain\t")
         assert (output / "parameter_identity.cpp").is_file()
+        assert json.loads((output / "release-fixture.json").read_text(encoding="utf-8"))["tolerances"] == {
+            "peak": 1e-6, "rms": 1e-7,
+        }
         assert (output / "lv2-uri.txt").read_text(encoding="ascii") == f"https://example.com/lv2/{custom}\n"
         assert (output / "legacy_effect_host.cpp").is_file()
         assert (output / "LICENSE").is_file()
@@ -158,6 +162,27 @@ def test(script):
         failed = run(script, root, "InvalidAndroidId", "--format", "android", "--id", "com.example.1plug-in")
         assert failed.returncode != 0 and "Android app ID" in failed.stderr
         assert not (root / "InvalidAndroidId").exists() and not (output / "android").exists()
+
+        for template, format_name, files in (
+            ("banked", "clap", ("banked_check.cpp", "banked_clap_check.cpp", "editor/layout.json")),
+            ("instrument", "clap", ("processor.cpp", "main.cpp", "parameter-ids.tsv")),
+            ("mobile", "android", ("android/build.gradle", "editor/cell-plugin-editor.html")),
+        ):
+            name = template.capitalize() + "Starter"
+            generated = run(script, root, name, "--template", template, "--id", f"org.example.{template}")
+            assert generated.returncode == 0, generated.stderr
+            project = root / name
+            manifest = json.loads((project / "cell-project.json").read_text(encoding="utf-8"))
+            assert manifest["template"] == template and manifest["formats"] == [format_name]
+            assert manifest["plugin_id"] == f"org.example.{template}"
+            assert all((project / name).stat().st_size for name in files)
+            fixture = json.loads((project / "release-fixture.json").read_text(encoding="utf-8"))
+            assert fixture["schema"] == "cell.release-fixture.v1"
+            if template == "banked":
+                assert (project / fixture["input"]).read_bytes().startswith(b"RIFF")
+                assert fixture["factory_presets"] == ["2:4", "5:3"]
+        invalid = run(script, root, "NotBanked", "--template", "banked", "--format", "lv2")
+        assert invalid.returncode != 0 and not (root / "NotBanked").exists()
 
 
 if __name__ == "__main__":

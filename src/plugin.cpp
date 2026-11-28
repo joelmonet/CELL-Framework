@@ -276,6 +276,12 @@ void Engine::process(AudioBlock<float> block, std::span<const ParameterEvent> ev
     render(cursor, block.frames);
 }
 
+bool Engine::publishUiEdits(std::span<const ParameterEdit> edits) noexcept {
+    if (!edits_.pushBatch(edits)) return false;
+    if (uiEditObserver_) uiEditObserver_(uiEditContext_, edits);
+    return true;
+}
+
 bool Engine::gestureActive(ParamId id) const noexcept {
     return std::find(gestureIds_.begin(),gestureIds_.begin()+gestureCount_,id)!=gestureIds_.begin()+gestureCount_;
 }
@@ -288,7 +294,7 @@ bool Engine::beginEdits(std::span<const ParamId> ids) noexcept {
         for(std::size_t j=0;j<i;++j)if(ids[j]==ids[i])return false;
         events[i]={EditType::begin,ids[i],0};
     }
-    if(!edits_.pushBatch({events.data(),ids.size()}))return false;
+    if(!publishUiEdits({events.data(),ids.size()}))return false;
     for(std::size_t i=0;i<ids.size();++i){gestureIds_[gestureCount_]=events[i].id;gestureMomentary_[gestureCount_]=false;++gestureCount_;}
     gestureReservations_+=ids.size();
     return true;
@@ -300,7 +306,7 @@ bool Engine::beginMomentary(ParamId id,double pressed,double released) noexcept 
     pressed=field->clamp(pressed);released=field->clamp(released);
     const std::array<ParameterEdit,2> events{{{EditType::begin,id,0},{EditType::value,id,pressed}}};
     parameters_.restorePlain(id,pressed);
-    if(!edits_.pushBatch(events))return false;
+    if(!publishUiEdits(events))return false;
     gestureIds_[gestureCount_]=id;gestureMomentary_[gestureCount_]=true;gestureReleaseValues_[gestureCount_]=released;
     ++gestureCount_;gestureReservations_+=2;return true;
 }
@@ -317,7 +323,7 @@ bool Engine::editValues(std::span<const std::pair<ParamId,double>> values) noexc
     // Only the GUI producer consumes capacity; the consumer can only free it.
     // Publish the complete scalar bank before releasing the ordered batch.
     for(std::size_t i=0;i<values.size();++i)parameters_.restorePlain(events[i].id,events[i].value);
-    return edits_.pushBatch({events.data(),values.size()});
+    return publishUiEdits({events.data(),values.size()});
 }
 
 bool Engine::endEdits(std::span<const ParamId> ids) noexcept {
@@ -333,7 +339,7 @@ bool Engine::endEdits(std::span<const ParamId> ids) noexcept {
     }
     if(edits_.freeCapacity()<count)return false;
     for(std::size_t i=0;i<count;++i)if(events[i].type==EditType::value)parameters_.restorePlain(events[i].id,events[i].value);
-    if(!edits_.pushBatch({events.data(),count}))return false;
+    if(!publishUiEdits({events.data(),count}))return false;
     for(std::size_t i=0;i<ids.size();++i){
         const auto index=std::size_t(std::find(gestureIds_.begin(),gestureIds_.begin()+gestureCount_,closing[i])-gestureIds_.begin());
         gestureReservations_-=gestureMomentary_[index]?2:1;--gestureCount_;
@@ -358,8 +364,9 @@ bool Engine::editGesture(ParamId id, double value) noexcept {
     if (gestureCount_ || !parameter || !std::isfinite(value)) return false;
     value = parameter->clamp(value);
     const std::array<ParameterEdit, 3> gesture{{{EditType::begin, id, 0}, {EditType::value, id, value}, {EditType::end, id, 0}}};
-    if (!edits_.pushBatch(gesture)) return false;
-    parameters_.set(id, value); return true;
+    if (edits_.freeCapacity() < gesture.size()) return false;
+    parameters_.set(id, value);
+    return publishUiEdits(gesture);
 }
 
 bool Engine::editTransaction(std::span<const std::pair<ParamId,double>> values) {
@@ -370,7 +377,7 @@ bool Engine::editTransaction(std::span<const std::pair<ParamId,double>> values) 
     // Only this producer can consume queue capacity; the consumer only frees it.
     // Commit the bank first, with the caller's revision parameter last.
     for(std::size_t i=1;i<events.size();i+=3)parameters_.restorePlain(events[i].id,events[i].value);
-    return edits_.pushBatch(events);
+    return publishUiEdits(events);
 }
 
 std::vector<std::byte> Engine::saveState() const {

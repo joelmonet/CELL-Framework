@@ -2,22 +2,33 @@
 
 const CellDesignerRuntime = (() => {
     // Serialized into the standalone document along with the selected controls.
-    function mount(controls, background, phoneBreakpoint, stepCount, maxDetentLabels, isPanelArt, isProgramControl, hasDisplayArtwork, hasSwitchArtwork, isMeterBinding, readPrograms, led, compareValue, paintType, families) {
+    function mount(controls, background, phoneBreakpoint, stepCount, maxDetentLabels, isPanelArt, isProgramControl, hasDisplayArtwork, hasSwitchArtwork, isMeterBinding, readPrograms, led, compareValue, paintType, families, addLayers) {
         const stage = document.querySelector("main");
         const items = [];
         const states = new Map();
         const bindings = new Map();
         const meters = new Map();
+        const reductionMeters = [];
         const indicatorMeters = new Map(), indicatorParameters = new Map();
         const parameters = new Map();
         const owners = new Map();
         const stopDrags = [];
         const maxDetents = 64;
-        const bridge = window.cell;
+        const nativeBridge = window.cell;
+        const livePage = window.__cellDesignerLivePage;
+        const bridge = livePage && nativeBridge ? {
+            onMessage: listener => nativeBridge.onMessage(listener),
+            postMessage: message => nativeBridge.postMessage({...message, designerPage: String(livePage)})
+        } : nativeBridge;
         const actionControls = [];
         let actions = new Set();
-        let momentaryAvailable = false;
+        let momentaryAvailable = false, hostShortcutsAvailable = false;
         const programControls = [];
+        const spokenValue = document.createElement("div");
+        spokenValue.className = "spoken-value";
+        spokenValue.setAttribute("role", "status");
+        spokenValue.setAttribute("aria-atomic", "true");
+        stage.append(spokenValue);
         let memory = null;
         let bankNumber;
         let catalogSignature;
@@ -218,7 +229,7 @@ const CellDesignerRuntime = (() => {
             }
         }
 
-        function write(binding, value) {
+        function write(binding, value, announce = false) {
             const parameter = parameters.get(binding.key);
             if (!interactive(binding.control) || !parameter || parameter.readonly) return;
             const previous = owners.get(binding.key);
@@ -234,9 +245,14 @@ const CellDesignerRuntime = (() => {
             binding.deferred = undefined;
             send("parameter", binding.key, value);
             display(binding, parameter, value);
+            if (announce) spokenValue.textContent = labelOf(binding.control) + ": " + format(parameter, value);
         }
 
         function display(binding, parameter, value) {
+            const span = parameter.maximum - parameter.minimum;
+            const normalized = span > 0 ? Math.min(1, Math.max(0, (value - parameter.minimum) / span)) : 0;
+            const item = states.get(binding.control)?.item;
+            if (item) updateDecorations(item, undefined, normalized);
             const {control, output, input, dial, ledDisplay} = binding;
             binding.value = value;
             const index = parameter.step > 0 ? Math.round((value - parameter.minimum) / parameter.step) : -1;
@@ -279,7 +295,6 @@ const CellDesignerRuntime = (() => {
             if (control.kind === "toggle")
                 input.setAttribute("aria-pressed", String(value === parameter.maximum));
             if (dial) {
-                const span = parameter.maximum - parameter.minimum;
                 const steps = binding.detentSteps;
                 const index = steps ? stepIndex(parameter, value, steps) : 0;
                 const proportion = steps ? index / steps : span > 0 ? (value - parameter.minimum) / span : 0;
@@ -611,7 +626,7 @@ const CellDesignerRuntime = (() => {
                 const parameter = parameters.get(binding.key);
                 const next = adjacentValue(parameter, binding.value, direction, stepCount(parameter));
                 if (next === undefined) return false;
-                write(binding, next);
+                write(binding, next, true);
                 return true;
             };
             Object.assign(binding, pairInput(binding.control, face, binding.output, advance, () => end(binding)));
@@ -648,7 +663,10 @@ const CellDesignerRuntime = (() => {
             const {kind} = control;
             const element = document.createElement(kind === "bank" || kind === "program" ? "select" : "div");
             nameElement(control, element);
-            if (kind === "patch-name") element.setAttribute("role", "status");
+            if (kind === "patch-name") {
+                element.setAttribute("role", "status");
+                element.setAttribute("aria-atomic", "true");
+            }
             if (kind === "program-grid") element.className = "program-banks";
             const data = {control, element, buttons: []};
             programControls.push(data);
@@ -752,6 +770,10 @@ const CellDesignerRuntime = (() => {
         for (const control of controls) {
             const item = document.createElement("div");
             item.className = "control " + control.kind;
+            if (control.lookIndex !== undefined) {
+                item.dataset.lookIndex = control.lookIndex;
+                addLayers(item);
+            }
             item.style.zIndex = control.layer;
             item.dataset.skin = control.skin;
             if (control.typography) paintType(item, control.typography, families);
@@ -832,7 +854,7 @@ const CellDesignerRuntime = (() => {
                 face.append(scale, gauge);
                 item.append(face);
                 if (!meters.has(key)) meters.set(key, []);
-                meters.get(key).push({output, gauge, face, marks});
+                meters.get(key).push({output, gauge, face, marks, item});
                 continue;
             }
             const binding = {key, control, output};
@@ -872,8 +894,25 @@ const CellDesignerRuntime = (() => {
                 binding.detentMarks.className = "detents";
                 binding.detentCaptions = document.createElement("div");
                 binding.detentCaptions.className = "detent-captions";
-                binding.dial.append(binding.detentMarks, binding.detentCaptions);
+                const arc = document.createElement("span");
+                arc.className = "cell-geometry-arc";
+                arc.setAttribute("aria-hidden", "true");
+                binding.dial.append(arc, binding.detentMarks, binding.detentCaptions);
                 face.append(binding.dial);
+                if (control.showGainReduction) {
+                    const ring = document.createElement("span");
+                    ring.className = "knob-reduction-ring";
+                    ring.hidden = true;
+                    binding.dial.prepend(ring);
+                    const reading = document.createElement("span");
+                    reading.className = "knob-reduction-reading";
+                    reading.setAttribute("role", "meter");
+                    reading.setAttribute("aria-live", "off");
+                    nameElement(control, reading, "aria-label", label => label + " gain reduction");
+                    reading.hidden = true;
+                    item.append(reading);
+                    reductionMeters.push({ring, reading, item});
+                }
             }
             const buttonKind = control.kind === "toggle" || control.kind === "momentary";
             const input = document.createElement(control.kind === "choice" ? "select" : buttonKind ? "button" : "input");
@@ -969,26 +1008,96 @@ const CellDesignerRuntime = (() => {
         compact.addEventListener("change", arrange);
         if (programControls.length) updateMemory({});
         if (!bridge) return;
+        // Only trusted key presses can leave the embedded page. Leave Space
+        // with focused buttons, native menus and text controls.
+        window.addEventListener("keydown", event => {
+            if (!hostShortcutsAvailable || !event.isTrusted || event.defaultPrevented || event.repeat ||
+                event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+            const target = event.target;
+            const editing = target instanceof HTMLElement &&
+                (target.isContentEditable || target.closest("textarea,select,input:not([type=range])"));
+            if (editing) return;
+            const button = target instanceof Element && target.closest("button,[role=button]");
+            const key = event.key === "Escape" ? "release" :
+                event.key === " " && !button ? "space" : "";
+            if (!key) return;
+            event.preventDefault();
+            if (key === "release") cancel();
+            bridge.postMessage({type: "host-shortcut", key});
+        });
+        stage.addEventListener("pointerdown", event => {
+            if (event.target === stage) stage.focus({preventScroll: true});
+        });
         window.addEventListener("blur", cancel);
         window.addEventListener("pagehide", cancel);
         document.addEventListener("visibilitychange", () => { if (document.hidden) cancel(); });
         let pendingSnapshot, receivedSnapshot, receiving = false, requestedDeltas = false;
         bridge.onMessage(message => {
+            if (message?.type === "visual-values" && Array.isArray(message.controls)) {
+                if (!document.hidden) {
+                    for (const entry of message.controls.slice(0, 256)) {
+                        const item = items.find(state => state.control.lookIndex === entry?.id)?.item;
+                        const value = entry?.indicator;
+                        if (item && !item.hidden && Number.isFinite(value) && value >= 0 && value <= 1)
+                            updateDecorations(item, undefined, undefined, value);
+                    }
+                }
+                return;
+            }
+            if (message?.type === "analysis") {
+                if (!document.hidden && Array.isArray(message.traces)) {
+                    for (const trace of message.traces.slice(0, 32)) {
+                        const item = items.find(state => state.control.lookIndex === trace?.id)?.item;
+                        if (item && !item.hidden) updateAnalysis(item, trace.role, trace.points);
+                    }
+                }
+                return;
+            }
+            if (message?.type === "visual-states" && Array.isArray(message.controls)) {
+                const allowed = ["bypassed", "automated", "modulated", "invalid", "warning"];
+                for (const entry of message.controls.slice(0, 256)) {
+                    if (!Number.isInteger(entry?.id) || !Array.isArray(entry.states)) continue;
+                    const item = items.find(state => state.control.lookIndex === entry.id)?.item;
+                    if (item) item.dataset.cellStates = allowed.filter(state => entry.states.includes(state)).join(" ");
+                }
+                return;
+            }
             if (message.type === "meters" && Array.isArray(message.meters)) {
+                let reduction;
                 for (const signal of message.meters) {
                     if (!signal || ![signal.value, signal.minimum, signal.maximum].every(Number.isFinite) ||
                         signal.minimum >= signal.maximum) continue;
                     const value = Math.min(Math.max(signal.value, signal.minimum), signal.maximum);
+                    if (signal.key === "gain-reduction") reduction = {minimum: signal.minimum, maximum: signal.maximum, value};
                     for (const indicator of indicatorMeters.get(signal.key) ?? []) updateIndicator(indicator, value);
-                    for (const {output, gauge, face, marks} of meters.get(signal.key) ?? []) {
+                    for (const {output, gauge, face, marks, item} of meters.get(signal.key) ?? []) {
                         gauge.min = signal.minimum;
                         gauge.max = signal.maximum;
                         gauge.value = value;
+                        updateDecorations(item, undefined, undefined, (value - signal.minimum) / (signal.maximum - signal.minimum));
                         output.textContent = `${value.toFixed(1)}${signal.unit ? " " + signal.unit : ""}`;
                         const levels = [signal.minimum, (signal.minimum + signal.maximum) / 2, signal.maximum];
                         marks.forEach((mark, i) => { mark.textContent = String(Math.round(levels[i])); });
                         face.style.setProperty("--needle", `${-50 + 100 * (value - signal.minimum) / (signal.maximum - signal.minimum)}deg`);
                     }
+                }
+                for (const {ring, reading, item} of reductionMeters) {
+                    ring.hidden = reading.hidden = !reduction;
+                    if (!reduction) {
+                        updateDecorations(item, undefined, undefined, 0);
+                        continue;
+                    }
+                    const {minimum, maximum, value} = reduction;
+                    const normalized = (value - minimum) / (maximum - minimum);
+                    updateDecorations(item, undefined, undefined, normalized);
+                    const sweep = 270 * normalized;
+                    ring.style.setProperty("--reduction-sweep", sweep + "deg");
+                    const text = value.toFixed(1) + " dB";
+                    reading.setAttribute("aria-valuemin", minimum);
+                    reading.setAttribute("aria-valuemax", maximum);
+                    reading.setAttribute("aria-valuenow", value);
+                    reading.setAttribute("aria-valuetext", text);
+                    reading.textContent = "GR " + text;
                 }
                 return;
             }
@@ -1022,9 +1131,11 @@ const CellDesignerRuntime = (() => {
                 receiving = false;
             }
         });
+        if (livePage) bridge.postMessage({type: "designer-ready"});
 
         function applyParameterSnapshot(message) {
             momentaryAvailable = message.momentary === true;
+            hostShortcutsAvailable = message.hostShortcuts === true;
             actions = new Set((Array.isArray(message.actions) ? message.actions : []).flatMap(action =>
                 typeof action?.key === "string" && ["invoke", "momentary"].includes(action.mode)
                     ? [action.key + "/" + action.mode] : []));
@@ -1070,11 +1181,10 @@ const CellDesignerRuntime = (() => {
         }
     }
 
-    function simulate(controls, catalog, memory, values, generation, isProgramControl, isPanelArt, isMeterBinding, actions, keys) {
+    function simulate(controls, catalog, memory, values, generation, isProgramControl, isPanelArt, isMeterBinding, actions, keys, meterKeys) {
         const byKey = new Map((catalog ?? []).map(parameter => [parameter.key, parameter]));
         const parameters = new Map();
         const prior = new Map(values);
-        const meterKeys = new Set();
         const stepperKeys = new Set(controls.filter(control => control.kind === "stepper").map(control => control.key));
         function addParameter(key, fallback) {
             if (parameters.has(key) || (catalog && !byKey.has(key))) return;
@@ -1085,7 +1195,7 @@ const CellDesignerRuntime = (() => {
         }
         for (const control of controls) {
             const {kind, key} = control;
-            if (isMeterBinding(control)) { meterKeys.add(key); continue; }
+            if (isMeterBinding(control)) continue;
             if (["text", "action", "action-pair"].includes(kind) || (kind === "led" && !key) ||
                 isProgramControl(kind) || isPanelArt(kind) || parameters.has(key)) continue;
             const fallback = stepperKeys.has(key) ? {minimum: 0, maximum: 99, step: 1, unit: ""} :
@@ -1101,13 +1211,14 @@ const CellDesignerRuntime = (() => {
             onMessage(callback) {
                 listener = callback;
                 publish();
-                if (meterKeys.size) {
+                if (meterKeys.length) {
                     const signal = () => {
+                        if (document.hidden) return;
                         const time = performance.now() / 690;
-                        listener({type: "meters", meters: [...meterKeys].map((key, index) => ({
-                            key, minimum: -60, maximum: 0, unit: "dBFS",
-                            value: -24 - (key.endsWith("rms") ? 9 : 0) + 9 * Math.sin(time + index) + 4 * Math.sin(time * 2.3)
-                        }))});
+                        listener({type: "meters", meters: meterKeys.map((key, index) => key === "gain-reduction"
+                            ? {key, minimum: 0, maximum: 60, unit: "dB", value: 9 + 7 * Math.sin(time)}
+                            : {key, minimum: -60, maximum: 0, unit: "dBFS",
+                                value: -24 - (key.endsWith("rms") ? 9 : 0) + 9 * Math.sin(time + index) + 4 * Math.sin(time * 2.3)})});
                     };
                     signal();
                     setInterval(signal, 100);
@@ -1151,6 +1262,21 @@ body{margin:0;background:var(--background);color:var(--text);font:15px system-ui
 main{position:relative;isolation:isolate;display:grid;padding:12px;gap:8px;min-height:100dvh;grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(64px,auto))}
 .control{min-width:0;padding:8px;border-radius:10px;background:var(--surface);display:flex;flex-direction:column;gap:3px}
 .control[data-rule-disabled]{opacity:.55}
+.control[data-look-index]{position:relative}
+.cell-visual-stack,.cell-visual-layer{position:absolute;pointer-events:none}
+.cell-analysis,.cell-analysis-labels{position:absolute;inset:24px 12px 12px;pointer-events:none}
+.cell-analysis{width:calc(100% - 24px);height:calc(100% - 36px)}
+.cell-analysis-labels{display:flex;flex-direction:column;justify-content:space-between;padding:3px 5px 12px;font-size:9px}
+.cell-visual-stack{inset:0;z-index:2;isolation:isolate}
+.cell-visual-layer{white-space:pre-wrap}
+.cell-geometry-arc{display:none;position:absolute;pointer-events:none;inset:-4px;border-radius:50%;
+background:conic-gradient(from var(--cell-arc-start,0deg),var(--accent) 0 var(--cell-arc-span,0deg),transparent 0);
+mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 2px))}
+.cell-look-highlight,.cell-look-foreground{position:absolute;inset:0;pointer-events:none;visibility:hidden;z-index:1}
+.cell-look-highlight{inset:1px}
+.cell-look-icon,.cell-look-indicator{position:absolute;visibility:hidden;pointer-events:none;z-index:1}
+.cell-look-icon{right:15px;top:calc(50% - 9px);width:18px;height:18px}
+.cell-look-indicator{height:3px;bottom:8px;left:12px;right:12px}
 .panel-background,.panel-art img{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .control.panel-art{position:relative;padding:0;border:0;border-radius:0;background:transparent;overflow:hidden;pointer-events:none}
 .panel-art.rectangle::before,.panel-art.line::before{content:"";position:absolute;inset:0;background:var(--accent)}
@@ -1164,6 +1290,7 @@ input,select,button{font:inherit;color:inherit;accent-color:var(--accent);margin
 input[type=range],select,button{width:100%;min-width:0;min-height:44px}
 select,button{background:var(--background);border:1px solid currentColor;border-radius:7px;padding:4px 8px}
 .action button,.toggle button,.momentary button{white-space:pre-wrap;overflow-wrap:anywhere}
+.spoken-value{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 button[aria-pressed=true]{border-color:var(--accent);box-shadow:inset 0 -3px var(--accent)}
 button[data-held]{border-color:var(--accent);box-shadow:inset 0 0 0 2px var(--accent)}
 .action button,.momentary button{touch-action:none}
@@ -1176,6 +1303,10 @@ button[data-held]{border-color:var(--accent);box-shadow:inset 0 0 0 2px var(--ac
 .knob input{position:absolute;inset:0;opacity:0;height:100%;cursor:ns-resize;touch-action:none}
 .dial{position:relative;width:min(100%,70px);aspect-ratio:1;border-radius:50%;border:1px solid currentColor;pointer-events:none}
 .dial::after{content:"";position:absolute;inset:7%;background:linear-gradient(var(--accent),var(--accent)) center top/4px 23% no-repeat;transform:rotate(var(--angle,-135deg))}
+.knob-reduction-ring{position:absolute;z-index:1;inset:-4px;border-radius:50%;pointer-events:none;
+background:conic-gradient(from 225deg,var(--accent) 0 var(--reduction-sweep,0deg),#80808055 0 270deg,transparent 0);
+mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 2px))}
+.knob-reduction-reading{font-size:.8em;font-variant-numeric:tabular-nums;align-self:center;overflow-wrap:anywhere}
 .detents{position:absolute;inset:-9px;pointer-events:none}
 .detents span{position:absolute;inset:0;transform:rotate(var(--detent-angle))}
 .detents span::before{content:"";position:absolute;top:0;left:calc(50% - 1px);width:2px;height:5px;border-radius:2px;background:currentColor;opacity:.58}
@@ -1331,37 +1462,445 @@ main[data-layout=phone] .meter-face{min-height:62px}
         }).join("\n");
     }
 
+    // Scoped selectors repaint presentation only. The range inputs, gesture
+    // owners, reading order and control geometry stay in the existing runtime.
+    function appearanceCss(controls, presentation, scope = "") {
+        const model = CellDesignerModel;
+        const looks = controls.map(control => model.resolveAppearance(control, presentation));
+        if (!looks.some(Boolean)) return "";
+        const assets = new Map();
+        const image = id => {
+            if (!assets.has(id)) assets.set(id, assets.size);
+            return `var(--cell-look-asset-${assets.get(id)})`;
+        };
+        const layers = {
+            background: [""],
+            track: [" .meter-face", " .dial::before", " input[type=range]::-webkit-slider-runnable-track",
+                " input[type=range]::-moz-range-track"],
+            face: [" :is(.dial,button,select)", " input[type=range]::-webkit-slider-thumb",
+                " input[type=range]::-moz-range-thumb"],
+            pointer: [" .dial::after", " .cell-look-icon"],
+            highlight: [" > .cell-look-highlight"],
+            indicator: [" > .cell-look-indicator", " .indicator-lens", " meter::-webkit-meter-optimum-value", " meter::-moz-meter-bar",
+                " input[type=range]::-moz-range-progress"],
+            foreground: [" > .cell-look-foreground"]
+        };
+        const stateConditions = {
+            enabled: "", hover: ":hover", pressed: ":is(:active,:has([data-held],.dragging))",
+            selected: ":has([aria-pressed=true],[aria-selected=true])",
+            focus: ":is(:focus-visible,:has(:focus-visible))",
+            disabled: ":is([data-rule-disabled],:has(:disabled))"
+        };
+        for (const state of ["bypassed", "automated", "modulated", "invalid", "warning"])
+            stateConditions[state] = `[data-cell-states~="${state}"]`;
+        for (const [state, selector] of Object.entries(stateConditions))
+            if (selector) stateConditions[state] = `:is(${selector},[data-cell-preview-state="${state}"])`;
+        function cssGradient(gradient, fallback) {
+            if (!gradient) return fallback;
+            const at = `at ${gradient.center[0] * 100}% ${gradient.center[1] * 100}%`;
+            const color = stop => stop.opacity === 1 ? stop.color :
+                `color-mix(in srgb,${stop.color} ${stop.opacity * 100}%,transparent)`;
+            const list = gradient.stops.map(stop => `${color(stop)} ${stop.at * 100}%`).join(",");
+            if (gradient.kind === "solid") return `linear-gradient(${color(gradient.stops[0])},${color(gradient.stops[0])})`;
+            if (gradient.kind === "radial") return `radial-gradient(circle ${at},${list})`;
+            if (gradient.kind === "conic") return `conic-gradient(from ${gradient.angle}deg ${at},${list})`;
+            return `linear-gradient(${gradient.angle}deg,${list})`;
+        }
+        function material(m, layer, visualSlot) {
+            const isOverlay = layer === "highlight" || layer === "foreground" ||
+                visualSlot.includes(".cell-look-icon") || visualSlot.includes(".cell-look-indicator");
+            const shadows = [];
+            for (const kind of ["innerShadow", "shadow", "glow"]) {
+                const effect = m[kind];
+                if (effect) shadows.push(`${kind === "innerShadow" ? "inset " : ""}${effect.x}px ${effect.y}px ${effect.sigma * 2}px ${effect.color}`);
+            }
+            if (m.highlight !== "#00000000") shadows.push(`inset 0 1px ${m.highlight}`);
+            if (m.vector) {
+                return `background:url("${model.iconDataUrl(m.vector, m.fill)}") center/contain no-repeat;opacity:${m.opacity};visibility:visible;`;
+            }
+            let inset = 0;
+            for (const border of m.borders ?? [{color: m.edge, width: m.edgeWidth}]) {
+                if (border.width === 0) continue;
+                inset += border.width;
+                shadows.push(`inset 0 0 0 ${inset}px ${border.color}`);
+            }
+            if (m.bevel?.width) {
+                const radians = m.bevel.angle * Math.PI / 180;
+                const x = m.bevel.width * Math.sin(radians), y = -m.bevel.width * Math.cos(radians);
+                const [light, dark] = m.bevel.kind === "raised" ? [m.bevel.light, m.bevel.dark] : [m.bevel.dark, m.bevel.light];
+                shadows.push(`inset ${x}px ${y}px 0 ${light}`, `inset ${-x}px ${-y}px 0 ${dark}`);
+            }
+            const tint = color => isOverlay || m.opacity === 1 ? color : `color-mix(in srgb, ${color} ${100 * m.opacity}%, transparent)`;
+            const base = cssGradient(m.gradient, `linear-gradient(${tint(m.fill)},${tint(m.end)})`);
+            const backgrounds = [];
+            const light = Math.min(1, (m.lighting?.intensity ?? 0) + ({satin: .07, polished: .2}[m.finish] ?? 0));
+            if (light) backgrounds.push([ `linear-gradient(${m.lighting?.direction ?? 0}deg,rgb(255 255 255 / ${light * .3}),transparent 52%,rgb(0 0 0 / ${light * .25}))`, "normal"]);
+            if (m.lighting?.ambient) {
+                const tone = `rgb(${m.lighting.ambient > 0 ? "255 255 255" : "0 0 0"} / ${Math.abs(m.lighting.ambient)})`;
+                backgrounds.push([`linear-gradient(${tone},${tone})`, "normal"]);
+            }
+            if (m.texture?.opacity) {
+                const t = m.texture;
+                const fit = {stretch: `${100 * t.scale}% ${100 * t.scale}%`, contain: "contain", cover: "cover",
+                    tile: t.scale === 1 ? "auto" : `${100 * t.scale}px`}[t.fit];
+                backgrounds.push([`${image(t.asset)} calc(50% + ${t.offset[0]}px) calc(50% + ${t.offset[1]}px)/${fit} ${t.fit === "tile" ? "repeat" : "no-repeat"}`, t.blend]);
+            }
+            if (m.asset && !m.slices) backgrounds.push([`${image(m.asset)} center/contain no-repeat`, "normal"]);
+            backgrounds.push([base, "normal"]);
+            const corners = m.corners ?? [m.radius, m.radius, m.radius, m.radius];
+            const borderImage = m.slices && m.asset ?
+                `border-image:${image(m.asset)} ${m.slices.insets.join(" ")}${m.slices.transparentCenter ? "" : " fill"} / ${m.slices.insets.map(x => x + "px").join(" ")} ${m.slices.edges === "tile" ? "repeat" : "stretch"};` : "border-image:none;";
+            return `background:${backgrounds.map(entry => entry[0]).join(",")};background-blend-mode:${backgrounds.map(entry => entry[1]).join(",")};` +
+                `border-radius:${m.shape === "ellipse" ? "50%" : corners.map(radius => radius + "px").join(" ")};box-shadow:${shadows.join(",") || "none"};` +
+                borderImage + (m.mask ? `mask:${image(m.mask)} center/100% 100% no-repeat;` : "mask:none;") +
+                (isOverlay ? `opacity:${m.opacity};visibility:visible;` : "");
+        }
+        function typography(selector, settings) {
+            if (!settings) return "";
+            const family = model.typographyFamilies[settings.family]?.stack;
+            const declarations = [family && `font-family:${family}`, settings.size && `font-size:${settings.size}px`,
+                settings.weight && `font-weight:${settings.weight}`, settings.tracking !== undefined && `letter-spacing:${settings.tracking}px`,
+                settings.alignment && `text-align:${settings.alignment}`,
+                settings.letterCase && `text-transform:${settings.letterCase === "normal" ? "none" : settings.letterCase}`];
+            return `${selector}{${declarations.filter(Boolean).join(";")}}`;
+        }
+        const css = looks.map((look, index) => {
+            if (!look) return "";
+            const control = controls[index];
+            const selector = `${scope}[data-look-index="${index}"][data-look-index]`;
+            function rules(state, record) {
+                return model.appearanceLayers.flatMap(layer => {
+                    const layerMaterial = record[layer];
+                    if (!layerMaterial || (control.artwork && (layer === "face" || layer === "track")) ||
+                        (control.artworkMode === "pointer-cap" && layer === "pointer")) return [];
+                    return layers[layer].filter(suffix =>
+                        (!suffix.includes(".cell-look-indicator") || look.kind === "tab") &&
+                        (!suffix.includes(".cell-look-icon") || ["dropdown", "icon-button"].includes(look.kind)))
+                        .map(suffix => {
+                        const extra = suffix === " .dial::before" ? 'content:"";position:absolute;inset:-4px;z-index:-1;' :
+                            suffix === " .dial::after" ? "background-size:4px 23%;background-position:center top;" : "";
+                        const rule = selector + stateConditions[state];
+                        const dropdown = suffix === " .cell-look-icon" && look.kind === "dropdown" ?
+                            `${rule} select{appearance:none}` : "";
+                        return `${rule}${suffix}{${material(layerMaterial, layer, suffix)}${extra}}${dropdown}`;
+                    });
+                }).join("\n");
+            }
+            const stateCss = model.appearanceStates.map(state => rules(state, look.states[state] ?? {})).join("\n");
+            const transition = !look.transition?.duration ? "" :
+                `@media (prefers-reduced-motion: no-preference){${selector},${selector} .cell-look-highlight,${selector} .cell-look-foreground{` +
+                `transition-property:color,opacity,box-shadow;transition-duration:${look.transition.duration}ms;` +
+                `transition-timing-function:${look.transition.easing}}}`;
+            const label = control.typography ? "" : typography(`${selector} :is(.control-title,.tile-label,button)`, look.typography.label);
+            const chrome = scope ? "" : `${selector}{color:var(--text);--accent:${control.accent || "var(--cell-theme-accent)"};border-color:transparent}
+${selector} .dial{isolation:isolate}${selector} .face>button,${selector} .face>select{border-color:transparent}
+${selector} input[type=range]{appearance:none;background:transparent}
+${selector} input[type=range]::-webkit-slider-thumb{appearance:none;width:18px;height:18px}
+${selector} input[type=range]::-moz-range-thumb{width:18px;height:18px;border:0}
+${selector}.fader input[type=range]::-webkit-slider-thumb{width:32px;height:15px}
+${selector}.fader input[type=range]::-moz-range-thumb{width:32px;height:15px}
+${selector}.slider input[type=range]::-webkit-slider-runnable-track{height:18px}
+${selector}.fader input[type=range]::-webkit-slider-runnable-track{height:100%;width:12px}
+${selector}.fader input[type=range]::-moz-range-track{height:100%;width:12px}
+${selector}.rectangle::before{content:none}
+`;
+            let stackCss = "";
+            if (look.stack?.length && !scope) {
+                for (const [layerIndex, overlay] of look.stack.entries()) {
+                    const paint = `${selector} .cell-visual-layer[data-layer-index="${layerIndex}"]`;
+                    const [x, y, w, h] = overlay.rect;
+                    const [tx, ty, angle, sx, sy] = overlay.transform;
+                    const [pX, pY] = overlay.pivot;
+                    const [anchorX, anchorY] = overlay.anchor;
+                    const move = overlay.motion;
+                    const [min, max] = move?.range ?? [0, 1];
+                    const step = `calc(${min} + ${max - min} * var(--cell-visual-${move?.source ?? "value"},0))`;
+                    const scaleX = move?.target === "fill-x" ? `calc(${sx} * clamp(0,${step},1))` : sx;
+                    const scaleY = move?.target === "fill-y" ? `calc(${sy} * clamp(0,${step},1))` : sy;
+                    const translateX = move?.target === "x" ? `calc(${100 * tx}% + 100% * ${step})` : 100 * tx + "%";
+                    const translateY = move?.target === "y" ? `calc(${100 * ty}% + 100% * ${step})` : 100 * ty + "%";
+                    const rotate = move?.target === "rotate" ? `calc(${angle}deg + 1deg * ${step})` : angle + "deg";
+                    const opacity = move?.target === "opacity" ? `calc(${overlay.opacity} * clamp(0,${step},1))` : overlay.opacity;
+                    const visibility = overlay.state ? `${paint}{visibility:hidden}${selector}${stateConditions[overlay.state]} .cell-visual-layer[data-layer-index="${layerIndex}"]{visibility:visible}` : "";
+                    let materialCss = overlay.text ? `color:${overlay.material.fill};` : material(overlay.material, "stack", "");
+                    if (overlay.frame) {
+                        const horizontal = overlay.frame.orientation === "horizontal";
+                        materialCss = `background-image:${image(overlay.material.asset)};background-repeat:no-repeat;` +
+                            `background-size:${horizontal ? overlay.frame.count * 100 : 100}% ${horizontal ? 100 : overlay.frame.count * 100}%;` +
+                            `background-position:${horizontal ? "var(--cell-frame-position,0%) center" : "center var(--cell-frame-position,0%)"};`;
+                    }
+                    stackCss += `${paint}{${materialCss}left:${100 * (anchorX + x)}%;top:${100 * (anchorY + y)}%;width:${100 * w}%;height:${100 * h}%;` +
+                        `transform-origin:${100 * pX}% ${100 * pY}%;transform:translate(${translateX},${translateY}) rotate(${rotate}) scale(${scaleX},${scaleY});opacity:${opacity};` +
+                        (overlay.clip ? "overflow:hidden;" : "") + "}" + visibility;
+                }
+            }
+            const geometry = look.geometry;
+            if (geometry && !scope) {
+                if (geometry.angles) {
+                    const [min, max] = geometry.angles;
+                    const angle = `calc(${min}deg + ${max - min}deg * var(--cell-visual-value,0))`;
+                    const pivot = geometry.pivot.map(value => 100 * value + "%").join(" ");
+                    stackCss += `${selector} .dial::after{transform-origin:${pivot};transform:rotate(${angle})}`;
+                    if (geometry.cap === "rotating")
+                        stackCss += `${selector} .dial{transform-origin:${pivot};transform:rotate(${angle})}${selector} .dial::after{transform:none}`;
+                    if (geometry.arc !== "none")
+                        stackCss += `${selector} .cell-geometry-arc{display:block}`;
+                } else if (control.kind === "fader" || control.kind === "slider") {
+                    const vertical = geometry.orientation === "vertical";
+                    stackCss += `${selector} input[type=range]{writing-mode:${vertical ? "vertical-lr" : "horizontal-tb"};` +
+                        `direction:${vertical ? "rtl" : "ltr"};width:${vertical ? "44px" : "100%"};height:${vertical ? "100%" : "44px"};min-height:${vertical ? "100px" : "44px"}}`;
+                }
+            }
+
+            return chrome + rules("enabled", look.layers) + stateCss + transition + stackCss + label + typography(`${selector} output`, look.typography.value);
+        }).join("\n");
+        const vars = [...assets].map(([id, n]) => `--cell-look-asset-${n}:url(${JSON.stringify(presentation.assets[id].data)})`);
+        return `:root{${vars.join(";")}}\n` + css;
+    }
+
+    function addAppearanceLayers(item) {
+        for (const layer of ["highlight", "foreground", "icon", "indicator"]) {
+            const overlay = document.createElement("span");
+            overlay.className = "cell-look-" + layer;
+            overlay.setAttribute("aria-hidden", "true");
+            item.append(overlay);
+        }
+    }
+
+    function presentationCss(controls, theme, presentation) {
+        const model = CellDesignerModel;
+        const palette = model.displayTheme(theme, presentation);
+        const colors = Object.keys(model.defaultTheme).map(name => `--${name}:${palette[name]}`).join(";");
+        return `:root{${colors};--cell-theme-accent:${palette.accent}}
+` +
+            appearanceCss(controls, presentation);
+    }
+
+    function presentationFonts(presentation) {
+        const theme = CellDesignerModel.activeAppearanceTheme(presentation);
+        return fontCss(Object.values(theme?.typography ?? {}).filter(Boolean));
+    }
+
+    function applyThemeAppearance(data) {
+        if (typeof data?.css !== "string" || data.css.length > 8 * 1024 * 1024) return;
+        const fonts = document.querySelector("#cell-appearance-fonts");
+        if (typeof data.fonts === "string" && data.fonts.length <= 1024 * 1024 &&
+            fonts.textContent !== data.fonts) fonts.textContent = data.fonts;
+        document.querySelector("#cell-appearance").textContent = data.css;
+        applyAppearanceData(data.looks, document.querySelector("main"), data.state);
+    }
+
+    function updatePreviewAppearance(message) {
+        if (message.source === window.parent && message.data?.type === "cell-preview-appearance")
+            applyThemeAppearance(message.data);
+    }
+
+    function appearanceData(controls, presentation) {
+        return controls.map(control => {
+            const look = CellDesignerModel.resolveAppearance(control, presentation);
+            if (!look?.stack?.length && !look?.geometry && !look?.analysis) return null;
+            return {analysis: look.analysis, geometry: look.geometry, stack: look.stack?.map(({text, visible, frame, motion}) =>
+                ({text, visible, frame, source: motion?.source ?? "value"}))};
+        });
+    }
+
+    function updateAnalysis(item, role, points) {
+        const trace = item._cellAnalysis?.traces.get(role);
+        if (!trace || !Array.isArray(points) || points.length > 2048) return;
+        if (!points.every(p => Array.isArray(p) && p.length === 2 && p.every(x => Number.isFinite(x) && x >= 0 && x <= 1)))
+            return;
+        item._cellAnalysisPoints ??= new Map();
+        item._cellAnalysisPoints.set(role, points);
+        const path = points.map(([x, y], i) => (i ? "L" : "M") + x * 1000 + " " + (1 - y) * 1000);
+        if (trace.mode === "fill" && path.length > 2) path.push("Z");
+        if (trace.mode === "points") {
+            const dash = trace.width * 2;
+            trace.element.setAttribute("d", points.map(([x, y]) => `M${x * 1000} ${(1-y)*1000}h${dash}`).join(""));
+        } else {
+            trace.element.setAttribute("d", path.join(""));
+        }
+    }
+
+    function installAnalysis(item, settings) {
+        item.querySelector(".cell-analysis")?.remove();
+        item.querySelector(".cell-analysis-labels")?.remove();
+        item._cellAnalysis = undefined;
+        if (!settings) return;
+        const element = name => document.createElementNS("http://www.w3.org/2000/svg", name);
+        const view = element("svg");
+        view.classList.add("cell-analysis");
+        view.setAttribute("viewBox", "0 0 1000 1000");
+        view.setAttribute("preserveAspectRatio", "none");
+        view.setAttribute("aria-hidden", "true");
+        view.style.backgroundColor = settings.background;
+        const [columns, rows, subdivisions] = settings.grid;
+        const grid = (count, major, vertical) => {
+            const segments = [];
+            for (let i = 0; i <= count * subdivisions; ++i) {
+                if ((i % subdivisions === 0) !== major) continue;
+                const p = i * 1000 / (count * subdivisions);
+                segments.push(vertical ? `M${p} 0V1000` : `M0 ${p}H1000`);
+            }
+            const path = element("path");
+            path.setAttribute("d", segments.join(""));
+            path.setAttribute("stroke", major ? settings.major : settings.minor);
+            path.setAttribute("vector-effect", "non-scaling-stroke");
+            path.setAttribute("fill", "none");
+            view.append(path);
+        };
+        grid(columns, false, true);
+        grid(rows, false, false);
+        grid(columns, true, true);
+        grid(rows, true, false);
+        const traces = new Map();
+        for (const [role, paint] of Object.entries(settings.traces)) {
+            const path = element("path");
+            path.setAttribute("fill", paint.mode === "fill" ? paint.color : "none");
+            path.setAttribute("stroke", paint.color);
+            path.setAttribute("stroke-width", paint.width);
+            path.setAttribute("stroke-linecap", "round");
+            path.setAttribute("vector-effect", "non-scaling-stroke");
+            view.append(path);
+            traces.set(role, {element: path, mode: paint.mode, width: paint.width});
+        }
+        const labels = document.createElement("div");
+        labels.className = "cell-analysis-labels";
+        labels.setAttribute("aria-hidden", "true");
+        labels.style.color = settings.labels;
+        const {range, precision, unit} = settings.axes;
+        for (let row = 0; row < rows; ++row) {
+            const text = document.createElement("span");
+            text.textContent = (range[1] - row * (range[1] - range[0]) / rows).toFixed(precision) + (unit ? " " + unit : "");
+            labels.append(text);
+        }
+        item._cellAnalysis = {traces};
+        item.append(view, labels);
+        for (const [role, points] of item._cellAnalysisPoints ?? [])
+            updateAnalysis(item, role, points);
+    }
+
+    // Serialized into standalone documents. Presentation changes replace
+    // decorative layers only; functional nodes remain mounted and focused.
+    function updateDecorations(item, data, visualValue, indicatorValue) {
+        if (data !== undefined) {
+            item.querySelector(".cell-visual-stack")?.remove();
+            item._cellLayers = undefined;
+            item._cellGeometry = data?.geometry;
+            installAnalysis(item, data?.analysis);
+            const input = item.querySelector('input[type="range"]');
+            if (input && (item.classList.contains("fader") || item.classList.contains("slider")))
+                input.setAttribute("aria-orientation", data?.geometry?.orientation ??
+                    (item.classList.contains("fader") ? "vertical" : "horizontal"));
+            if (data?.stack?.length) {
+                const stack = document.createElement("div");
+                stack.className = "cell-visual-stack";
+                stack.setAttribute("aria-hidden", "true");
+                item._cellLayers = data.stack.map((spec, index) => {
+                    const element = document.createElement("span");
+                    element.className = "cell-visual-layer";
+                    element.dataset.layerIndex = index;
+                    if (spec.text) element.textContent = spec.text;
+                    stack.append(element);
+                    return {element, spec};
+                });
+                item.append(stack);
+            }
+        }
+        const value = visualValue ?? item._cellValue ?? .5;
+        const indicator = indicatorValue ?? item._cellIndicator ?? 0;
+        item._cellValue = value;
+        item._cellIndicator = indicator;
+        if (!item._cellGeometry && !item._cellLayers) return;
+        item.style.setProperty("--cell-visual-value", value);
+        item.style.setProperty("--cell-visual-indicator", indicator);
+        const geometry = item._cellGeometry;
+        if (geometry) {
+            item.style.setProperty("--cell-range-low", Math.min(value, geometry.origin));
+            item.style.setProperty("--cell-range-high", Math.max(value, geometry.origin));
+            if (geometry.angles) {
+                const [min, max] = geometry.angles;
+                const arcOrigin = geometry.arc === "bipolar" ? geometry.origin : 0;
+                item.style.setProperty("--cell-arc-start", `${min + Math.min(value, arcOrigin) * (max - min) + 180}deg`);
+                item.style.setProperty("--cell-arc-span", `${Math.abs(value - arcOrigin) * (max - min)}deg`);
+            }
+        }
+        for (const {element, spec} of item._cellLayers ?? []) {
+            const normalized = spec.source === "indicator" ? indicator : value;
+            element.hidden = normalized < spec.visible[0] || normalized > spec.visible[1];
+            if (spec.frame) {
+                const end = spec.frame.count - 1;
+                element.style.setProperty("--cell-frame-position", `${100 * Math.round(normalized * end) / end}%`);
+            }
+        }
+    }
+
+    function applyAppearanceData(records, root, state) {
+        if (!Array.isArray(records) || records.length > 256) return;
+        for (const item of root.querySelectorAll("[data-look-index]")) {
+            updateDecorations(item, records[Number(item.dataset.lookIndex)] ?? null);
+            if (typeof state === "string") item.dataset.cellPreviewState = state;
+        }
+    }
+
     const json = value => JSON.stringify(value).replace(/</g, "\\u003c");
 
-    function html(controls, theme, preview) {
+    function html(controls, theme, preview, presentation, live = false) {
         const {phoneGrid, phonePlacements, readingOrder, layerOrder, layerPriority, stepCount, maxDetentLabels, isPanelArt, isProgramControl, hasDisplayArtwork, hasSwitchArtwork, isMeterBinding,
             readPrograms, defaultTheme, ledGlyphs, displayCode, numericLedCode, actionBindings,
-            conditionRules, compareValue, parameterKeys, typographyFamilies} = CellDesignerModel;
+            conditionRules, compareValue, parameterKeys, meterKeys, typographyFamilies} = CellDesignerModel;
         const phone = phonePlacements(controls);
         // Authored stacks stay in the same order as the canvas across both responsive layouts.
         // For older layouts, equal default priorities continue to follow the grid's reading order.
         const ranks = controls.some(control => control.layer !== undefined)
             ? new Map(layerOrder(controls).map((control, index) => [control, index + 1])) : null;
-        const sorted = controls.map((control, index) => ({...control, phone: phone[index],
+        const artwork = [...new Set(controls.map(control => control.artwork).filter(Boolean))];
+        const sorted = controls.map((control, index) => ({...control,
+            artwork: undefined, artworkIndex: control.artwork ? artwork.indexOf(control.artwork) : undefined,
+            lookIndex: index, phone: phone[index],
             layer: ranks?.get(control) ?? layerPriority(control),
             visibleRules: conditionRules(control.visibleWhen), enabledRules: conditionRules(control.enabledWhen)})).sort(readingOrder);
         const simulation = preview
-            ? `(${simulate.toString()})(controls,${json(preview.catalog)},${json(preview.programs ?? null)},${json(preview.values)},${preview.generation},isProgramControl,isPanelArt,${isMeterBinding.toString()},${json(actionBindings(controls))},${json(parameterKeys(controls))});` : "";
-        const colors = Object.keys(defaultTheme).map(name => `--${name}:${theme[name]}`).join(";");
+            ? `(${simulate.toString()})(controls,${json(preview.catalog)},${json(preview.programs ?? null)},${json(preview.values)},${preview.generation},isProgramControl,isPanelArt,${isMeterBinding.toString()},${json(actionBindings(controls))},${json(parameterKeys(controls))},${json(meterKeys(controls))});` : "";
         const background = {artwork: theme.backgroundArtwork, fit: theme.backgroundFit ?? "cover"};
         const rows = Math.ceil(sorted.reduce((maximum, control) => Math.max(maximum, control.y + control.height), 1));
         const fonts = fontCss(sorted.flatMap(control => control.typography ? [control.typography] : []));
+        const lookCss = presentationCss(controls, theme, presentation);
+        const lookFonts = presentationFonts(presentation), looks = appearanceData(controls, presentation);
+        // This single marked line is the only theme-dependent part of a live
+        // document. The host compares the rest before applying an update.
+        const liveAppearance = live ? `\nconst cellLiveAppearance = ${json({css: lookCss, fonts: lookFonts, looks})};\n` : "";
+        if (live) {
+            for (const control of sorted) {
+                delete control.visualStyle;
+                delete control.visualOverrides;
+            }
+        }
         return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Cell plug-in editor</title>
 <style>${fonts}
-:root{${colors};--rows:${rows};--phone-columns:${phoneGrid.columns}}${css}${typographyCss}</style></head>
-<body><main></main><script>const controls = ${json(sorted)};
+:root{--rows:${rows};--phone-columns:${phoneGrid.columns}}${css}${typographyCss}</style>
+<style id="cell-appearance-fonts">${live ? "" : lookFonts}</style>
+<style id="cell-appearance">${live ? "" : lookCss}</style></head>
+<body><main></main><script>${liveAppearance}const controls = ${json(sorted)}, artwork = ${json(artwork)};
+for (const control of controls) if (control.artworkIndex !== undefined) control.artwork = artwork[control.artworkIndex];
 const isProgramControl = ${isProgramControl.toString()}, isPanelArt = ${isPanelArt.toString()};
+const updateAnalysis = ${updateAnalysis.toString()}, installAnalysis = ${installAnalysis.toString()};
+const updateDecorations = ${updateDecorations.toString()}, applyAppearanceData = ${applyAppearanceData.toString()};
 ${simulation}(${mount.toString()})(controls,${json(background)},${phoneGrid.breakpoint},${stepCount.toString()},${maxDetentLabels},isPanelArt,isProgramControl,${hasDisplayArtwork.toString()},${hasSwitchArtwork.toString()},${isMeterBinding.toString()},${readPrograms.toString()},
 {glyphs:${json(ledGlyphs)},codeForValue:${displayCode.toString()},numericCode:${numericLedCode.toString()}},${compareValue.toString()},
-${paintTypography.toString()},${json(typographyFamilies)});</script></body></html>`;
+${paintTypography.toString()},${json(typographyFamilies)},${addAppearanceLayers.toString()});
+${live ? `window.__cellApplyDesignerAppearance = ${applyThemeAppearance.toString()};
+window.__cellApplyDesignerAppearance(cellLiveAppearance);` :
+`applyAppearanceData(${json(looks)},document.querySelector("main"),${json(preview?.state ?? "")});`}
+${preview ? `const applyThemeAppearance = ${applyThemeAppearance.toString()};
+window.addEventListener("message", ${updatePreviewAppearance.toString()});` : ""}</script></body></html>`;
     }
 
-    return {html, fontCss, paintTypography, typographyCss};
+    function liveHtml(controls, theme, presentation) {
+        const contract = json(CellDesignerModel.bindingContract(controls)).replace(/>/g, "\\u003e");
+        return "<!-- cell.designer.live.v1 " + contract + "-->\n" + html(controls, theme, undefined, presentation, true);
+    }
+
+    return {html, liveHtml, fontCss, paintTypography, typographyCss, appearanceCss, presentationCss, presentationFonts, appearanceData, addAppearanceLayers};
 })();

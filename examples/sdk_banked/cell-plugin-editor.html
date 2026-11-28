@@ -1,0 +1,1578 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Cell plug-in editor</title>
+<style>
+:root{--rows:8;--phone-columns:4}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+:root{color-scheme:dark}
+body{margin:0;background:var(--background);color:var(--text);font:15px system-ui,sans-serif}
+main{position:relative;isolation:isolate;display:grid;padding:12px;gap:8px;min-height:100dvh;grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(64px,auto))}
+.control{min-width:0;padding:8px;border-radius:10px;background:var(--surface);display:flex;flex-direction:column;gap:3px}
+.control[data-rule-disabled]{opacity:.55}
+.control[data-look-index]{position:relative}
+.cell-visual-stack,.cell-visual-layer{position:absolute;pointer-events:none}
+.cell-analysis,.cell-analysis-labels{position:absolute;inset:24px 12px 12px;pointer-events:none}
+.cell-analysis{width:calc(100% - 24px);height:calc(100% - 36px)}
+.cell-analysis-labels{display:flex;flex-direction:column;justify-content:space-between;padding:3px 5px 12px;font-size:9px}
+.cell-visual-stack{inset:0;z-index:2;isolation:isolate}
+.cell-visual-layer{white-space:pre-wrap}
+.cell-geometry-arc{display:none;position:absolute;pointer-events:none;inset:-4px;border-radius:50%;
+background:conic-gradient(from var(--cell-arc-start,0deg),var(--accent) 0 var(--cell-arc-span,0deg),transparent 0);
+mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 2px))}
+.cell-look-highlight,.cell-look-foreground{position:absolute;inset:0;pointer-events:none;visibility:hidden;z-index:1}
+.cell-look-highlight{inset:1px}
+.cell-look-icon,.cell-look-indicator{position:absolute;visibility:hidden;pointer-events:none;z-index:1}
+.cell-look-icon{right:15px;top:calc(50% - 9px);width:18px;height:18px}
+.cell-look-indicator{height:3px;bottom:8px;left:12px;right:12px}
+.panel-background,.panel-art img{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.control.panel-art{position:relative;padding:0;border:0;border-radius:0;background:transparent;overflow:hidden;pointer-events:none}
+.panel-art.rectangle::before,.panel-art.line::before{content:"";position:absolute;inset:0;background:var(--accent)}
+.panel-art.line::before{top:50%;bottom:auto;height:var(--line-thickness);transform:translateY(-50%)}
+.panel-art.line[data-direction=vertical]::before{inset:0 auto 0 50%;height:auto;width:var(--line-thickness);transform:translateX(-50%)}
+.control-title,output{overflow-wrap:anywhere}
+.control-title{font-weight:600;white-space:pre-wrap}
+output{font-variant-numeric:tabular-nums}
+.face{position:relative;min-width:0;flex:1;display:flex;align-items:center;justify-content:center}
+input,select,button{font:inherit;color:inherit;accent-color:var(--accent);margin:0}
+input[type=range],select,button{width:100%;min-width:0;min-height:44px}
+select,button{background:var(--background);border:1px solid currentColor;border-radius:7px;padding:4px 8px}
+.action button,.toggle button,.momentary button{white-space:pre-wrap;overflow-wrap:anywhere}
+.spoken-value{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+button[aria-pressed=true]{border-color:var(--accent);box-shadow:inset 0 -3px var(--accent)}
+button[data-held]{border-color:var(--accent);box-shadow:inset 0 0 0 2px var(--accent)}
+.action button,.momentary button{touch-action:none}
+.action-pair .face{display:grid;grid-template-columns:repeat(2,minmax(18px,1fr));gap:6px}
+.action-pair button{padding-inline:0;touch-action:none}
+:focus-visible,.face:has(:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.fader input{writing-mode:vertical-lr;direction:rtl;width:44px;height:100%;min-height:100px}
+.knob .face{min-height:72px;touch-action:none}
+.knob .face.dragging{cursor:grabbing}
+.knob input{position:absolute;inset:0;opacity:0;height:100%;cursor:ns-resize;touch-action:none}
+.dial{position:relative;width:min(100%,70px);aspect-ratio:1;border-radius:50%;border:1px solid currentColor;pointer-events:none}
+.dial::after{content:"";position:absolute;inset:7%;background:linear-gradient(var(--accent),var(--accent)) center top/4px 23% no-repeat;transform:rotate(var(--angle,-135deg))}
+.knob-reduction-ring{position:absolute;z-index:1;inset:-4px;border-radius:50%;pointer-events:none;
+background:conic-gradient(from 225deg,var(--accent) 0 var(--reduction-sweep,0deg),#80808055 0 270deg,transparent 0);
+mask:radial-gradient(farthest-side,transparent calc(100% - 2px),#000 calc(100% - 2px))}
+.knob-reduction-reading{font-size:.8em;font-variant-numeric:tabular-nums;align-self:center;overflow-wrap:anywhere}
+.detents{position:absolute;inset:-9px;pointer-events:none}
+.detents span{position:absolute;inset:0;transform:rotate(var(--detent-angle))}
+.detents span::before{content:"";position:absolute;top:0;left:calc(50% - 1px);width:2px;height:5px;border-radius:2px;background:currentColor;opacity:.58}
+.detents [data-active]::before{background:var(--accent);width:4px;left:calc(50% - 2px);height:7px;opacity:1}
+.detents[data-dense] span::before{width:1px;left:calc(50% - .5px);height:4px}
+.detents[data-dense] [data-active]::before{width:3px;left:calc(50% - 1.5px);height:7px}
+.knob .face[data-detent-labels]{min-height:132px}
+.knob .face[data-detent-labels] .dial{width:clamp(28px,calc(100% - 116px),88px)}
+.knob .face[data-staggered-labels]{min-height:168px}
+.knob .face[data-staggered-labels] .dial{width:clamp(28px,calc(100% - 186px),88px)}
+.detent-captions{position:absolute;inset:0}
+.detent-captions span{position:absolute;transform:translate(var(--caption-shift),-50%);width:max-content;max-width:58px;
+font-size:.7em;line-height:1.08;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none}
+.detent-captions [data-active]{color:var(--accent);font-weight:700}
+.artwork{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}
+.stepper .face{display:grid;grid-template-columns:minmax(18px,1fr) minmax(2ch,auto) minmax(18px,1fr);gap:clamp(2px,1vw,6px)}
+.stepper button{padding-inline:0;touch-action:none;font-size:1.2em;font-weight:650;cursor:pointer}
+.stepper button[aria-disabled=true],.stepper button:disabled{opacity:.5;cursor:default}
+.stepper output{display:grid;place-items:center;background:var(--background);border-radius:4px;min-height:32px;padding-inline:3px;color:var(--accent);font:600 1.15em/1 ui-monospace,monospace;white-space:nowrap}
+.control .led-window{display:flex;position:relative;align-items:center;justify-content:center;gap:4%;width:min(100%,92px);min-width:0;
+min-height:32px;padding:4px 5px;color:var(--accent);background:#171b1a;border-radius:4px;box-shadow:inset 0 1px 4px #000a}
+.stepper .face:has(.led-window){grid-template-columns:minmax(18px,1fr) minmax(22px,2fr) minmax(18px,1fr)}
+.stepper .led-window{justify-self:center}
+.led-code{position:absolute;clip-path:inset(50%);width:1px;height:1px;overflow:hidden}
+.led-digit{position:relative;width:43%;max-width:31px;aspect-ratio:3/4}
+.led-segment{position:absolute;background:currentColor;opacity:.17}
+.led-segment[data-lit]{opacity:1}
+.led-stroke{position:absolute;inset:0;background:currentColor}
+.led-segment:is([data-segment=a],[data-segment=d],[data-segment=g]){left:13%;width:59%;height:9%;
+clip-path:polygon(0 50%,12% 0,88% 0,100% 50%,88% 100%,12% 100%)}
+.led-segment[data-segment=a]{top:1%}
+.led-segment[data-segment=g]{top:45.5%}
+.led-segment[data-segment=d]{bottom:1%}
+.led-segment:is([data-segment=b],[data-segment=c],[data-segment=e],[data-segment=f]){width:12%;height:39%;
+clip-path:polygon(50% 0,100% 12%,100% 88%,50% 100%,0 88%,0 12%)}
+.led-segment:is([data-segment=b],[data-segment=c]){left:68%}
+.led-segment:is([data-segment=e],[data-segment=f]){left:6%}
+.led-segment:is([data-segment=b],[data-segment=f]){top:8%}
+.led-segment:is([data-segment=c],[data-segment=e]){bottom:8%}
+.led-segment[data-segment=p]{right:0;bottom:1%;width:10%;aspect-ratio:1;border-radius:100%}
+.patch-name [role=status]{overflow-wrap:anywhere;color:var(--accent);font-weight:600}
+.program-banks{display:grid;gap:6px}
+.program-banks fieldset{min-width:0;margin:0;padding:4px 8px 8px;border:1px solid currentColor;border-radius:6px}
+.program-banks legend{padding:0 4px;overflow-wrap:anywhere}
+.program-buttons{display:grid;gap:4px;grid-template-columns:repeat(var(--program-columns),minmax(0,1fr))}
+.program-buttons button{padding-inline:0;font-variant-numeric:tabular-nums}
+.meter-face{display:grid;align-content:center;position:relative;flex:1;min-height:44px}
+.meter-face meter{width:100%;height:22px}
+.meter-scale{display:flex;justify-content:space-between;font-size:11px;font-variant-numeric:tabular-nums}
+.control[data-skin=field]{--accent:#f0d898;color:#f7eec6;background:#30392c;border:1px dashed #8c9278}
+.control[data-skin=field] .dial{box-shadow:0 0 0 5px #465042,0 0 0 8px #252b22;background:radial-gradient(circle,#596151,#242d23)}
+.control[data-skin=field] .dial::before{content:"";position:absolute;inset:-7px;border-radius:50%;background:repeating-conic-gradient(from -135deg,#e8d9a5 0deg 1.8deg,transparent 1.8deg 15deg);mask:radial-gradient(circle,transparent 65%,#000 66% 72%,transparent 73%)}
+.control[data-skin=field] .dial[data-detented]::before{content:none}
+.control[data-skin=studio]{--accent:#9bd6f2;color:#e8f3f7;background:#24333d;border-bottom:3px solid var(--accent)}
+.control[data-skin=studio].fader .face{border-radius:6px;background:repeating-linear-gradient(to bottom,transparent 0 11px,#91a9b62a 11px 12px)}
+.control[data-skin=studio].fader input{appearance:none;background:transparent;cursor:ns-resize}
+.control[data-skin=studio].fader input::-webkit-slider-runnable-track{width:5px;height:100%;background:#172027;border-radius:3px;border:1px solid #657c87}
+.control[data-skin=studio].fader input::-webkit-slider-thumb{appearance:none;width:34px;height:17px;margin-left:-15px;border:1px solid #172027;border-radius:3px;background:linear-gradient(#596d78 0 41%,var(--accent) 41% 53%,#2c3b45 53%);box-shadow:0 2px 3px #0008}
+.control[data-skin=studio].fader input::-moz-range-track{width:5px;height:100%;background:#172027;border-radius:3px;border:1px solid #657c87}
+.control[data-skin=studio].fader input::-moz-range-thumb{width:33px;height:16px;border:1px solid #172027;border-radius:3px;background:linear-gradient(#596d78 0 41%,var(--accent) 41% 53%,#2c3b45 53%);box-shadow:0 2px 3px #0008}
+.control[data-skin=studio] .dial{border-radius:35%;background:linear-gradient(145deg,#455863,#1b2630)}
+.control[data-skin=broadcast]{--accent:#9a311b;color:#372512;background:#e7d3a6;border:3px double #5b432a;color-scheme:light}
+.control[data-skin=broadcast] .meter-face{min-height:62px;background:#f6e5bd;border:1px solid #634c37;border-radius:8px 8px 14px 14px;overflow:hidden}
+.control[data-skin=broadcast] .meter-face meter{position:absolute;width:1px;height:1px;clip-path:inset(50%)}
+.control[data-skin=broadcast] .meter-face::before{content:"";position:absolute;top:13%;left:7%;right:7%;height:8px;background:repeating-linear-gradient(to right,#634c37 0 1px,transparent 1px 5%);pointer-events:none}
+.control[data-skin=broadcast] .meter-face::after{content:"";position:absolute;bottom:0;left:calc(50% - 1px);width:2px;height:72%;background:var(--accent);transform-origin:center bottom;transform:rotate(var(--needle,-50deg))}
+.control[data-skin=broadcast] .meter-scale{margin-top:-24px;padding:0 7%;letter-spacing:.02em}
+.control[data-skin=broadcast] button,.control[data-skin=broadcast] select{background:#f7e7c7;color:#372512}
+.control[data-skin=broadcast] .dial{background:radial-gradient(circle,#f7e7c7,#ad8f62)}
+.control[data-hardware-artwork]{color:var(--text);color-scheme:dark;border:1px solid #ffffff29}
+.control[data-hardware-artwork]{background:var(--surface);background:color-mix(in srgb,var(--surface) 82%,transparent)}
+.knob[data-hardware-artwork=cap] .dial{width:min(90%,92px);border:0;border-radius:50%;box-shadow:none;background:var(--hardware-image) center/contain no-repeat}
+.knob[data-hardware-artwork=cap] .dial::after{inset:15%;filter:drop-shadow(0 1px 1px #000c)}
+.knob[data-hardware-artwork=pointer-cap] .dial{width:min(90%,92px);border:0;border-radius:50%;box-shadow:none;background:none}
+.knob[data-hardware-artwork=pointer-cap] .dial::after{inset:0;background:var(--hardware-image) center/contain no-repeat}
+.control.indicator{align-items:center;justify-content:center;gap:4px;text-align:center}
+.indicator .indicator-lens{display:block;width:44px;height:44px;flex:none;border-radius:50%;background:
+radial-gradient(circle at 34% 32%,#696751,#29261e 67%,#161b19 70%);border:2px solid #434643}
+.indicator[data-lamp=on] .indicator-lens{background:radial-gradient(circle at 34% 32%,#fff8ad,var(--accent) 65%,#171b19 70%);
+filter:drop-shadow(0 0 5px var(--accent))}
+.control.indicator[data-hardware-artwork=lamp] .indicator-lens{width:min(90%,96px);height:56px;border:0;border-radius:0;
+background:var(--hardware-image) center/contain no-repeat;filter:brightness(.75)}
+.control.indicator[data-hardware-artwork=lamp][data-lamp=on] .indicator-lens{
+filter:brightness(1.65) saturate(1.18) drop-shadow(0 0 6px var(--accent))}
+.indicator output{font-size:.8em;min-height:1em}
+.control[data-hardware-artwork=switch] > output{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.control[data-hardware-artwork=switch] button{display:grid;justify-items:center;align-content:center;gap:3px;width:100%;min-height:68px;
+color:var(--text);background:var(--background);border-color:#ffffff43}
+.control[data-hardware-artwork=switch] button::before{content:"";width:min(100%,70px);height:38px;background:var(--hardware-image) center/contain no-repeat}
+.control[data-hardware-artwork=switch] button[aria-pressed=true]{border-color:var(--accent)}
+.control[data-hardware-artwork=switch] button[aria-pressed=true]::before{filter:brightness(1.28) drop-shadow(0 0 3px var(--accent))}
+.control[data-hardware-artwork=switch] button:is(:active,[data-held])::before{transform:translateY(1px) scale(.94)}
+
+.knob[data-hardware-artwork] .face[data-detent-labels] .dial{width:clamp(28px,calc(100% - 116px),92px)}
+.knob[data-hardware-artwork] .face[data-staggered-labels] .dial{width:clamp(28px,calc(100% - 186px),92px)}
+.control.fader[data-hardware-artwork=cap] .face{background:none}
+.control.fader[data-hardware-artwork=cap] .face::before{content:"";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+width:min(100%,110px);height:min(100%,232px);background:repeating-linear-gradient(to bottom,transparent 0 11px,#a9b5bc68 11px 12px);
+mask-image:linear-gradient(to right,#000 0 28%,transparent 28% 72%,#000 72%);pointer-events:none}
+.control.fader[data-hardware-artwork=cap] input{position:relative;max-height:232px;appearance:none;background:transparent;cursor:ns-resize}
+.control.fader[data-hardware-artwork=cap] input::-webkit-slider-runnable-track{width:6px;height:100%;border-radius:3px;background:#0e1317;box-shadow:inset 1px 0 2px #000}
+.control.fader[data-hardware-artwork=cap] input::-webkit-slider-thumb{appearance:none;width:38px;height:22px;margin-left:-16px;border:0;border-radius:0;box-shadow:none;background:var(--hardware-image) center/contain no-repeat}
+.control.fader[data-hardware-artwork=cap] input::-moz-range-track{width:6px;height:100%;border-radius:3px;background:#0e1317;box-shadow:inset 1px 0 2px #000}
+.control.fader[data-hardware-artwork=cap] input::-moz-range-thumb{width:38px;height:22px;border:0;border-radius:0;box-shadow:none;background:var(--hardware-image) center/contain no-repeat}
+.control[data-hardware-artwork=display]:is(.readout,.led,.stepper) output{background:var(--hardware-image) center/100% 100% no-repeat}
+.control[data-hardware-artwork=display]:is(.readout,.stepper) output:not(.led-window){min-height:36px;text-align:center;align-content:center;padding:5px 12px;color:var(--accent);font-family:ui-monospace,monospace;text-shadow:0 0 7px currentColor}
+.control[data-hardware-artwork=display].readout output{width:min(100%,236px);align-self:center}
+.control[data-hardware-artwork=display].led output{width:min(100%,140px)}
+.control[data-hardware-artwork=display] .led-window{gap:7%;padding:7px min(12%,13px);box-shadow:none}
+.control[data-hardware-artwork=display] .led-segment[data-lit]{filter:drop-shadow(0 0 2px currentColor)}
+.control.meter[data-hardware-artwork=display] .meter-face{flex:0 1 auto;width:min(100%,218px);min-height:102px;aspect-ratio:5/3;align-self:center;
+margin-block:auto;padding:10px 11%;border:0;border-radius:4px;background:var(--hardware-image) center/100% 100% no-repeat}
+.control.meter[data-hardware-artwork=display] .meter-face::before,.control.meter[data-hardware-artwork=display] .meter-face::after{content:none}
+.control.meter[data-hardware-artwork=display] .meter-scale{margin:0;padding:0}
+.control.meter[data-hardware-artwork=display] meter{position:static;width:100%;height:18px;clip-path:none}
+.text{justify-content:center;background:transparent}
+main[data-layout=phone]{grid-template-columns:repeat(var(--phone-columns),minmax(0,1fr));grid-template-rows:none;grid-auto-rows:minmax(52px,auto);align-content:start}
+main[data-layout=phone] .fader .face{min-height:125px}
+main[data-layout=phone] .meter-face{min-height:62px}
+[data-type-family] :is(.tile-label,.control-title,output:not(.led-window),button,select,legend,.patch-name [role=status],.meter-scale){font-family:var(--type-family)}
+[data-type-size] :is(.tile-label,.control-title,output:not(.led-window),button,select,legend,.patch-name [role=status],.meter-scale){font-size:var(--type-size)}
+[data-type-weight] :is(.tile-label,.control-title,output:not(.led-window),button,select,legend,.patch-name [role=status],.meter-scale){font-weight:var(--type-weight)}
+[data-type-tracking] :is(.tile-label,.control-title,output:not(.led-window),button,select,legend,.patch-name [role=status],.meter-scale){letter-spacing:var(--type-tracking)}
+[data-type-alignment] :is(.tile-label,.control-title,output:not(.led-window),button,select,legend,.patch-name [role=status],.meter-scale){text-align:var(--type-alignment)}
+[data-type-lettercase] :is(.tile-label,.control-title,output:not(.led-window),button,select,legend,.patch-name [role=status],.meter-scale){text-transform:var(--type-lettercase)}</style>
+<style id="cell-appearance-fonts"></style>
+<style id="cell-appearance">:root{--background:#151a1c;--surface:#242c2d;--text:#f8f1db;--accent:#f3bf71;--cell-theme-accent:#f3bf71}
+</style></head>
+<body><main></main><script>const controls = [{"kind":"bank","label":"Bank","key":"","x":0,"y":0,"width":4,"height":1,"accent":"","skin":"modern","lookIndex":0,"phone":{"x":0,"y":0,"width":4,"height":1},"layer":4,"visibleRules":[],"enabledRules":[]},{"kind":"program","label":"Program","key":"","x":4,"y":0,"width":4,"height":1,"accent":"","skin":"modern","lookIndex":1,"phone":{"x":0,"y":1,"width":4,"height":1},"layer":4,"visibleRules":[],"enabledRules":[]},{"kind":"patch-name","label":"Patch name","key":"","x":8,"y":0,"width":4,"height":1,"accent":"","skin":"modern","lookIndex":2,"phone":{"x":0,"y":2,"width":4,"height":1},"layer":4,"visibleRules":[],"enabledRules":[]},{"kind":"fader","label":"Trim","key":"gain","x":0,"y":1,"width":4,"height":3,"accent":"","skin":"studio","lookIndex":3,"phone":{"x":0,"y":3,"width":4,"height":3},"layer":4,"visibleRules":[],"enabledRules":[]},{"kind":"led","label":"Panel code","key":"","x":4,"y":1,"width":4,"height":1,"accent":"","skin":"modern","ledText":"Ac","lookIndex":4,"phone":{"x":0,"y":6,"width":4,"height":1},"layer":4,"visibleRules":[],"enabledRules":[]},{"kind":"action","label":"Factory recall","key":"","x":8,"y":1,"width":4,"height":1,"accent":"","skin":"modern","action":"factory-recall","trigger":"hold","holdMs":1200,"lookIndex":5,"phone":{"x":0,"y":7,"width":4,"height":1},"layer":4,"visibleRules":[],"enabledRules":[]},{"kind":"program-grid","label":"Patch memory","key":"","x":0,"y":4,"width":12,"height":4,"accent":"","skin":"modern","lookIndex":6,"phone":{"x":0,"y":8,"width":4,"height":4},"layer":4,"visibleRules":[],"enabledRules":[]}], artwork = [];
+for (const control of controls) if (control.artworkIndex !== undefined) control.artwork = artwork[control.artworkIndex];
+const isProgramControl = kind => ["bank", "program", "patch-name", "program-grid"].includes(kind), isPanelArt = kind => kind === "image" || kind === "rectangle" || kind === "line";
+const updateAnalysis = function updateAnalysis(item, role, points) {
+        const trace = item._cellAnalysis?.traces.get(role);
+        if (!trace || !Array.isArray(points) || points.length > 2048) return;
+        if (!points.every(p => Array.isArray(p) && p.length === 2 && p.every(x => Number.isFinite(x) && x >= 0 && x <= 1)))
+            return;
+        item._cellAnalysisPoints ??= new Map();
+        item._cellAnalysisPoints.set(role, points);
+        const path = points.map(([x, y], i) => (i ? "L" : "M") + x * 1000 + " " + (1 - y) * 1000);
+        if (trace.mode === "fill" && path.length > 2) path.push("Z");
+        if (trace.mode === "points") {
+            const dash = trace.width * 2;
+            trace.element.setAttribute("d", points.map(([x, y]) => `M${x * 1000} ${(1-y)*1000}h${dash}`).join(""));
+        } else {
+            trace.element.setAttribute("d", path.join(""));
+        }
+    }, installAnalysis = function installAnalysis(item, settings) {
+        item.querySelector(".cell-analysis")?.remove();
+        item.querySelector(".cell-analysis-labels")?.remove();
+        item._cellAnalysis = undefined;
+        if (!settings) return;
+        const element = name => document.createElementNS("http://www.w3.org/2000/svg", name);
+        const view = element("svg");
+        view.classList.add("cell-analysis");
+        view.setAttribute("viewBox", "0 0 1000 1000");
+        view.setAttribute("preserveAspectRatio", "none");
+        view.setAttribute("aria-hidden", "true");
+        view.style.backgroundColor = settings.background;
+        const [columns, rows, subdivisions] = settings.grid;
+        const grid = (count, major, vertical) => {
+            const segments = [];
+            for (let i = 0; i <= count * subdivisions; ++i) {
+                if ((i % subdivisions === 0) !== major) continue;
+                const p = i * 1000 / (count * subdivisions);
+                segments.push(vertical ? `M${p} 0V1000` : `M0 ${p}H1000`);
+            }
+            const path = element("path");
+            path.setAttribute("d", segments.join(""));
+            path.setAttribute("stroke", major ? settings.major : settings.minor);
+            path.setAttribute("vector-effect", "non-scaling-stroke");
+            path.setAttribute("fill", "none");
+            view.append(path);
+        };
+        grid(columns, false, true);
+        grid(rows, false, false);
+        grid(columns, true, true);
+        grid(rows, true, false);
+        const traces = new Map();
+        for (const [role, paint] of Object.entries(settings.traces)) {
+            const path = element("path");
+            path.setAttribute("fill", paint.mode === "fill" ? paint.color : "none");
+            path.setAttribute("stroke", paint.color);
+            path.setAttribute("stroke-width", paint.width);
+            path.setAttribute("stroke-linecap", "round");
+            path.setAttribute("vector-effect", "non-scaling-stroke");
+            view.append(path);
+            traces.set(role, {element: path, mode: paint.mode, width: paint.width});
+        }
+        const labels = document.createElement("div");
+        labels.className = "cell-analysis-labels";
+        labels.setAttribute("aria-hidden", "true");
+        labels.style.color = settings.labels;
+        const {range, precision, unit} = settings.axes;
+        for (let row = 0; row < rows; ++row) {
+            const text = document.createElement("span");
+            text.textContent = (range[1] - row * (range[1] - range[0]) / rows).toFixed(precision) + (unit ? " " + unit : "");
+            labels.append(text);
+        }
+        item._cellAnalysis = {traces};
+        item.append(view, labels);
+        for (const [role, points] of item._cellAnalysisPoints ?? [])
+            updateAnalysis(item, role, points);
+    };
+const updateDecorations = function updateDecorations(item, data, visualValue, indicatorValue) {
+        if (data !== undefined) {
+            item.querySelector(".cell-visual-stack")?.remove();
+            item._cellLayers = undefined;
+            item._cellGeometry = data?.geometry;
+            installAnalysis(item, data?.analysis);
+            const input = item.querySelector('input[type="range"]');
+            if (input && (item.classList.contains("fader") || item.classList.contains("slider")))
+                input.setAttribute("aria-orientation", data?.geometry?.orientation ??
+                    (item.classList.contains("fader") ? "vertical" : "horizontal"));
+            if (data?.stack?.length) {
+                const stack = document.createElement("div");
+                stack.className = "cell-visual-stack";
+                stack.setAttribute("aria-hidden", "true");
+                item._cellLayers = data.stack.map((spec, index) => {
+                    const element = document.createElement("span");
+                    element.className = "cell-visual-layer";
+                    element.dataset.layerIndex = index;
+                    if (spec.text) element.textContent = spec.text;
+                    stack.append(element);
+                    return {element, spec};
+                });
+                item.append(stack);
+            }
+        }
+        const value = visualValue ?? item._cellValue ?? .5;
+        const indicator = indicatorValue ?? item._cellIndicator ?? 0;
+        item._cellValue = value;
+        item._cellIndicator = indicator;
+        if (!item._cellGeometry && !item._cellLayers) return;
+        item.style.setProperty("--cell-visual-value", value);
+        item.style.setProperty("--cell-visual-indicator", indicator);
+        const geometry = item._cellGeometry;
+        if (geometry) {
+            item.style.setProperty("--cell-range-low", Math.min(value, geometry.origin));
+            item.style.setProperty("--cell-range-high", Math.max(value, geometry.origin));
+            if (geometry.angles) {
+                const [min, max] = geometry.angles;
+                const arcOrigin = geometry.arc === "bipolar" ? geometry.origin : 0;
+                item.style.setProperty("--cell-arc-start", `${min + Math.min(value, arcOrigin) * (max - min) + 180}deg`);
+                item.style.setProperty("--cell-arc-span", `${Math.abs(value - arcOrigin) * (max - min)}deg`);
+            }
+        }
+        for (const {element, spec} of item._cellLayers ?? []) {
+            const normalized = spec.source === "indicator" ? indicator : value;
+            element.hidden = normalized < spec.visible[0] || normalized > spec.visible[1];
+            if (spec.frame) {
+                const end = spec.frame.count - 1;
+                element.style.setProperty("--cell-frame-position", `${100 * Math.round(normalized * end) / end}%`);
+            }
+        }
+    }, applyAppearanceData = function applyAppearanceData(records, root, state) {
+        if (!Array.isArray(records) || records.length > 256) return;
+        for (const item of root.querySelectorAll("[data-look-index]")) {
+            updateDecorations(item, records[Number(item.dataset.lookIndex)] ?? null);
+            if (typeof state === "string") item.dataset.cellPreviewState = state;
+        }
+    };
+(function mount(controls, background, phoneBreakpoint, stepCount, maxDetentLabels, isPanelArt, isProgramControl, hasDisplayArtwork, hasSwitchArtwork, isMeterBinding, readPrograms, led, compareValue, paintType, families, addLayers) {
+        const stage = document.querySelector("main");
+        const items = [];
+        const states = new Map();
+        const bindings = new Map();
+        const meters = new Map();
+        const reductionMeters = [];
+        const indicatorMeters = new Map(), indicatorParameters = new Map();
+        const parameters = new Map();
+        const owners = new Map();
+        const stopDrags = [];
+        const maxDetents = 64;
+        const nativeBridge = window.cell;
+        const livePage = window.__cellDesignerLivePage;
+        const bridge = livePage && nativeBridge ? {
+            onMessage: listener => nativeBridge.onMessage(listener),
+            postMessage: message => nativeBridge.postMessage({...message, designerPage: String(livePage)})
+        } : nativeBridge;
+        const actionControls = [];
+        let actions = new Set();
+        let momentaryAvailable = false, hostShortcutsAvailable = false;
+        const programControls = [];
+        const spokenValue = document.createElement("div");
+        spokenValue.className = "spoken-value";
+        spokenValue.setAttribute("role", "status");
+        spokenValue.setAttribute("aria-atomic", "true");
+        stage.append(spokenValue);
+        let memory = null;
+        let bankNumber;
+        let catalogSignature;
+        if (background.artwork) {
+            const image = document.createElement("img");
+            image.className = "panel-background";
+            image.alt = "";
+            image.src = background.artwork;
+            image.style.objectFit = background.fit;
+            stage.append(image);
+        }
+        const format = (parameter, value) => {
+            if (value === parameter.value && typeof parameter.text === "string") return parameter.text;
+            const index = value - parameter.minimum;
+            const digits = parameter.step > 0 && parameter.step < 0.01 ? 4 : 2;
+            return parameter.choices?.[index] ?? `${value.toFixed(digits)}${parameter.unit ? " " + parameter.unit : ""}`;
+        };
+        const labelOf = control => states.get(control).label;
+        const interactive = control => states.get(control).interactive;
+        const setAvailable = (control, element, available) => { element.disabled = !available || !interactive(control); };
+
+        function nameElement(control, element, property = "aria-label", compose = value => value) {
+            const apply = label => {
+                if (property === "aria-label") element.setAttribute(property, compose(label));
+                else element[property] = compose(label);
+            };
+            apply(labelOf(control));
+            if (control.labelFrom) states.get(control).rename.push(apply);
+        }
+
+        function updateRules() {
+            const focused = document.activeElement;
+            const hiddenOrDisabled = [];
+            let focusFrom, changed = false;
+            const matches = groups => !groups.length || groups.some(group => group.every(({key, operator, value}) => {
+                const parameter = parameters.get(key);
+                return parameter && compareValue(parameter.value, operator, value);
+            }));
+            for (const state of items) {
+                const {control, item} = state;
+                if (control.labelFrom) {
+                    const {key, source, labels} = control.labelFrom;
+                    const parameter = parameters.get(key);
+                    let label;
+                    if (parameter) {
+                        if (source === "name") label = parameter.name;
+                        if (source === "choice") label = parameter.choices?.[parameter.value - parameter.minimum];
+                        if (source === "value") label = format(parameter, parameter.value);
+                        if (source === "map") label = labels.find(entry => entry.value === parameter.value)?.label;
+                    }
+                    if (typeof label !== "string" || !label.trim()) label = control.label;
+                    if (label !== state.label) {
+                        state.label = label;
+                        state.rename.forEach(apply => apply(label));
+                    }
+                }
+                if (!control.visibleRules.length && !control.enabledRules.length) continue;
+                const visible = matches(control.visibleRules);
+                const enabled = matches(control.enabledRules);
+                const next = visible && enabled;
+                if (next !== state.interactive) {
+                    if (!next) {
+                        hiddenOrDisabled.push(state);
+                        if (item.contains(focused)) focusFrom = item;
+                    }
+                    state.interactive = next;
+                    changed = true;
+                }
+                item.hidden = !visible;
+                item.toggleAttribute("data-rule-disabled", !enabled);
+            }
+            // Update every rule before ending a gesture that may publish another snapshot.
+            hiddenOrDisabled.forEach(state => state.stop?.());
+            return {changed, focusFrom};
+        }
+
+        function moveFocus(from) {
+            const origin = items.find(({item}) => item === from).box;
+            const replacement = items.find(({item, interactive, box}) => interactive &&
+                box.x === origin.x && box.y === origin.y && box.width === origin.width && box.height === origin.height &&
+                item.querySelector("button:enabled, select:enabled, input:enabled"));
+            const candidate = replacement?.item.querySelector("button:enabled, select:enabled, input:enabled") ?? stage;
+            candidate.focus({preventScroll: true});
+        }
+        const twoState = parameter => parameter.maximum > parameter.minimum && parameter.step > 0 &&
+            Math.abs(parameter.minimum + parameter.step - parameter.maximum) <= Math.max(1e-9, parameter.step * 1e-6) &&
+            (!parameter.choices?.length || parameter.choices.length === 2);
+        const send = (type, key, value) => bridge.postMessage(value === undefined ? {type, key} : {type, key, value});
+        const clampIndex = (index, count) => Math.min(count, Math.max(0, index));
+        const stepIndex = (parameter, value, count) =>
+            clampIndex(Math.round((value - parameter.minimum) / parameter.step), count);
+        const stepValue = (parameter, index) => Math.min(parameter.maximum, parameter.minimum + index * parameter.step);
+        function adjacentValue(parameter, value, direction, count) {
+            if (!count) return undefined;
+            const index = stepIndex(parameter, value, count);
+            const position = (value - parameter.minimum) / parameter.step;
+            const onStep = Math.abs(stepValue(parameter, index) - value) <= parameter.step * 1e-6;
+            const target = onStep ? index + direction : direction > 0 ? Math.ceil(position) : Math.floor(position);
+            if (target < 0 || target > count) return undefined;
+            const next = stepValue(parameter, target);
+            return next === value ? undefined : next;
+        }
+
+        function createLed(output) {
+            output.classList.add("led-window");
+            const text = document.createElement("span");
+            text.className = "led-code";
+            text.setAttribute("aria-hidden", "true");
+            const digits = Array.from({length: 2}, () => {
+                const digit = document.createElement("span");
+                digit.className = "led-digit";
+                digit.setAttribute("aria-hidden", "true");
+                const segments = [];
+                for (const name of "abcdefgp") {
+                    const segment = document.createElement("span");
+                    segment.className = "led-segment";
+                    segment.dataset.segment = name;
+                    segments.push(segment);
+                }
+                const strokes = document.createElement("span");
+                digit.append(...segments, strokes);
+                return {digit, segments, strokes};
+            });
+            output.replaceChildren(text, ...digits.map(({digit}) => digit));
+            return {text, digits};
+        }
+
+        function drawLedStroke([x1, y1, x2, y2]) {
+            // Correct the perpendicular for the cell's 3:4 aspect ratio.
+            const widthToHeight = 3 / 4;
+            const x = x2 - x1;
+            const y = (y2 - y1) / widthToHeight;
+            const halfWidth = 4.5 / Math.hypot(x, y);
+            const offsetX = -y * halfWidth;
+            const offsetY = x * halfWidth * widthToHeight;
+            const points = [
+                [x1 + offsetX, y1 + offsetY], [x2 + offsetX, y2 + offsetY],
+                [x2 - offsetX, y2 - offsetY], [x1 - offsetX, y1 - offsetY]
+            ];
+            const stroke = document.createElement("span");
+            stroke.className = "led-stroke";
+            stroke.style.clipPath = "polygon(" + points.map(([x, y]) => x.toFixed(2) + "% " + y.toFixed(2) + "%").join(",") + ")";
+            return stroke;
+        }
+
+        function showLed(binding, code, detail, codeOnly = false) {
+            const {output, control, ledDisplay} = binding;
+            ledDisplay.presentation = [code, detail, codeOnly];
+            const pair = code.padStart(2, " ");
+            if (output.dataset.code !== pair) {
+                output.dataset.code = pair;
+                ledDisplay.text.textContent = code;
+                ledDisplay.digits.forEach(({digit, segments, strokes}, index) => {
+                    const character = pair[index];
+                    if (digit.dataset.glyph === character) return;
+                    digit.dataset.glyph = character;
+                    const glyph = led.glyphs[character];
+                    const lit = typeof glyph === "string" ? glyph : "";
+                    for (const segment of segments)
+                        segment.toggleAttribute("data-lit", lit.includes(segment.dataset.segment));
+                    strokes.replaceChildren(...(Array.isArray(glyph) ? glyph.map(drawLedStroke) : []));
+                });
+            }
+            output.title = detail;
+            output.setAttribute("aria-label", `${labelOf(control)} ${codeOnly ? "code" : "value"} ${code ? code + (detail && detail !== code ? ", " + detail : "") : detail}`);
+        }
+
+        function resetLed(binding) {
+            const {control, ledDisplay} = binding;
+            clearTimeout(ledDisplay.timer);
+            ledDisplay.timer = ledDisplay.lastValue = undefined;
+            showLed(binding, control.ledText ?? "", control.ledText ? "" : "Unavailable", Boolean(control.ledText));
+        }
+
+        function showLedValue(binding, value, code, detail) {
+            const {control, ledDisplay} = binding;
+            const text = control.ledText;
+            if (text && ledDisplay.lastValue !== undefined && ledDisplay.lastValue !== value) {
+                clearTimeout(ledDisplay.timer);
+                ledDisplay.timer = setTimeout(() => {
+                    ledDisplay.timer = undefined;
+                    showLed(binding, text, "", true);
+                }, 1200);
+            }
+            ledDisplay.lastValue = value;
+            if (text && ledDisplay.timer === undefined) showLed(binding, text, "", true);
+            else showLed(binding, code, detail);
+        }
+
+        function end(binding) {
+            if (owners.get(binding.key) !== binding) return;
+            owners.delete(binding.key);
+            send("end", binding.key);
+            if (binding.deferred) {
+                const deferred = binding.deferred;
+                binding.deferred = undefined;
+                update(binding, deferred);
+            }
+        }
+
+        function write(binding, value, announce = false) {
+            const parameter = parameters.get(binding.key);
+            if (!interactive(binding.control) || !parameter || parameter.readonly) return;
+            const previous = owners.get(binding.key);
+            if (previous !== binding) {
+                if (previous) {
+                    previous.stop?.();
+                    end(previous);
+                }
+                owners.set(binding.key, binding);
+                send("begin", binding.key);
+            }
+            // The active control shows its edit until the host echoes or corrects it.
+            binding.deferred = undefined;
+            send("parameter", binding.key, value);
+            display(binding, parameter, value);
+            if (announce) spokenValue.textContent = labelOf(binding.control) + ": " + format(parameter, value);
+        }
+
+        function display(binding, parameter, value) {
+            const span = parameter.maximum - parameter.minimum;
+            const normalized = span > 0 ? Math.min(1, Math.max(0, (value - parameter.minimum) / span)) : 0;
+            const item = states.get(binding.control)?.item;
+            if (item) updateDecorations(item, undefined, normalized);
+            const {control, output, input, dial, ledDisplay} = binding;
+            binding.value = value;
+            const index = parameter.step > 0 ? Math.round((value - parameter.minimum) / parameter.step) : -1;
+            const hostCode = parameter.display?.codes?.[index];
+            const mapped = led.codeForValue(control.displayCodes, value, parameter.step) ??
+                (typeof hostCode === "string" && hostCode.length <= 3 ? hostCode : undefined);
+            if (control.kind === "led") {
+                showLedValue(binding, value, mapped ?? led.numericCode(value), format(parameter, value));
+                return;
+            }
+            if (control.kind === "stepper" && binding.buttons) {
+                const count = stepCount(parameter);
+                const index = count ? stepIndex(parameter, value, count) : 0;
+                const choice = parameter.choices?.[index];
+                if (ledDisplay) showLedValue(binding, value, mapped ?? led.numericCode(value), choice ?? format(parameter, value));
+                else {
+                    const code = mapped ?? (Number.isInteger(value)
+                        ? (value < 0 ? "−" : "") + String(Math.abs(value)).padStart(2, "0")
+                        : format({...parameter, choices: []}, value));
+                    output.textContent = code;
+                    output.setAttribute("aria-label", labelOf(control) + " value " + code + (choice && choice !== code ? ", " + choice : ""));
+                    output.title = choice ?? "";
+                }
+                for (const [i, button] of binding.buttons.entries()) {
+                    setAvailable(control, button, Boolean(count) && !parameter.readonly);
+                    const chord = control.chordAction && permits(control.chordAction, "invoke");
+                    button.setAttribute("aria-disabled", String(!chord &&
+                        adjacentValue(parameter, value, i === 0 ? -1 : 1, count) === undefined));
+                }
+                return;
+            }
+            const formatted = format(parameter, value);
+            output.textContent = mapped ?? formatted;
+            if (control.displayCodes?.length) {
+                output.title = mapped ? formatted : "";
+                output.setAttribute("aria-label", labelOf(control) + " value" +
+                    (mapped && mapped !== formatted ? ` ${mapped}, ${formatted}` : ""));
+            }
+            if (input?.type === "range") input.setAttribute("aria-valuetext", output.textContent);
+            if (control.kind === "toggle")
+                input.setAttribute("aria-pressed", String(value === parameter.maximum));
+            if (dial) {
+                const steps = binding.detentSteps;
+                const index = steps ? stepIndex(parameter, value, steps) : 0;
+                const proportion = steps ? index / steps : span > 0 ? (value - parameter.minimum) / span : 0;
+                dial.style.setProperty("--angle", `${-135 + Math.min(Math.max(proportion, 0), 1) * 270}deg`);
+                if (steps) {
+                    for (const group of [binding.detentMarks, binding.detentCaptions]) {
+                        group.children[binding.activeDetent]?.removeAttribute("data-active");
+                        group.children[index]?.setAttribute("data-active", "");
+                    }
+                    binding.activeDetent = index;
+                }
+            }
+        }
+
+        function updateDetents(binding, parameter) {
+            if (!binding.detentMarks) return 0;
+            const count = stepCount(parameter);
+            const steps = count < maxDetents ? count : 0;
+            const labels = binding.control.detentLabels === "choices" ? parameter?.choices :
+                binding.control.detentLabels ?? parameter?.display?.detents;
+            const captions = steps > 0 && steps < maxDetentLabels && Array.isArray(labels) && labels.length === steps + 1 &&
+                labels.every(label => typeof label === "string") ? labels : [];
+            const stagger = captions.length > 8 && captions.some(label => label.length > 4);
+            const signature = JSON.stringify([steps, captions]);
+            if (signature === binding.detentSignature) return steps;
+            binding.detentSignature = signature;
+            binding.detentSteps = steps;
+            binding.detentMarks.replaceChildren();
+            binding.detentMarks.toggleAttribute("data-dense", steps >= maxDetentLabels);
+            binding.detentCaptions.replaceChildren();
+            binding.dial.toggleAttribute("data-detented", steps > 0);
+            binding.dial.parentElement.toggleAttribute("data-detent-labels", captions.some(Boolean));
+            binding.dial.parentElement.toggleAttribute("data-staggered-labels", stagger);
+            for (let i = 0; steps && i <= steps; i++) {
+                const angle = -135 + i * 270 / steps;
+                const mark = document.createElement("span");
+                mark.style.setProperty("--detent-angle", `${angle}deg`);
+                binding.detentMarks.append(mark);
+                if (!captions.length) continue;
+                const radians = angle * Math.PI / 180;
+                const x = Math.sin(radians), y = -Math.cos(radians);
+                const distance = stagger && i % 2 ? 35 : 18;
+                const caption = document.createElement("span");
+                caption.style.left = `calc(${50 + x * 50}% + ${x * distance}px)`;
+                caption.style.top = `calc(${50 + y * 50}% + ${y * distance}px)`;
+                caption.style.setProperty("--caption-shift", x < -0.35 ? "-100%" : x > 0.35 ? "0%" : "-50%");
+                caption.textContent = captions[i];
+                binding.detentCaptions.append(caption);
+            }
+            return steps;
+        }
+
+        function update(binding, parameter) {
+            const {input, control} = binding;
+            if (input) {
+                if (control.kind === "momentary") {
+                    const available = momentaryAvailable && !parameter.readonly && parameter.minimum < parameter.maximum;
+                    if (!available) binding.stop();
+                    setAvailable(control, input, available);
+                } else if (control.kind === "choice") {
+                    const choices = (parameter.choices ?? []).slice(0, Math.max(0, Math.floor(parameter.maximum - parameter.minimum) + 1));
+                    const signature = JSON.stringify([parameter.minimum, choices]);
+                    if (binding.signature !== signature) {
+                        input.replaceChildren(...choices.map((label, i) => new Option(label, parameter.minimum + i)));
+                        binding.signature = signature;
+                    }
+                    setAvailable(control, input, Boolean(choices.length) && !parameter.readonly);
+                    input.value = parameter.value;
+                } else if (control.kind === "toggle") {
+                    setAvailable(control, input, twoState(parameter) && !parameter.readonly);
+                } else {
+                    const steps = updateDetents(binding, parameter);
+                    input.min = steps ? 0 : parameter.minimum;
+                    input.max = steps || parameter.maximum;
+                    input.step = steps ? 1 : parameter.step > 0 ? parameter.step : "any";
+                    input.value = steps ? stepIndex(parameter, parameter.value, steps) : parameter.value;
+                    setAvailable(control, input, !parameter.readonly && parameter.minimum < parameter.maximum);
+                }
+            }
+            display(binding, parameter, parameter.value);
+        }
+
+        function rangeInput(binding, face) {
+            const {input, key, control} = binding;
+            input.type = "range";
+            input.step = "any";
+            input.oninput = () => {
+                const parameter = parameters.get(key);
+                if (parameter) write(binding, binding.detentSteps ? stepValue(parameter, input.valueAsNumber) : input.valueAsNumber);
+            };
+            input.onchange = input.onblur = input.onpointercancel = input.onlostpointercapture = () => end(binding);
+            if (control.kind === "fader") input.setAttribute("aria-orientation", "vertical");
+            if (control.kind !== "knob") return;
+
+            let drag;
+            input.onpointerdown = event => {
+                if (input.disabled || event.button !== 0 || !event.isPrimary) return;
+                event.preventDefault();
+                input.focus({preventScroll: true});
+                input.setPointerCapture(event.pointerId);
+                drag = {id: event.pointerId, x: event.clientX, y: event.clientY, value: input.valueAsNumber};
+                face.classList.add("dragging");
+            };
+            input.onpointermove = event => {
+                const parameter = parameters.get(key);
+                if (!parameter || drag?.id !== event.pointerId) return;
+                const span = binding.detentSteps || (parameter.maximum - parameter.minimum);
+                const scale = span / (event.shiftKey ? 1000 : 180);
+                const next = drag.value + (drag.y - event.clientY + event.clientX - drag.x) * scale;
+                const before = input.valueAsNumber;
+                input.value = next;
+                if (input.valueAsNumber !== before) input.oninput();
+            };
+            const stop = () => {
+                if (!drag) return;
+                const {id} = drag;
+                drag = undefined;
+                face.classList.remove("dragging");
+                if (input.hasPointerCapture(id)) input.releasePointerCapture(id);
+                end(binding);
+            };
+            const finish = event => { if (drag?.id === event.pointerId) stop(); };
+            input.onpointerup = input.onpointercancel = input.onlostpointercapture = finish;
+            binding.stop = stop;
+            stopDrags.push(stop);
+        }
+
+        function wirePress(button, handlers, {keyboard = true, confine = false} = {}) {
+            let active;
+            function start(identity) {
+                if (button.disabled || active || handlers.start(identity) === false) return;
+                active = identity;
+                button.setAttribute("data-held", "");
+                if (identity.pointer !== undefined) {
+                    try { button.setPointerCapture(identity.pointer); }
+                    catch { stop(false); }
+                }
+            }
+            function stop(commit) {
+                if (!active) return;
+                const identity = active;
+                active = undefined;
+                button.removeAttribute("data-held");
+                if (identity.pointer !== undefined && button.hasPointerCapture(identity.pointer))
+                    button.releasePointerCapture(identity.pointer);
+                handlers.stop(identity, commit);
+            }
+            const inside = event => {
+                const box = button.getBoundingClientRect();
+                return event.clientX >= box.left && event.clientX <= box.right &&
+                    event.clientY >= box.top && event.clientY <= box.bottom;
+            };
+            button.onpointerdown = event => {
+                if (event.button !== 0 || button.disabled) return;
+                event.preventDefault();
+                if (event.isPrimary) button.focus({preventScroll: true});
+                start({pointer: event.pointerId});
+            };
+            button.onpointerup = event => {
+                if (active?.pointer === event.pointerId) stop(!confine || inside(event));
+            };
+            button.onpointercancel = button.onlostpointercapture = event => {
+                if (active?.pointer === event.pointerId) stop(false);
+            };
+            if (confine) button.onpointermove = event => {
+                if (active?.pointer === event.pointerId && !inside(event)) stop(false);
+            };
+            if (keyboard) {
+                button.onkeydown = event => {
+                    if (![" ", "Enter"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+                    event.preventDefault();
+                    if (!event.repeat) start({key: event.code || event.key});
+                };
+                button.onkeyup = event => {
+                    if (active?.key === (event.code || event.key)) {
+                        event.preventDefault();
+                        stop(true);
+                    }
+                };
+                button.onblur = () => stop(false);
+            }
+            button.onclick = event => {
+                if (event.detail === 0 && !button.disabled && !active) handlers.click();
+            };
+            return () => stop(false);
+        }
+
+        const permits = (key, mode) => actions.has(key + "/" + mode);
+        const invoke = (key, phase = "invoke") => bridge.postMessage({type: "action", key, phase});
+
+        function actionButton(control, item) {
+            const {action, trigger, holdMs, repeatDelay, repeatMs} = control;
+            const mode = trigger === "momentary" ? "momentary" : "invoke";
+            const button = document.createElement("button");
+            button.type = "button";
+            nameElement(control, button, "textContent");
+            button.disabled = true;
+            if (trigger === "hold") button.title = "Hold for " + holdMs / 1000 + " seconds";
+            if (trigger === "repeat") button.title = "Hold to repeat";
+            item.append(button);
+            if (!bridge) return;
+            let timer;
+            const stop = wirePress(button, {
+                start() {
+                    if (trigger === "momentary") invoke(action, "press");
+                    if (trigger === "hold") timer = setTimeout(() => invoke(action), holdMs);
+                    if (trigger === "repeat") {
+                        invoke(action);
+                        const repeat = () => {
+                            invoke(action);
+                            timer = setTimeout(repeat, repeatMs);
+                        };
+                        timer = setTimeout(repeat, repeatDelay);
+                    }
+                },
+                stop(_identity, commit) {
+                    clearTimeout(timer);
+                    if (trigger === "momentary") invoke(action, "release");
+                    if (trigger === "tap" && commit) invoke(action);
+                },
+                click() {
+                    if (trigger === "momentary") {
+                        invoke(action, "press");
+                        invoke(action, "release");
+                    } else if (trigger !== "hold") invoke(action);
+                }
+            }, {confine: true});
+            actionControls.push(() => {
+                const available = permits(action, mode);
+                if (!available) stop();
+                setAvailable(control, button, available);
+            });
+            states.get(control).stop = stop;
+            stopDrags.push(stop);
+        }
+
+        function pairInput(control, face, output, advance, finish) {
+            const {chordAction, chordMs} = control;
+            const pressed = new Map();
+            const keys = new Map();
+            const stopPointers = [];
+            let timer, suppress, deferred;
+            const chordEnabled = () => Boolean(chordAction) && permits(chordAction, "invoke");
+            const start = (direction, identity) => {
+                if (pressed.has(direction) || (pressed.size && !chordEnabled())) return false;
+                if (!pressed.size && !chordEnabled() && !advance(direction)) return false;
+                pressed.set(direction, identity);
+                if (suppress) return true;
+                clearTimeout(timer);
+                if (pressed.size === 2) {
+                    suppress = true;
+                    finish();
+                    timer = setTimeout(() => {
+                        if (pressed.size === 2 && chordEnabled()) invoke(chordAction);
+                    }, chordMs);
+                } else {
+                    deferred = chordEnabled();
+                    const repeat = () => {
+                        deferred = false;
+                        if (pressed.get(direction) === identity && advance(direction) && pressed.get(direction) === identity)
+                            timer = setTimeout(repeat, 85);
+                    };
+                    timer = setTimeout(repeat, 350);
+                }
+                return true;
+            };
+            const release = (direction, identity, commit) => {
+                if (pressed.get(direction) !== identity) return;
+                pressed.delete(direction);
+                clearTimeout(timer);
+                if (!suppress && deferred && commit) advance(direction);
+                finish();
+                if (!pressed.size) suppress = deferred = false;
+            };
+            const stop = () => {
+                clearTimeout(timer);
+                pressed.clear();
+                keys.clear();
+                suppress = deferred = false;
+                stopPointers.forEach(cancel => cancel());
+                finish();
+            };
+            const buttons = [-1, 1].map(direction => {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.textContent = direction < 0 ? "−" : "+";
+                nameElement(control, button, "aria-label", label => (direction < 0 ? "Decrease " : "Increase ") + label);
+                button.disabled = true;
+                stopPointers.push(wirePress(button, {
+                    start: identity => start(direction, identity),
+                    stop: (identity, commit) => release(direction, identity, commit),
+                    click() { if (advance(direction)) finish(); }
+                }, {keyboard: false}));
+                return button;
+            });
+            face.onkeydown = event => {
+                const direction = ["ArrowUp", "ArrowRight", "+", "="].includes(event.key) ? 1 :
+                    ["ArrowDown", "ArrowLeft", "-"].includes(event.key) ? -1 :
+                    [" ", "Enter"].includes(event.key) ? (event.target === buttons[0] ? -1 : 1) : 0;
+                if (!direction || event.altKey || event.ctrlKey || event.metaKey || event.target.disabled) return;
+                event.preventDefault();
+                const key = event.code || event.key;
+                if (event.repeat || keys.has(key)) return;
+                const identity = {direction};
+                if (start(direction, identity)) keys.set(key, identity);
+            };
+            face.onkeyup = event => {
+                const key = event.code || event.key;
+                const identity = keys.get(key);
+                if (!identity) return;
+                event.preventDefault();
+                keys.delete(key);
+                release(identity.direction, identity, true);
+            };
+            face.onfocusout = event => { if (!face.contains(event.relatedTarget)) stop(); };
+            face.setAttribute("role", "group");
+            nameElement(control, face);
+            if (chordAction)
+                face.setAttribute("aria-description", "Hold minus and plus together for " + chordMs / 1000 + " seconds. Keyboard: Left and Right arrows.");
+            face.append(buttons[0]);
+            if (output) face.append(output);
+            face.append(buttons[1]);
+            stopDrags.push(stop);
+            return {buttons, stop};
+        }
+
+        function stepperInput(binding, face) {
+            const advance = direction => {
+                const parameter = parameters.get(binding.key);
+                const next = adjacentValue(parameter, binding.value, direction, stepCount(parameter));
+                if (next === undefined) return false;
+                write(binding, next, true);
+                return true;
+            };
+            Object.assign(binding, pairInput(binding.control, face, binding.output, advance, () => end(binding)));
+        }
+
+        function actionPair(control, item) {
+            const face = document.createElement("div");
+            face.className = "face";
+            item.append(face);
+            const entries = [control.minusAction, control.plusAction];
+            const advance = direction => {
+                const key = entries[direction < 0 ? 0 : 1];
+                if (!permits(key, "invoke")) return false;
+                invoke(key);
+                return true;
+            };
+            const {buttons, stop} = pairInput(control, face, null, advance, () => {});
+            actionControls.push(() => {
+                const chord = control.chordAction && permits(control.chordAction, "invoke");
+                buttons.forEach((button, index) => setAvailable(control, button, chord || permits(entries[index], "invoke")));
+                if (buttons.every(button => button.disabled)) stop();
+            });
+            states.get(control).stop = stop;
+        }
+
+        const programNumber = number => String(number + 1).padStart(2, "0");
+        const isActive = (bank, program) => memory?.active?.bank === bank && memory.active.program === program;
+        function recall(bank, program) {
+            cancel();
+            bridge.postMessage({type: "recall-program", bank, program});
+        }
+
+        function programControl(control, item) {
+            const {kind} = control;
+            const element = document.createElement(kind === "bank" || kind === "program" ? "select" : "div");
+            nameElement(control, element);
+            if (kind === "patch-name") {
+                element.setAttribute("role", "status");
+                element.setAttribute("aria-atomic", "true");
+            }
+            if (kind === "program-grid") element.className = "program-banks";
+            const data = {control, element, buttons: []};
+            programControls.push(data);
+            item.append(element);
+            if (kind === "bank") element.onchange = () => {
+                if (element.disabled) return;
+                bankNumber = Number(element.value);
+                updateProgramControls(false);
+            };
+            if (kind === "program") element.onchange = () => {
+                if (element.disabled || element.value === "") return;
+                const number = Number(element.value);
+                element.value = memory?.active?.bank === bankNumber ? String(memory.active.program) : "";
+                recall(bankNumber, number);
+            };
+        }
+
+        function updateProgramControls(rebuild) {
+            const banks = memory?.banks ?? [];
+            const bank = banks.find(entry => entry.number === bankNumber);
+            const active = memory?.active;
+            const patch = banks.find(entry => entry.number === active?.bank)?.programs.find(entry => entry.number === active.program);
+            for (const data of programControls) {
+                const {control, element} = data;
+                const {kind} = control;
+                if (kind === "bank" || kind === "program") {
+                    const entries = kind === "bank" ? banks : bank?.programs ?? [];
+                    const options = entries.map(entry => [kind === "bank" ? entry.name : `${programNumber(entry.number)} ${entry.name}`, entry.number]);
+                    if (kind === "program" || !entries.length)
+                        options.unshift([entries.length ? "Select program" : "No programs available", ""]);
+                    const signature = JSON.stringify(options);
+                    if (signature !== data.signature) {
+                        element.replaceChildren(...options.map(([label, number]) => new Option(label, number)));
+                        data.signature = signature;
+                    }
+                    setAvailable(control, element, Boolean(entries.length));
+                    if (kind === "program") element.options[0].disabled = true;
+                    const selected = kind === "bank" ? bank?.number : active?.bank === bankNumber ? active?.program : undefined;
+                    element.value = selected === undefined ? "" : String(selected);
+                } else if (kind === "patch-name") {
+                    const name = patch?.name ?? "—";
+                    if (element.textContent !== name) element.textContent = name;
+                } else {
+                    if (rebuild) {
+                        data.buttons.length = 0;
+                        const columns = Math.min(6, Math.max(1, ...banks.map(bank => bank.programs.length)));
+                        element.style.setProperty("--program-columns", columns);
+                        element.replaceChildren(...banks.map(bank => {
+                            const group = document.createElement("fieldset");
+                            const legend = document.createElement("legend");
+                            legend.textContent = bank.name;
+                            const row = document.createElement("div");
+                            row.className = "program-buttons";
+                            row.append(...bank.programs.map(program => {
+                                const button = document.createElement("button");
+                                button.type = "button";
+                                button.title = program.name;
+                                button.setAttribute("aria-label", `${bank.name}, ${programNumber(program.number)} ${program.name}`);
+                                button.textContent = programNumber(program.number);
+                                button.onclick = () => { if (!button.disabled) recall(bank.number, program.number); };
+                                data.buttons.push({button, bank: bank.number, program: program.number});
+                                return button;
+                            }));
+                            group.append(legend, row);
+                            return group;
+                        }));
+                        if (!data.buttons.length) element.textContent = "No programs available";
+                    }
+                    for (const {button, bank, program} of data.buttons) {
+                        setAvailable(control, button, true);
+                        button.setAttribute("aria-pressed", String(isActive(bank, program)));
+                    }
+                }
+            }
+        }
+
+        function updateMemory(message, rulesChanged) {
+            let next = null;
+            try { next = readPrograms(message.programs); } catch {}
+            const signature = JSON.stringify(next?.banks ?? []);
+            const rebuild = signature !== catalogSignature;
+            const activeChanged = next?.active?.bank !== memory?.active?.bank || next?.active?.program !== memory?.active?.program;
+            if (!rebuild && !activeChanged) {
+                if (rulesChanged) updateProgramControls(false);
+                return;
+            }
+            if (activeChanged && next?.active || !next?.banks.some(bank => bank.number === bankNumber))
+                bankNumber = next?.active?.bank ?? next?.banks.find(bank => bank.programs.length)?.number ?? next?.banks[0]?.number;
+            memory = next;
+            catalogSignature = signature;
+            updateProgramControls(rebuild);
+        }
+
+        function updateIndicator({control, item, output}, value) {
+            const state = Number.isFinite(value) ? (value >= (control.threshold ?? 1) ? "On" : "Off") : "Unavailable";
+            if (output.textContent === state) return;
+            item.dataset.lamp = state.toLowerCase();
+            output.textContent = state;
+        }
+
+        for (const control of controls) {
+            const item = document.createElement("div");
+            item.className = "control " + control.kind;
+            if (control.lookIndex !== undefined) {
+                item.dataset.lookIndex = control.lookIndex;
+                addLayers(item);
+            }
+            item.style.zIndex = control.layer;
+            item.dataset.skin = control.skin;
+            if (control.typography) paintType(item, control.typography, families);
+            if (control.accent) item.style.setProperty("--accent", control.accent);
+            if (control.artwork && (control.artworkMode || hasDisplayArtwork(control.kind) || hasSwitchArtwork(control.kind) || control.kind === "indicator")) {
+                item.dataset.hardwareArtwork = control.artworkMode ?? (hasSwitchArtwork(control.kind) ? "switch" : control.kind === "indicator" ? "lamp" : "display");
+                item.style.setProperty("--hardware-image", `url(${JSON.stringify(control.artwork)})`);
+            }
+            const state = {control, item, label: control.label, interactive: true, rename: []};
+            states.set(control, state);
+            items.push(state);
+            if (isPanelArt(control.kind)) {
+                item.classList.add("panel-art");
+                if (control.kind === "image" && control.artwork) {
+                    const image = document.createElement("img");
+                    nameElement(control, image, "alt");
+                    image.src = control.artwork;
+                    image.style.objectFit = control.fit ?? "contain";
+                    item.append(image);
+                } else {
+                    item.setAttribute("aria-hidden", "true");
+                    if (control.kind === "line") {
+                        item.dataset.direction = control.direction ?? "horizontal";
+                        item.style.setProperty("--line-thickness", `${control.thickness ?? 2}px`);
+                    }
+                }
+                continue;
+            }
+            const title = document.createElement("span");
+            title.className = "control-title";
+            nameElement(control, title, "textContent");
+            if (!control.hideHeading && !["action", "toggle", "momentary"].includes(control.kind)) item.append(title);
+            if (control.kind === "text") continue;
+            if (control.kind === "action") {
+                actionButton(control, item);
+                continue;
+            }
+            if (control.kind === "action-pair") {
+                actionPair(control, item);
+                continue;
+            }
+            if (isProgramControl(control.kind)) {
+                programControl(control, item);
+                continue;
+            }
+
+            const output = document.createElement("output");
+            output.textContent = "—";
+            nameElement(control, output, "aria-label", label => label + (control.kind === "indicator" ? " status" : " value"));
+            output.setAttribute("aria-live", "off");
+            item.append(output);
+            const {key} = control;
+            if (control.kind === "indicator") {
+                const lens = document.createElement("span");
+                lens.className = "indicator-lens";
+                lens.setAttribute("aria-hidden", "true");
+                item.insertBefore(lens, output);
+                const indicator = {control, item, output};
+                const sources = isMeterBinding(control) ? indicatorMeters : indicatorParameters;
+                if (!sources.has(key)) sources.set(key, []);
+                sources.get(key).push(indicator);
+                updateIndicator(indicator);
+                continue;
+            }
+            if (control.kind === "meter") {
+                const face = document.createElement("div");
+                face.className = "meter-face";
+                const scale = document.createElement("div");
+                scale.className = "meter-scale";
+                scale.setAttribute("aria-hidden", "true");
+                const marks = [document.createElement("span"), document.createElement("span"), document.createElement("span")];
+                scale.append(...marks);
+                const gauge = document.createElement("meter");
+                gauge.min = -60;
+                gauge.max = 0;
+                gauge.value = -60;
+                nameElement(control, gauge);
+                face.append(scale, gauge);
+                item.append(face);
+                if (!meters.has(key)) meters.set(key, []);
+                meters.get(key).push({output, gauge, face, marks, item});
+                continue;
+            }
+            const binding = {key, control, output};
+            state.stop = () => {
+                binding.stop?.();
+                end(binding);
+            };
+            if (control.kind === "led" || (control.kind === "stepper" && control.segmented)) {
+                binding.ledDisplay = createLed(output);
+                resetLed(binding);
+                if (control.labelFrom) state.rename.push(() => showLed(binding, ...binding.ledDisplay.presentation));
+            }
+            if (control.kind === "led" && !key) continue;
+            if (!bindings.has(key)) bindings.set(key, []);
+            bindings.get(key).push(binding);
+            if (!bridge || control.kind === "readout" || control.kind === "led") continue;
+
+            const face = document.createElement("div");
+            face.className = "face";
+            item.append(face);
+            if (control.kind === "stepper") {
+                stepperInput(binding, face);
+                continue;
+            }
+            if (control.artwork && !item.dataset.hardwareArtwork) {
+                const image = document.createElement("img");
+                image.className = "artwork";
+                image.src = control.artwork;
+                image.alt = "";
+                face.append(image);
+            }
+            if (control.kind === "knob") {
+                binding.dial = document.createElement("div");
+                binding.dial.className = "dial";
+                binding.dial.setAttribute("aria-hidden", "true");
+                binding.detentMarks = document.createElement("div");
+                binding.detentMarks.className = "detents";
+                binding.detentCaptions = document.createElement("div");
+                binding.detentCaptions.className = "detent-captions";
+                const arc = document.createElement("span");
+                arc.className = "cell-geometry-arc";
+                arc.setAttribute("aria-hidden", "true");
+                binding.dial.append(arc, binding.detentMarks, binding.detentCaptions);
+                face.append(binding.dial);
+                if (control.showGainReduction) {
+                    const ring = document.createElement("span");
+                    ring.className = "knob-reduction-ring";
+                    ring.hidden = true;
+                    binding.dial.prepend(ring);
+                    const reading = document.createElement("span");
+                    reading.className = "knob-reduction-reading";
+                    reading.setAttribute("role", "meter");
+                    reading.setAttribute("aria-live", "off");
+                    nameElement(control, reading, "aria-label", label => label + " gain reduction");
+                    reading.hidden = true;
+                    item.append(reading);
+                    reductionMeters.push({ring, reading, item});
+                }
+            }
+            const buttonKind = control.kind === "toggle" || control.kind === "momentary";
+            const input = document.createElement(control.kind === "choice" ? "select" : buttonKind ? "button" : "input");
+            binding.input = input;
+            nameElement(control, input);
+            input.disabled = true;
+            face.append(input);
+            if (control.kind === "choice") {
+                input.onchange = () => {
+                    if (input.disabled || input.selectedIndex < 0) return;
+                    write(binding, Number(input.value));
+                    end(binding);
+                };
+            } else if (control.kind === "toggle") {
+                input.type = "button";
+                nameElement(control, input, "textContent");
+                input.setAttribute("aria-pressed", "false");
+                input.onclick = () => {
+                    const parameter = parameters.get(key);
+                    if (!parameter || input.disabled) return;
+                    write(binding, parameter.value === parameter.maximum ? parameter.minimum : parameter.maximum);
+                    end(binding);
+                };
+            } else if (control.kind === "momentary") {
+                input.type = "button";
+                nameElement(control, input, "textContent");
+                binding.stop = wirePress(input, {
+                    start() { send("momentary-press", key); },
+                    stop() { send("momentary-release", key); },
+                    click() {
+                        send("momentary-press", key);
+                        send("momentary-release", key);
+                    }
+                });
+                stopDrags.push(binding.stop);
+            } else {
+                rangeInput(binding, face);
+            }
+        }
+
+        const cancel = () => {
+            stopDrags.forEach(stop => stop());
+            for (const binding of owners.values()) end(binding);
+        };
+        const compact = window.matchMedia(`(max-width: ${phoneBreakpoint}px)`);
+        let fractionalItems = [];
+        const rotate = control => control.rotation ? `rotate(${control.rotation}deg)` : "";
+        function positionFractions() {
+            if (!fractionalItems.length) return;
+            const style = getComputedStyle(stage);
+            const columns = style.gridTemplateColumns.split(" ").map(parseFloat);
+            const rows = style.gridTemplateRows.split(" ").map(parseFloat);
+            const offset = (value, tracks, gap) => {
+                const base = Math.floor(value);
+                return (value - base) * ((tracks[base] ?? 0) + parseFloat(gap));
+            };
+            for (const {box, item, control} of fractionalItems) {
+                const x = offset(box.x, columns, style.columnGap);
+                const y = offset(box.y, rows, style.rowGap);
+                item.style.transform = `translate(${x}px, ${y}px) ${rotate(control)}`;
+            }
+        }
+        const placementObserver = new ResizeObserver(positionFractions);
+        function arrange() {
+            const focused = stage.contains(document.activeElement) ? document.activeElement : null;
+            cancel();
+            stage.dataset.layout = compact.matches ? "phone" : "wide";
+            for (const state of items) state.box = compact.matches ? state.control.phone : state.control;
+            const placed = [...items];
+            placed.sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x);
+            placementObserver.disconnect();
+            fractionalItems = [];
+            for (const state of placed) {
+                const {box, item, control} = state;
+                item.style.gridColumn = `${Math.floor(box.x) + 1} / span ${box.width}`;
+                item.style.gridRow = `${Math.floor(box.y) + 1} / span ${box.height}`;
+                item.style.transform = rotate(control);
+                if (!Number.isInteger(box.x) || !Number.isInteger(box.y)) fractionalItems.push(state);
+            }
+            // Keep keyboard and screen-reader order in sync with the visible grid.
+            stage.append(...placed.map(({item}) => item));
+            if (fractionalItems.length) {
+                // A fractional origin follows the live track and gap, including taller plugin controls.
+                positionFractions();
+                placementObserver.observe(stage);
+                placed.forEach(({item}) => placementObserver.observe(item));
+            }
+            if (focused) focused.focus({preventScroll: true});
+        }
+        stage.tabIndex = -1;
+        updateRules();
+        arrange();
+        compact.addEventListener("change", arrange);
+        if (programControls.length) updateMemory({});
+        if (!bridge) return;
+        // Only trusted key presses can leave the embedded page. Leave Space
+        // with focused buttons, native menus and text controls.
+        window.addEventListener("keydown", event => {
+            if (!hostShortcutsAvailable || !event.isTrusted || event.defaultPrevented || event.repeat ||
+                event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+            const target = event.target;
+            const editing = target instanceof HTMLElement &&
+                (target.isContentEditable || target.closest("textarea,select,input:not([type=range])"));
+            if (editing) return;
+            const button = target instanceof Element && target.closest("button,[role=button]");
+            const key = event.key === "Escape" ? "release" :
+                event.key === " " && !button ? "space" : "";
+            if (!key) return;
+            event.preventDefault();
+            if (key === "release") cancel();
+            bridge.postMessage({type: "host-shortcut", key});
+        });
+        stage.addEventListener("pointerdown", event => {
+            if (event.target === stage) stage.focus({preventScroll: true});
+        });
+        window.addEventListener("blur", cancel);
+        window.addEventListener("pagehide", cancel);
+        document.addEventListener("visibilitychange", () => { if (document.hidden) cancel(); });
+        let pendingSnapshot, receivedSnapshot, receiving = false, requestedDeltas = false;
+        bridge.onMessage(message => {
+            if (message?.type === "visual-values" && Array.isArray(message.controls)) {
+                if (!document.hidden) {
+                    for (const entry of message.controls.slice(0, 256)) {
+                        const item = items.find(state => state.control.lookIndex === entry?.id)?.item;
+                        const value = entry?.indicator;
+                        if (item && !item.hidden && Number.isFinite(value) && value >= 0 && value <= 1)
+                            updateDecorations(item, undefined, undefined, value);
+                    }
+                }
+                return;
+            }
+            if (message?.type === "analysis") {
+                if (!document.hidden && Array.isArray(message.traces)) {
+                    for (const trace of message.traces.slice(0, 32)) {
+                        const item = items.find(state => state.control.lookIndex === trace?.id)?.item;
+                        if (item && !item.hidden) updateAnalysis(item, trace.role, trace.points);
+                    }
+                }
+                return;
+            }
+            if (message?.type === "visual-states" && Array.isArray(message.controls)) {
+                const allowed = ["bypassed", "automated", "modulated", "invalid", "warning"];
+                for (const entry of message.controls.slice(0, 256)) {
+                    if (!Number.isInteger(entry?.id) || !Array.isArray(entry.states)) continue;
+                    const item = items.find(state => state.control.lookIndex === entry.id)?.item;
+                    if (item) item.dataset.cellStates = allowed.filter(state => entry.states.includes(state)).join(" ");
+                }
+                return;
+            }
+            if (message.type === "meters" && Array.isArray(message.meters)) {
+                let reduction;
+                for (const signal of message.meters) {
+                    if (!signal || ![signal.value, signal.minimum, signal.maximum].every(Number.isFinite) ||
+                        signal.minimum >= signal.maximum) continue;
+                    const value = Math.min(Math.max(signal.value, signal.minimum), signal.maximum);
+                    if (signal.key === "gain-reduction") reduction = {minimum: signal.minimum, maximum: signal.maximum, value};
+                    for (const indicator of indicatorMeters.get(signal.key) ?? []) updateIndicator(indicator, value);
+                    for (const {output, gauge, face, marks, item} of meters.get(signal.key) ?? []) {
+                        gauge.min = signal.minimum;
+                        gauge.max = signal.maximum;
+                        gauge.value = value;
+                        updateDecorations(item, undefined, undefined, (value - signal.minimum) / (signal.maximum - signal.minimum));
+                        output.textContent = `${value.toFixed(1)}${signal.unit ? " " + signal.unit : ""}`;
+                        const levels = [signal.minimum, (signal.minimum + signal.maximum) / 2, signal.maximum];
+                        marks.forEach((mark, i) => { mark.textContent = String(Math.round(levels[i])); });
+                        face.style.setProperty("--needle", `${-50 + 100 * (value - signal.minimum) / (signal.maximum - signal.minimum)}deg`);
+                    }
+                }
+                for (const {ring, reading, item} of reductionMeters) {
+                    ring.hidden = reading.hidden = !reduction;
+                    if (!reduction) {
+                        updateDecorations(item, undefined, undefined, 0);
+                        continue;
+                    }
+                    const {minimum, maximum, value} = reduction;
+                    const normalized = (value - minimum) / (maximum - minimum);
+                    updateDecorations(item, undefined, undefined, normalized);
+                    const sweep = 270 * normalized;
+                    ring.style.setProperty("--reduction-sweep", sweep + "deg");
+                    const text = value.toFixed(1) + " dB";
+                    reading.setAttribute("aria-valuemin", minimum);
+                    reading.setAttribute("aria-valuemax", maximum);
+                    reading.setAttribute("aria-valuenow", value);
+                    reading.setAttribute("aria-valuetext", text);
+                    reading.textContent = "GR " + text;
+                }
+                return;
+            }
+            if (!Array.isArray(message.parameters)) return;
+            if (message.type === "parameter-delta") {
+                if (!receivedSnapshot || message.base !== receivedSnapshot.revision) {
+                    bridge.postMessage({type: "parameter-resync"});
+                    return;
+                }
+                const next = new Map(receivedSnapshot.parameters.map(parameter => [parameter.key, parameter]));
+                for (const key of message.removed ?? []) next.delete(key);
+                for (const parameter of message.parameters) next.set(parameter.key, parameter);
+                message = {...receivedSnapshot, ...message, type: "parameters", parameters: [...next.values()]};
+            }
+            if (message.type !== "parameters") return;
+            receivedSnapshot = message;
+            if (message.supportsDeltas && !requestedDeltas) {
+                requestedDeltas = true;
+                bridge.postMessage({type: "subscribe-parameter-deltas"});
+            }
+            pendingSnapshot = message;
+            if (receiving) return;
+            receiving = true;
+            try {
+                while (pendingSnapshot) {
+                    const snapshot = pendingSnapshot;
+                    pendingSnapshot = undefined;
+                    applyParameterSnapshot(snapshot);
+                }
+            } finally {
+                receiving = false;
+            }
+        });
+        if (livePage) bridge.postMessage({type: "designer-ready"});
+
+        function applyParameterSnapshot(message) {
+            momentaryAvailable = message.momentary === true;
+            hostShortcutsAvailable = message.hostShortcuts === true;
+            actions = new Set((Array.isArray(message.actions) ? message.actions : []).flatMap(action =>
+                typeof action?.key === "string" && ["invoke", "momentary"].includes(action.mode)
+                    ? [action.key + "/" + action.mode] : []));
+            parameters.clear();
+            for (const parameter of message.parameters) {
+                if (parameter && !parameter.hidden && [parameter.value, parameter.minimum, parameter.maximum].every(Number.isFinite))
+                    parameters.set(parameter.key, parameter);
+            }
+            const {changed, focusFrom} = updateRules();
+            actionControls.forEach(update => update());
+            if (programControls.length) updateMemory(message, changed);
+            for (const [key, indicators] of indicatorParameters)
+                for (const indicator of indicators) updateIndicator(indicator, parameters.get(key)?.value);
+            for (const [key, items] of bindings) {
+                const parameter = parameters.get(key);
+                for (const binding of items) {
+                    if (!parameter) {
+                        binding.stop?.();
+                        end(binding);
+                        if (binding.input) binding.input.disabled = true;
+                        for (const button of binding.buttons ?? []) button.disabled = true;
+                        if (binding.ledDisplay) resetLed(binding);
+                        else {
+                            binding.output.textContent = "—";
+                            if (binding.buttons || binding.control.displayCodes?.length) {
+                                binding.output.removeAttribute("title");
+                                binding.output.setAttribute("aria-label", labelOf(binding.control) + " value");
+                            }
+                        }
+                        updateDetents(binding, undefined);
+                    } else if (owners.get(key) === binding) {
+                        binding.deferred = parameter;
+                        if (parameter.readonly || (binding.buttons && !stepCount(parameter))) {
+                            binding.stop?.();
+                            end(binding);
+                        }
+                    } else {
+                        update(binding, parameter);
+                    }
+                }
+            }
+            if (focusFrom) moveFocus(focusFrom);
+        }
+    })(controls,{"fit":"cover"},480,function stepCount(parameter) {
+        if (!parameter || !Number.isFinite(parameter.step) || parameter.step <= 0) return 0;
+        const count = Math.round((parameter.maximum - parameter.minimum) / parameter.step);
+        return Number.isSafeInteger(count) && count > 0 ? count : 0;
+    },32,isPanelArt,isProgramControl,kind => ["led", "readout", "stepper", "meter"].includes(kind),kind => ["toggle", "momentary", "action"].includes(kind),control => control.kind === "meter" || (control.kind === "indicator" && control.indicatorSource === "meter"),function readPrograms(memory) {
+        if (memory == null) return null;
+        const invalid = () => { throw new Error("Invalid Cell program memory snapshot."); };
+        const slotNumber = (value, max) => Number.isInteger(value) && value >= 0 && value <= max;
+        const encoder = new TextEncoder();
+        const nameIsValid = name => typeof name === "string" && name.trim() &&
+            name.length <= 80 && encoder.encode(name).length <= 80 && !/[\x00-\x1f\x7f]/.test(name);
+        if (memory.type !== "program-memory" || !Array.isArray(memory.banks) || memory.banks.length > 64) invalid();
+        const bankNumbers = new Set();
+        let count = 0;
+        const banks = memory.banks.map(bank => {
+            if (!slotNumber(bank?.number, 16383) || !nameIsValid(bank.name) || bankNumbers.has(bank.number) ||
+                !Array.isArray(bank.programs) || bank.programs.length > 128 || (count += bank.programs.length) > 512)
+                invalid();
+            bankNumbers.add(bank.number);
+            const numbers = new Set();
+            const programs = bank.programs.map(program => {
+                if (!slotNumber(program?.number, 127) || !nameIsValid(program.name) || numbers.has(program.number)) invalid();
+                numbers.add(program.number);
+                return {number: program.number, name: program.name};
+            });
+            return {number: bank.number, name: bank.name, programs};
+        });
+        const current = memory.active;
+        if (current != null && !banks.find(bank => bank.number === current.bank)?.programs
+            .some(program => program.number === current.program)) invalid();
+        const active = current == null ? null : {bank: current.bank, program: current.program};
+        return {type: "program-memory", banks, active};
+    },
+{glyphs:{"0":"abcdef","1":"bc","2":"abdeg","3":"abcdg","4":"bcfg","5":"acdfg","6":"acdefg","7":"abc","8":"abcdefg","9":"abcdfg"," ":"","-":"g","?":"abegp","A":"abcefg","a":"abcdeg","B":"cdefg","b":"cdefg","C":"adef","c":"deg","D":"bcdeg","d":"bcdeg","E":"adefg","e":"abdefg","F":"aefg","f":"aefg","G":"acdef","H":"bcefg","h":"cefg","I":"bc","i":"c","J":"bcde","L":"def","l":"ef","n":"ceg","O":"abcdef","o":"cdeg","P":"abefg","q":"abcfg","r":"eg","S":"acdfg","t":"defg","U":"bcdef","u":"cde","y":"bcdfg","K":[[12,8,12,92],[12,50,75,8],[12,50,75,92]],"M":[[12,8,12,92],[12,8,44,51],[44,51,76,8],[76,8,76,92]],"N":[[12,8,12,92],[12,8,76,92],[76,8,76,92]],"R":[[12,8,12,92],[12,8,66,8],[66,8,76,18],[76,18,76,37],[76,37,66,47],[66,47,12,47],[41,47,77,92]],"V":[[10,8,44,92],[44,92,78,8]],"W":[[9,8,23,92],[23,92,44,51],[44,51,65,92],[65,92,79,8]],"X":[[11,8,77,92],[77,8,11,92]],"Y":[[10,8,44,49],[78,8,44,49],[44,49,44,92]],"Z":[[11,8,77,8],[77,8,11,92],[11,92,77,92]],"+":[[44,27,44,73],[11,50,77,50]],"#":[[35,13,23,87],[65,13,53,87],[12,37,79,37],[9,63,76,63]]},codeForValue:function displayCode(entries, value, step) {
+        if (!entries?.length) return undefined;
+        const exact = entries.find(entry => entry.value === value);
+        if (exact) return exact.code;
+        // Decimal parameters can round-trip a few ulps from the authored value.
+        let nearest;
+        let distance = Infinity;
+        for (const entry of entries) {
+            const delta = Math.abs(entry.value - value);
+            const tolerance = 4 * Number.EPSILON * Math.max(1, Math.abs(entry.value), Math.abs(value));
+            if (delta < distance && delta <= tolerance && (!(step > 0) || delta < step / 4)) {
+                nearest = entry;
+                distance = delta;
+            }
+        }
+        return nearest?.code;
+    },numericCode:function numericLedCode(value) {
+        if (!Number.isInteger(value) || value < -9 || value > 99) return "--";
+        return String(value).padStart(2, "0");
+    }},function compareValue(left, operator, right) {
+        switch (operator) {
+            case "=": return left === right;
+            case "!=": return left !== right;
+            case "<": return left < right;
+            case "<=": return left <= right;
+            case ">": return left > right;
+            case ">=": return left >= right;
+            default: return false;
+        }
+    },
+function paintTypography(element, typography, families) {
+        const {family, size, weight, tracking, alignment, letterCase} = typography ?? {};
+        const pixels = value => value === undefined ? undefined : value + "px";
+        const styles = {family: families[family]?.stack, size: pixels(size), weight,
+            tracking: pixels(tracking), alignment, lettercase: letterCase};
+        for (const [key, value] of Object.entries(styles)) {
+            element.toggleAttribute("data-type-" + key, value !== undefined);
+            if (value === undefined) element.style.removeProperty("--type-" + key);
+            else element.style.setProperty("--type-" + key, value);
+        }
+    },{"panel-sans":{"label":"Panel Sans","stack":"\"Cell Panel Sans\", system-ui, sans-serif"},"panel-condensed":{"label":"Panel Condensed","stack":"\"Cell Panel Condensed\", \"Arial Narrow\", system-ui, sans-serif"},"system-sans":{"label":"System sans","stack":"system-ui, sans-serif"},"system-serif":{"label":"System serif","stack":"ui-serif, Georgia, serif"},"system-mono":{"label":"System monospace","stack":"ui-monospace, monospace"}},function addAppearanceLayers(item) {
+        for (const layer of ["highlight", "foreground", "icon", "indicator"]) {
+            const overlay = document.createElement("span");
+            overlay.className = "cell-look-" + layer;
+            overlay.setAttribute("aria-hidden", "true");
+            item.append(overlay);
+        }
+    });
+applyAppearanceData([null,null,null,null,null,null,null],document.querySelector("main"),"");
+</script></body></html>

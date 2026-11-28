@@ -13,6 +13,9 @@ const project = {type: "parameters", parameters: [
     {key: "mode", name: "Mode", minimum: 0, maximum: 2, step: 1, value: 1, unit: "", choices: ["Clean", "Warm", "Bright"]}
 ]};
 
+const savedArtwork = (layout, control) => layout.presentation?.assets[control.assetId]?.data ?? control.artwork;
+const savedBackground = layout => layout.presentation?.assets[layout.theme.backgroundAsset]?.data ?? layout.theme.backgroundArtwork;
+
 async function download(page, id, directory) {
     const pending = page.waitForEvent("download");
     await page.locator(id).click();
@@ -34,7 +37,7 @@ async function download(page, id, directory) {
         page.on("dialog", dialog => dialog.accept());
         const serveDesigner = async route => {
             const name = new URL(route.request().url()).pathname.slice(1);
-            if (!["index.html", "model.js", "fonts.js", "artwork.js", "runtime.js", "designer.js"].includes(name)) return route.abort();
+            if (!["index.html", "model.js", "fonts.js", "artwork.js", "theme_examples.js", "runtime.js", "designer.js"].includes(name)) return route.abort();
             await route.fulfill({body: await fs.readFile(path.join(source, name)),
                 contentType: name.endsWith(".js") ? "text/javascript" : "text/html; charset=utf-8"});
         };
@@ -223,7 +226,7 @@ async function download(page, id, directory) {
         assert.equal(saved.catalog.length, 3);
         assert.deepEqual(saved.controls.find(control => control.kind === "knob").phone, {x:2, y:1, width:2, height:3});
         assert.deepEqual(saved.controls.find(control => control.kind === "fader").phone, {x:0, y:1, width:2, height:3});
-        assert.equal(saved.controls.find(control => control.kind === "knob").artwork.startsWith("data:image/png;"), true);
+        assert.equal(savedArtwork(saved, saved.controls.find(control => control.kind === "knob")).startsWith("data:image/png;"), true);
         const header = await download(page, "#export-cpp", temp);
         assert.match(header, /std::array<cell::ParamId, 3>/);
         assert.match(header, /std::array<std::string_view, 2>/);
@@ -296,7 +299,7 @@ async function download(page, id, directory) {
         const copied = await page.evaluate(() => navigator.clipboard.readText());
         const copiedControls = JSON.parse(copied).controls;
         assert.deepEqual(copiedControls.map(control => control.label), ["Field level", "Studio Fader"]);
-        assert.equal(copiedControls[0].artwork, saved.controls.find(control => control.kind === "knob").artwork);
+        assert.equal(copiedControls[0].artwork, savedArtwork(saved, saved.controls.find(control => control.kind === "knob")));
         await page.getByRole("button", {name: "Copy selection"}).click();
         await page.getByText("Selection copied to the clipboard.", {exact: true}).waitFor();
 
@@ -312,7 +315,9 @@ async function download(page, id, directory) {
         await recipient.keyboard.press("Control+v");
         await recipient.getByText("2 controls pasted.", {exact: true}).waitFor();
         const transplant = JSON.parse(await download(recipient, "#save", temp));
-        assert.deepEqual(transplant.controls, copiedControls);
+        assert.deepEqual(transplant.controls.map(({assetId, ...control}) => ({
+            ...control, ...(assetId ? {artwork: transplant.presentation.assets[assetId].data} : {})
+        })), copiedControls);
         assert.equal(transplant.catalog, null);
 
         await paste.click();
@@ -556,7 +561,7 @@ async function download(page, id, directory) {
 
         const artLayout = await download(artwork, "#save", temp);
         const settings = JSON.parse(artLayout);
-        assert.equal(settings.controls[3].artwork, "data:image/svg+xml;base64," + logo.buffer.toString("base64"));
+        assert.equal(savedArtwork(settings, settings.controls[3]), "data:image/svg+xml;base64," + logo.buffer.toString("base64"));
         assert.equal(settings.theme.backgroundFit, "contain");
         await loadLayout(artLayout);
         await artwork.getByText("Layout opened.", {exact: true}).waitFor();
@@ -576,6 +581,7 @@ async function download(page, id, directory) {
         await standalone.screenshot({path: path.join(temp, "panel-artwork-phone.png")});
 
         const active = svg("script.svg", "<script>throw 1</script>");
+        delete settings.theme.backgroundAsset;
         settings.theme.backgroundArtwork = "data:image/svg+xml;base64," + active.buffer.toString("base64");
         await loadLayout(JSON.stringify(settings));
         await artwork.getByText("The layout has invalid background artwork.", {exact: true}).waitFor();
@@ -1315,6 +1321,7 @@ async function download(page, id, directory) {
         await placementDesigner.getByRole("button", {name: "Live preview"}).click();
         const placementPreview = placementDesigner.frameLocator("#preview-panel iframe");
         const previewCaptions = placementPreview.locator(".detent-captions span");
+        await previewCaptions.first().waitFor();
         assert.deepEqual(await previewCaptions.allTextContents(), modeParameter.choices);
         assert.equal(await placementPreview.locator(".detent-captions [data-active]").textContent(), "Warm");
         await editPlacement("detent-label-mode").selectOption("custom");
@@ -1511,14 +1518,20 @@ async function download(page, id, directory) {
         await dial.waitFor();
         await hardware.locator("#panel-artwork-options").locator("..").locator("summary").click();
         await hardware.getByRole("button", {name: "Slate powder coat"}).click();
+        await hardware.getByLabel("Show gain reduction").check();
+        await hardware.getByRole("button", {name: "Apply", exact: true}).click();
+        await hardwarePreview.locator(".knob-reduction-ring").waitFor();
+        assert.match(await hardwarePreview.locator(".knob-reduction-reading").textContent(), /^GR [0-9.]+ dB$/);
         const savedHardware = JSON.parse(await download(hardware, "#save", temp));
-        assert.match(savedHardware.theme.backgroundArtwork, /^data:image\/webp;base64,/);
+        assert.match(savedBackground(savedHardware), /^data:image\/webp;base64,/);
         assert.equal(savedHardware.controls[0].artworkMode, "cap");
+        assert.equal(savedHardware.controls[0].showGainReduction, true);
         assert.equal(savedHardware.controls[2].artworkMode, "cap");
         await hardware.locator("#layout-file").setInputFiles({name: "hardware.json", mimeType: "application/json",
             buffer: Buffer.from(JSON.stringify(savedHardware))});
         await hardware.getByText("Layout opened.", {exact: true}).waitFor();
         assert.equal(await hardware.getByRole("button", {name: "Slate powder coat"}).getAttribute("aria-pressed"), "true");
+        assert.equal(await hardware.getByLabel("Show gain reduction").isChecked(), true);
 
         const hardwareHtml = await download(hardware, "#export", temp);
         const hardwareExport = await browser.newPage({viewport: {width: 390, height: 600}});
@@ -1533,8 +1546,31 @@ async function download(page, id, directory) {
         await hardwareExport.goto(origin + "/hardware.html");
         await hardwareExport.evaluate(parameters => window.receive({type: "parameters", parameters}), savedHardware.catalog);
         await hardwareExport.locator('main[data-layout="phone"] .fader[data-hardware-artwork=cap]').waitFor();
-        assert.equal(await hardwareExport.locator("main > .panel-background").getAttribute("src"), savedHardware.theme.backgroundArtwork);
+        assert.equal(await hardwareExport.locator("main > .panel-background").getAttribute("src"), savedBackground(savedHardware));
         assert.equal(await hardwareExport.locator(".stepper .led-code").textContent(), "A1");
+        const reductionRing = hardwareExport.locator(".knob-reduction-ring");
+        const reductionReading = hardwareExport.getByRole("meter", {name: "Input trim gain reduction"});
+        const knobValue = hardwareExport.getByRole("slider", {name: "Input trim"});
+        const knobPosition = await knobValue.inputValue();
+        assert.equal(await reductionRing.isVisible(), false);
+        const sendReduction = value => hardwareExport.evaluate(value => window.receive({type: "meters",
+            meters: value === null ? [] : [{key: "gain-reduction", value, minimum: 0, maximum: 60, unit: "dB"}]}), value);
+        await sendReduction(15);
+        assert.equal(await reductionReading.textContent(), "GR 15.0 dB");
+        assert.equal(await reductionReading.getAttribute("aria-valuetext"), "15.0 dB");
+        assert.equal(await reductionRing.evaluate(node => node.style.getPropertyValue("--reduction-sweep")), "67.5deg");
+        assert.match(await reductionRing.evaluate(node => getComputedStyle(node).backgroundImage), /conic-gradient/);
+        assert.equal(await knobValue.inputValue(), knobPosition);
+        await knobValue.press("ArrowUp");
+        assert.notEqual(await knobValue.inputValue(), knobPosition);
+        assert.equal(await reductionReading.getAttribute("aria-valuenow"), "15");
+        await hardwareExport.locator(".control.knob").screenshot({path: path.join(temp, "knob-gain-reduction.png")});
+        await sendReduction(80);
+        assert.equal(await reductionReading.getAttribute("aria-valuenow"), "60");
+        await sendReduction(0);
+        assert.equal(await reductionReading.getAttribute("aria-valuenow"), "0");
+        await sendReduction(null);
+        assert.equal(await reductionRing.isVisible(), false);
         await hardwareExport.screenshot({path: path.join(temp, "hardware-export-phone.png"), fullPage: true});
         await fs.writeFile(path.join(temp, "hardware-editor.html"), hardwareHtml);
         const hostedModes = ["Mono", "Tape", "Symphonic", "Studio"];
@@ -1651,17 +1687,299 @@ async function download(page, id, directory) {
         await jogWheel.click();
         const tapeLayout = JSON.parse(await download(hardware, "#save", temp));
         const tapeKnob = tapeLayout.controls.find(control => control.kind === "knob");
-        assert.equal(tapeKnob.artwork, await jogWheel.locator("img").getAttribute("src"));
+        assert.equal(savedArtwork(tapeLayout, tapeKnob), await jogWheel.locator("img").getAttribute("src"));
         assert.equal(tapeKnob.artworkMode, "cap");
         const tapeHtml = await download(hardware, "#export", temp);
         for (const kind of ["knob", "fader", "meter", "momentary", "indicator"]) {
             const control = tapeLayout.controls.find(control => control.kind === kind);
-            assert.match(control.artwork, /^data:image\/webp;base64,/);
-            assert.ok(tapeHtml.includes(control.artwork), `Export lost artwork for ${kind}`);
+            assert.match(savedArtwork(tapeLayout, control), /^data:image\/webp;base64,/);
+            assert.ok(tapeHtml.includes(savedArtwork(tapeLayout, control)), `Export lost artwork for ${kind}`);
         }
 
+        // The same controls remain mounted while the theme and materials change.
+        const skinPage = await context.newPage();
+        skinPage.on("pageerror", error => errors.push(error));
+        await skinPage.route(origin + "/**", serveDesigner);
+        await skinPage.goto(origin + "/index.html");
+        await skinPage.locator("#appearance-library > summary").click();
+        await skinPage.locator("#appearance-demo").click();
+        await skinPage.getByText("Theme comparison loaded.", {exact: true}).waitFor();
+        const skinEditor = skinPage.frameLocator("#preview-panel iframe");
+        const drive = skinEditor.getByRole("slider", {name: "Drive"});
+        await drive.waitFor();
+        assert.equal(await skinEditor.getByRole("combobox", {name:"Mode"}).evaluate(menu => getComputedStyle(menu).appearance), "none");
+        await drive.press("ArrowUp");
+        const driveValue = await drive.inputValue();
+        const originalDrive = await drive.elementHandle();
+        const hdrColor = await skinEditor.locator("body").evaluate(body => getComputedStyle(body).backgroundColor);
+        const hdrBinding = await download(skinPage, "#export-cpp", temp);
+        const hdr = JSON.parse(await download(skinPage, "#appearance-native", temp));
+        await skinPage.locator("#appearance-theme").selectOption("modern");
+        await skinEditor.locator("body").evaluate((body, before) => new Promise(resolve => {
+            const next = () => getComputedStyle(body).backgroundColor !== before ? resolve() : requestAnimationFrame(next);
+            next();
+        }), hdrColor);
+        assert.equal(await originalDrive.evaluate(element => element.isConnected), true);
+        assert.equal(await drive.inputValue(), driveValue);
+        assert.equal(await download(skinPage, "#export-cpp", temp), hdrBinding);
+        const modern = JSON.parse(await download(skinPage, "#appearance-native", temp));
+        const geometry = scene => scene.controls.map(({id, kind, rect, value}) => ({id, kind, rect, value}));
+        assert.deepEqual(geometry(hdr), geometry(modern));
+        assert.notEqual(hdr.colors.accent, modern.colors.accent);
+        await skinPage.locator("#appearance-search").fill("knurled graphite");
+        await skinPage.locator("#appearance-results").getByRole("button", {name: "Knurled graphite knob"}).click();
+        const durable = JSON.parse(await download(skinPage, "#save", temp));
+        assert.ok(durable.presentation.assets[durable.controls.find(control => control.kind === "knob").assetId].data);
+        await skinPage.locator("#appearance-asset-file").setInputFiles({
+            name: "Round mask.svg", mimeType: "image/svg+xml",
+            buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><circle cx="64" cy="64" r="55" fill="white"/></svg>')
+        });
+        await skinPage.locator("#appearance-material").selectOption("dial");
+        await skinPage.locator('#appearance-fields select[name="mask"]').selectOption({label: "Round mask.svg"});
+        await skinPage.getByRole("button", {name: "Apply material"}).click();
+        await skinPage.getByText("Artwork dependencies", {exact: true}).click();
+        await skinPage.locator("#appearance-dependencies li").filter({hasText: /Round mask\.svg.*dial \(mask\)/}).waitFor();
+        await skinPage.getByLabel("Edit layout").selectOption("phone");
+        const portrait = JSON.parse(await download(skinPage, "#appearance-native", temp));
+        assert.notEqual(portrait.width, hdr.width);
+        assert.equal(portrait.controls.length, hdr.controls.length);
+        assert.equal(portrait.assets.length, 2, "WebP face and SVG mask did not bake to native images");
+        if (process.env.CELL_SKIN_PREVIEW) {
+            for (const [name, scene] of Object.entries({hdr, modern, portrait})) {
+                const input = path.join(temp, `${name}.cellskin.json`);
+                await fs.writeFile(input, JSON.stringify(scene));
+                const image = path.join(temp, `${name}-native.png`);
+                const frames = name === "portrait" ? "1" : "8";
+                const result = execFileSync(process.env.CELL_SKIN_PREVIEW, [input, image, "2", frames], {encoding: "utf8"});
+                if (name !== "portrait") {
+                    assert.match(result, /0 warm layer builds, 0 warm blur builds/,
+                        "high-DPI repaint rebuilt static effects");
+                    const clipped = path.join(temp, `${name}-native-clipped.png`);
+                    execFileSync(process.env.CELL_SKIN_PREVIEW, [input, clipped, "2", frames, "damage"]);
+                    assert.ok((await fs.readFile(image)).equals(await fs.readFile(clipped)),
+                        `${name} rotary damage repaint differs from a full repaint`);
+                    for (const scale of [1, 1.25]) {
+                        const scaled = path.join(temp, `${name}-native-${scale}.png`);
+                        execFileSync(process.env.CELL_SKIN_PREVIEW, [input, scaled, String(scale)]);
+                        const png = await fs.readFile(scaled);
+                        assert.equal(png.readUInt32BE(16), Math.ceil(scene.width * scale));
+                        assert.equal(png.readUInt32BE(20), Math.ceil(scene.height * scale));
+                    }
+                }
+                assert.ok((await fs.stat(image)).size > 1000, "native image missing");
+            }
+        }
+        // Visual-only state and portable template operations keep the hosted
+        // parameter input mounted and preserve generated binding identities.
+        const portraitDrive = await drive.elementHandle();
+        await skinPage.locator("#appearance-state").selectOption("warning");
+        await skinEditor.locator('.control.knob[data-cell-preview-state="warning"]').waitFor();
+        assert.equal(await portraitDrive.evaluate(element => element.isConnected), true);
+        await skinPage.locator("#appearance-state").selectOption("");
+        await skinPage.locator("#appearance-local > summary").click();
+        const horizontalPivot = skinPage.getByLabel("Horizontal pivot");
+        await horizontalPivot.fill("0.37");
+        await horizontalPivot.press("Tab");
+        await skinPage.getByRole("button", {name: "Apply layers and geometry"}).click();
+        const pivotScene = JSON.parse(await download(skinPage, "#appearance-native", temp));
+        assert.equal(pivotScene.controls.find(control => control.kind === "knob")?.geometry?.pivot[0], .37);
+        const portable = await download(skinPage, "#appearance-export-template", temp);
+        assert.equal(JSON.parse(portable).manifest.template.style, "template");
+        assert.ok(!portable.includes('"key":'));
+        await skinPage.locator("#appearance-template-file").setInputFiles({name:"template.json",
+            mimeType:"application/json",buffer: Buffer.from(portable)});
+        await skinPage.waitForFunction(() => document.querySelector("#appearance-style").value === "template");
+        assert.equal(await download(skinPage, "#export-cpp", temp), hdrBinding);
+        await skinPage.getByText("Save a style class", {exact:true}).click();
+        await skinPage.getByLabel("Style ID", {exact:true}).fill("knob.primary");
+        await skinPage.getByLabel("Style name", {exact:true}).fill("Primary rotary");
+        await skinPage.getByRole("button", {name:"Save style class"}).click();
+        await skinPage.waitForFunction(() => document.querySelector("#appearance-style").value === "knob.primary");
+        assert.equal(await download(skinPage, "#export-cpp", temp), hdrBinding);
+        await skinPage.evaluate(() => {
+            let version = 0;
+            const svg = color => `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><rect width="12" height="12" fill="${color}"/></svg>`;
+            window.setArtwork = data => { asset = data; ++version; };
+            let asset = svg("#8a5353");
+            const pack = {schema:"cell.ui-theme-pack.v1", assets:{sample:{name:"Watched artwork", path:"art/face.svg"}},
+                themes:{watched:{name:"Watched theme", materials:{cap:{asset:"sample"}},
+                    components:{"knob.primary":{kind:"knob",layers:{face:"cap"}}}, defaults:{knob:"knob.primary"}}}};
+            window.showDirectoryPicker = async () => ({
+                kind:"directory", name:"theme-fixture",
+                async getFileHandle(name) {
+                    if (name !== "cell-theme-pack.json") throw new Error("Expected the theme manifest");
+                    return {getFile: async () => new File([JSON.stringify(pack)], name, {lastModified:1})};
+                },
+                async getDirectoryHandle(name) {
+                    if (name !== "art") throw new Error("Expected the artwork directory");
+                    return {getFileHandle: async filename => ({getFile: async () =>
+                        new File([asset], filename, {type:"image/svg+xml",lastModified:version + 1})})};
+                }
+            });
+        });
+        await skinPage.getByRole("button", {name:"Watch theme folder"}).click();
+        await skinPage.getByText("Watching theme-fixture.", {exact:true}).waitFor();
+        const watchBefore = JSON.parse(await download(skinPage, "#appearance-export", temp));
+        await skinPage.evaluate(() => window.setArtwork("invalid SVG"));
+        await skinPage.getByText(/Choose valid artwork/).waitFor();
+        assert.deepEqual(JSON.parse(await download(skinPage, "#appearance-export", temp)), watchBefore);
+        await skinPage.evaluate(() => window.setArtwork('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><rect width="12" height="12" fill="#345856"/></svg>'));
+        await skinPage.getByText("Watching theme-fixture.", {exact:true}).waitFor();
+        const watchAfter = JSON.parse(await download(skinPage, "#appearance-export", temp));
+        assert.notEqual(watchBefore.assets.sample.data, watchAfter.assets.sample.data);
+        assert.deepEqual(Object.keys(watchAfter.assets), Object.keys(watchBefore.assets));
+        await skinPage.getByRole("button", {name:"Stop watching"}).click();
+        await skinPage.close();
+
+        if (process.env.CELL_BANKED_FIXTURE) {
+            const banked = await browser.newPage({viewport: {width: 850, height: 600}});
+            banked.on("pageerror", error => errors.push(error));
+            await banked.addInitScript(() => {
+                window.sent = [];
+                window.cell = {onMessage(callback) { window.receive = callback; }, postMessage(message) { window.sent.push(message); }};
+            });
+            const exported = await fs.readFile(path.join(__dirname, "../examples/sdk_banked/cell-plugin-editor.html"), "utf8");
+            await banked.route(origin + "/banked.html", route => route.fulfill({body: exported, contentType: "text/html"}));
+            await banked.goto(origin + "/banked.html");
+            const snapshot = JSON.parse(execFileSync(process.env.CELL_BANKED_FIXTURE, ["--parameters"], {encoding: "utf8"}));
+            await banked.evaluate(snapshot => window.receive(snapshot), snapshot);
+            assert.notEqual(await banked.getByRole("combobox", {name:"Bank", exact:true}).evaluate(menu => getComputedStyle(menu).appearance), "none");
+            const patch = banked.getByRole("status", {name: "Patch name"});
+            assert.equal(await patch.textContent(), "0 dB Trim");
+            await banked.getByRole("combobox", {name: "Bank", exact: true}).selectOption("2");
+            await banked.getByRole("combobox", {name: "Program", exact: true}).selectOption("4");
+            assert.equal(await patch.textContent(), "0 dB Trim");
+            await banked.evaluate(snapshot => {
+                snapshot.programs.active = {bank: 2, program: 4};
+                window.receive(snapshot);
+            }, snapshot);
+            assert.equal(await patch.textContent(), "-28 dB Trim");
+            const factory = banked.getByRole("button", {name: "Factory recall", exact: true});
+            await factory.focus();
+            await banked.keyboard.press("Space");
+            assert.deepEqual(await banked.evaluate(() => window.sent), [{type: "recall-program", bank: 2, program: 4}]);
+            await banked.keyboard.down("Space");
+            await banked.waitForFunction(() => window.sent.some(message => message.key === "factory-recall"));
+            await banked.keyboard.up("Space");
+            assert.deepEqual(await banked.evaluate(() => window.sent.at(-1)),
+                {type: "action", key: "factory-recall", phase: "invoke"});
+        }
+
+        {
+            const libraryPage = await context.newPage();
+            libraryPage.on("pageerror", error => errors.push(error));
+            libraryPage.on("dialog", dialog => dialog.accept());
+            await libraryPage.addInitScript(() => {
+                window.written = [];
+                window.showDirectoryPicker = async () => ({
+                    name: "live-fixture",
+                    async getFileHandle(name) {
+                        if (name !== "cell-designer-live.html") throw new Error("Unexpected live page filename");
+                        return {async createWritable() {
+                            let content;
+                            return {async write(text) { content = text; },
+                                async close() { window.written.push(content); }, async abort() {}};
+                        }};
+                    }
+                });
+            });
+            await libraryPage.route(origin + "/**", serveDesigner);
+            await libraryPage.goto(origin + "/index.html");
+            const accessibleLayout = {schema: "cell.ui-layout.v3", controls: [
+                {kind:"slider", label:"Drive", key:"gain", x:0,y:0,width:4,height:1, phone:{x:0,y:2,width:4,height:1}},
+                {kind:"stepper", label:"Mode", key:"mode", x:0,y:1,width:4,height:1, phone:{x:0,y:0,width:4,height:1}},
+                {kind:"toggle", label:"Bypass", key:"bypass", x:0,y:2,width:4,height:1, phone:{x:0,y:1,width:4,height:1}}
+            ]};
+            await libraryPage.locator("#layout-file").setInputFiles({name:"keyboard-layout.json",mimeType:"application/json",
+                buffer:Buffer.from(JSON.stringify(accessibleLayout))});
+            await libraryPage.getByText("Layout opened.", {exact: true}).waitFor();
+            await libraryPage.getByText("Components", {exact:true}).click();
+            await libraryPage.getByLabel("Component name").fill("Drive strip");
+            await libraryPage.getByRole("button", {name:"Save selection"}).click();
+            await libraryPage.getByLabel("Parameter gain").fill("driveB");
+            await libraryPage.getByRole("button", {name:"Insert component"}).click();
+            assert.equal(await libraryPage.locator("#canvas .tile").count(), 4);
+            const componentLayout = JSON.parse(await download(libraryPage, "#save", temp));
+            assert.deepEqual(componentLayout.controls.filter(control => control.label === "Drive").map(control => control.key),
+                ["gain", "driveB"]);
+            await libraryPage.getByRole("button", {name:"Undo", exact:true}).click();
+            assert.equal(await libraryPage.locator("#canvas .tile").count(), 3);
+            const componentFile = await download(libraryPage, "#component-export", temp);
+            assert.equal(JSON.parse(componentFile).controls[0].key, "gain");
+            await libraryPage.reload();
+            await libraryPage.getByText("Components", {exact:true}).click();
+            assert.equal(await libraryPage.getByLabel("Saved components").inputValue(), "Drive strip");
+            await libraryPage.getByRole("button", {name:"Remove component"}).click();
+            await libraryPage.locator("#component-file").setInputFiles({name:"strip.json",mimeType:"application/json",
+                buffer:Buffer.from(componentFile)});
+            await libraryPage.getByText("Drive strip saved.", {exact:true}).waitFor();
+            await libraryPage.locator("#layout-file").setInputFiles({name:"keyboard-layout.json",mimeType:"application/json",
+                buffer:Buffer.from(JSON.stringify(accessibleLayout))});
+            await libraryPage.getByText("Layout opened.", {exact:true}).waitFor();
+            await libraryPage.getByRole("button", {name:"Connect live host"}).click();
+            await libraryPage.getByText("Published to live-fixture", {exact:true}).waitFor();
+            await libraryPage.getByRole("button", {name:"Drive · slider", exact:true}).press("ArrowRight");
+            await libraryPage.waitForFunction(() => window.written.length === 2);
+            const live = await download(libraryPage, "#export-live", temp);
+            assert.equal(live, await libraryPage.evaluate(() => window.written.at(-1)));
+            const [contract] = live.split("\n");
+            assert.match(contract, /"key":"gain","writable":true/);
+            await libraryPage.getByRole("button", {name:"Connect live host"}).click();
+
+            const keys = await browser.newPage({viewport:{width:850,height:500}});
+            keys.on("pageerror", error => errors.push(error));
+            await keys.addInitScript(() => {
+                window.__cellDesignerLivePage = 9;
+                window.sent = [];
+                window.cell = {onMessage(callback) { window.receive = callback; }, postMessage(message) { window.sent.push(message); }};
+            });
+            await keys.route(origin + "/keyboard.html", route => route.fulfill({body:live,contentType:"text/html"}));
+            await keys.goto(origin + "/keyboard.html");
+            await keys.evaluate(project => window.receive({...project, hostShortcuts:true}), project);
+            assert.deepEqual(await keys.evaluate(() => window.sent.shift()), {type:"designer-ready", designerPage:"9"});
+            const drive = keys.getByRole("slider", {name: "Drive"});
+            const minus = keys.getByRole("button", {name: "Decrease Mode"});
+            const plus = keys.getByRole("button", {name: "Increase Mode"});
+            await keys.keyboard.press("Tab");
+            assert.equal(await drive.evaluate(node => node === document.activeElement), true);
+            assert.equal(await drive.getAttribute("aria-valuetext"), "-6.00 dB");
+            const inputNode = await drive.elementHandle();
+            await keys.evaluate(() => window.__cellApplyDesignerAppearance({css:":root{--background:#342718}",fonts:"",looks:[]}));
+            assert.equal(await inputNode.evaluate(node => node === document.activeElement), true);
+            assert.equal(await drive.getAttribute("aria-valuetext"), "-6.00 dB");
+            assert.equal(await keys.locator("#cell-appearance").textContent(), ":root{--background:#342718}");
+            const accessibleTree = await keys.locator("main").ariaSnapshot();
+            assert.match(accessibleTree, /slider "Drive"/);
+            assert.match(accessibleTree, /group "Mode"/);
+            assert.match(accessibleTree, /button "Decrease Mode"/);
+            assert.match(accessibleTree, /button "Bypass"/);
+            await keys.keyboard.press("Tab");
+            assert.equal(await minus.evaluate(node => node === document.activeElement), true);
+            await keys.keyboard.press("Tab");
+            assert.equal(await plus.evaluate(node => node === document.activeElement), true);
+            await keys.keyboard.press("Space");
+            assert.equal(await keys.locator(".spoken-value").getAttribute("role"), "status");
+            assert.equal(await keys.locator(".spoken-value").textContent(), "Mode: Bright");
+            assert.deepEqual(await keys.evaluate(() => window.sent.map(({type}) => type)), ["begin","parameter","end"]);
+            await keys.locator("main").focus();
+            await keys.keyboard.press("Space");
+            await keys.keyboard.press("Escape");
+            await keys.locator("main").dispatchEvent("keydown", {key:" "});
+            assert.deepEqual(await keys.evaluate(() => window.sent.filter(({type}) => type === "host-shortcut")), [
+                {type:"host-shortcut", key:"space", designerPage:"9"},
+                {type:"host-shortcut", key:"release", designerPage:"9"}
+            ]);
+            await keys.setViewportSize({width:390,height:500});
+            await keys.locator('main[data-layout="phone"]').waitFor();
+            await keys.locator("main").focus();
+            await keys.keyboard.press("Tab");
+            assert.equal(await minus.evaluate(node => node === document.activeElement), true);
+            assert.equal(await keys.locator("main").ariaSnapshot().then(tree =>
+                tree.indexOf('button "Decrease Mode"') < tree.indexOf('slider "Drive"')), true);
+
+        }
         assert.deepEqual(errors, []);
-        console.log("Designer passed layout editing, program recall, displays, actions, conditional panels, typography, detent placement, layer-order exports, hardware artwork, and indicator lamps.");
+        console.log("Designer passed layout editing, program recall, displays, actions, conditional panels, typography, detent placement, layer-order exports, hardware artwork, indicators, components, live publishing, accessibility, and shortcut routing.");
     } finally {
         await browser.close();
         if (!process.env.CELL_UI_DESIGNER_TEST_OUTPUT) await fs.rm(temp, {recursive: true, force: true});

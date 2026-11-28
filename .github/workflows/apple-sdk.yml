@@ -139,6 +139,17 @@ jobs:
           ctest --test-dir "$RUNNER_TEMP/cell-transport" -C Release --output-on-failure --no-tests=error \
             --output-junit "$RUNNER_TEMP/cell-results/transport.xml" || result=1
           exit "$result"
+      - name: Qualify a generated release on macOS
+        if: matrix.sdk == 'macosx'
+        run: |
+          cell="$RUNNER_TEMP/cell-sdk/bin/cell"
+          project="$RUNNER_TEMP/generated-release"
+          build="$RUNNER_TEMP/generated-release-build"
+          baseline="$RUNNER_TEMP/generated-release-baseline"
+          "$cell" new ReleaseFixture --output "$project"
+          "$cell" release "$project" --build-dir "$build" --capture "$baseline"
+          "$cell" release "$project" --build-dir "$build" --previous "$baseline" \
+            --report "$RUNNER_TEMP/cell-results/generated-release.json"
       - name: Validate and render the Audio Unit in Core Audio
         if: matrix.sdk == 'macosx'
         run: |

@@ -1,5 +1,63 @@
 # Create a Cell project
 
+## Build and open your first project
+
+Put the installed Cell SDK's `bin` directory on PATH. The desktop starters
+need CMake 3.24 or newer, a C++20 toolchain, and REAPER 7 with CLAP support.
+The SDK carries the pinned CLAP headers. Build the Cell SDK with
+`CELL_SDK_WEBVIEW=ON` to use the banked editor and install the matching system
+WebView runtime.
+
+```sh
+cell new BankedTrim --template banked
+cell run BankedTrim
+
+cell new PolySine --template instrument
+cell run PolySine
+```
+
+`cell run` configures, builds, and tests the project, then opens its compiled
+plug-in on a track in a separate REAPER instance. The instrument opens with
+a short MIDI chord ready to play. Use `--host /path/to/reaper` if REAPER is
+outside its usual install location or PATH. On Linux the separate REAPER
+profile starts with the dummy audio backend. Select an audio device in that
+profile to listen. The run stages the plug-in under the project's `.cell-run`
+directory and writes a JSON timing report there.
+
+- **Banked** ships an editable Designer layout, six banks of six trim presets,
+  a hold-to-recall button, and a CLAP preset catalog. Its tests cover panel
+  messages, state restore, timestamped host automation, and a real SysEx bank
+  query and reply. The example uses the non-commercial MIDI manufacturer ID
+  `0x7D`; the local demo messages are documented below.
+- **Instrument** ships an eight-voice sine synth with velocity, short attack
+  and release, and channel-scoped MIDI note off and panic. Its smoke test
+  compares overlapping notes with their isolated renders.
+- **Mobile** ships an Android standalone gain app with a responsive Designer
+  panel. Set up the Android SDK and both Cell ABIs as described in the
+  [Android guide](ANDROID.md#run-a-designer-layout-in-an-android-app).
+
+```sh
+cell new PocketTrim --template mobile --id com.example.pockettrim
+cell run PocketTrim --android-cell-sdk /path/to/sdk-per-abi
+```
+
+The mobile command uses installed Gradle and ADB to build a debug APK,
+install it, and open its activity. Use `--serial` for multiple devices
+and `--gradle` or `--adb` for tools outside PATH. Start an emulator or connect
+an authorized Android device before running. Use `--build-only` for a
+desktop bundle or debug APK without launching. Desktop runs also accept
+`--sdk` for a different SDK installation and `--build-dir` to reuse a build.
+`cell new Name` continues to generate a standalone gain renderer.
+
+### Banked fixture messages
+
+The template accepts `F0 7D 43 47 01 bank slot F7` to recall a slot and
+`F0 7D 43 47 02 bank F7` to request a bank. Bank and slot numbers are
+zero-based. The reply is `F0 7D 43 47 03 bank value0 … value5 F7`. Each
+value is the signed gain in dB plus 60. The fixture ignores other SysEx.
+To regenerate its checked-in Designer exports after editing the fixture,
+run `node examples/sdk_banked/export.cjs` from the SDK source.
+
 The installed SDK includes a Python 3 command named `cell` (`cell.cmd` on
 Windows). Add the SDK's `bin` directory to your path or invoke it directly.
 From a source checkout, run `python3 tools/cell.py new ...`.
@@ -17,12 +75,12 @@ the project. Keep the selected ID after releasing the plug-in. `--output`
 selects a new directory under an existing parent. Generation works offline
 and refuses to overwrite an existing path.
 
-Every project includes the gain processor, test, and standalone WAV
+The default project includes a gain processor, tests, and a standalone WAV
 renderer. Add `--format clap`, `--format vst3`, `--format lv2`, `--format au`,
-or `--format auv3` to enable a plug-in build by default. For the first four,
-supply the format SDK location during configure
-through `CELL_PROJECT_CLAP_SDK`, `CELL_PROJECT_VST3_SDK`, `CELL_PROJECT_LV2_SDK`,
-or `CELL_PROJECT_AU_SDK`.
+or `--format auv3` to enable a plug-in build by default. CLAP uses the headers
+shipped with the SDK. Set `CELL_PROJECT_CLAP_SDK` during configure to use a
+different checkout. For VST3, LV2, and AU, supply the format SDK location with
+`CELL_PROJECT_VST3_SDK`, `CELL_PROJECT_LV2_SDK`, or `CELL_PROJECT_AU_SDK`.
 Repeat `--format` to enable several. Add `--ui` to use the native editor for
 CLAP and VST3 if your Cell installation includes the native UI component.
 The generated CMake options allow changing these selections later.
@@ -188,6 +246,12 @@ Set the app label, version name, and Android version code in
 `bundleRelease` and configure release signing with your Android signing
 credentials. [Android SDK and toolchain setup](ANDROID.md#run-a-designer-layout-in-an-android-app)
 
+## Qualify a release
+
+Use `cell release` to compare a candidate with the previous build or a
+saved baseline. Each starter ships a fixture for identity, automation,
+presets, referenced assets, and offline audio. [Release compatibility guide](SESSION-COMPATIBILITY.md#release-checks-for-generated-projects)
+
 ## Check a project with Cell Doctor
 
 ```sh
@@ -210,6 +274,8 @@ and test steps execute project code.
 The generated gain smoke test checks sample-offset automation, smoothing,
 and state recall across three sample rates, five block sizes, and mono and
 stereo. Doctor runs the project's own tests and optional plug-in validators.
+Use [host replay](HOST-REPLAY.md) to capture an issue from a DAW and opt
+into a paced replay with callback timings, deadline misses, and allocations.
 
 ### Audio-thread allocation checks
 
@@ -219,8 +285,8 @@ state recall. If a check fails, the test log names the phase, sample rate,
 block size, channel count and operation counts. The executable checks the
 instrumentation itself before running the processor. The smoke test also checks
 subnormal input flushing on supported CPU architectures and denormal flag
-restoration on SSE targets. Only the test executable
-links the allocation hooks.
+restoration on SSE targets. Run [host replay](HOST-REPLAY.md) with
+`--realtime` to count C++ allocations in a diagnostic plug-in build.
 
 Coverage is for the executing thread and calls that reach the replaceable C++
 allocation operators. Direct `malloc`/`free` calls, worker threads, lock

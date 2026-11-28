@@ -39,5 +39,19 @@ void budgets() {
     limits = {}; limits.inputBytes = 8; check(j::write(j::Value(std::string(1, '\0')), limits) == "\"\\u0000\"", "JSON escaped output exact byte budget changed");
     limits.inputBytes = 7; rejected([&] { j::write(j::Value(std::string(1, '\0')), limits); });
 }
+void recursiveEquality() {
+    const auto document = j::read(R"({"rows":[{"value":4294967297,"name":"Drive"}],"ready":true})");
+    auto copy = document;
+    check(copy == document, "Copied JSON object differs from its source");
+    copy = j::read(R"({"ready":true,"rows":[{"name":"Drive","value":4294967297}]})");
+    check(copy == document, "JSON object order affected recursive equality");
+    auto object = *copy.object();
+    auto rows = *object.at("rows").array();
+    auto row = *rows.front().object();
+    row.insert_or_assign("value", j::Value(4294967298ULL));
+    rows.front() = j::Value(std::move(row));
+    object.insert_or_assign("rows", j::Value(std::move(rows)));
+    check(j::Value(std::move(object)) != document, "Recursive equality missed a changed JSON integer");
 }
-int main() { try { corpus(); budgets(); std::cout << "PASS: bounded JSON, strict grammar, Unicode and canonical round trips\n"; } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; } }
+}
+int main() { try { corpus(); budgets(); recursiveEquality(); std::cout << "PASS: bounded JSON, strict grammar, Unicode and canonical round trips\n"; } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; } }

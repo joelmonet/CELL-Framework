@@ -18,6 +18,8 @@ Linux GTK/WebKit libraries. Apply each deployment's own licenses. WebView2 is
 not bundled into a product automatically. Linux missing libraries produce an
 availability/open error; they do not select an unrelated renderer silently.
 The native runtime must coexist with the host's GUI loop and GTK initialization.
+Building the Linux WebView target requires X11 headers (`libx11-dev` on Debian
+and Ubuntu). GTK and WebKit are still loaded at runtime.
 Do not change GTK's thread/display backend after the host initializes it.
 
 Build the component:
@@ -122,9 +124,8 @@ No arbitrary filesystem/process bridge is provided.
 
 The Windows profile option applies only to WebView2. Linux/macOS currently
 always use ephemeral stores. Developer tools default off. Default browser
-behavior may consume keys differently from native controls: DAW space-bar and
-shortcut policy, text entry, accessibility, focus, multiple views and
-cross-platform styling need actual product/host qualification. A browser process
+keyboard behavior varies by operating system and DAW. Exported CLAP editors
+have a [keyboard policy](#keyboard-and-screen-reader-behavior). A browser process
 uses startup time and memory even while native DSP remains independent; measure
 its cost before choosing it for every module.
 
@@ -133,6 +134,9 @@ command-line check for the parameter bridge. Plug-in integrations are described
 below. DSP stays in the native processor.
 
 ## Design a parameter editor
+
+See [Theme packs and native skin previews](VISUAL-SKINS.md) to style the same
+controls with reusable materials and artwork and render the result through Cell::UI.
 
 Open `examples/ui_designer/index.html` in a browser. Drag knobs, faders,
 sliders, steppers, toggles, menus, meters, readouts and labels onto the grid. Select
@@ -157,6 +161,66 @@ and moves it into open space when needed. Both grids need room for the
 group. The destination's theme and
 parameter catalog apply. If the browser declines clipboard access, the
 toolbar can use a copy kept in the current tab.
+
+### Reuse a set of controls
+
+Select a knob, a group such as a channel strip, or part of a panel. Open
+**Components**, enter a name, and click **Save selection**. Saving keeps the
+selection's wide and phone arrangements, artwork, labels, and bindings.
+Choose a saved component, adjust its parameter and action keys, and click
+**Insert component**. The Designer remaps direct bindings, conditions, and
+parameter-derived labels together. It places the copy where both grids
+have room. Each insertion is independently editable and can be undone in
+one step.
+
+The library is stored in the current browser. Use **Export component** and
+**Import component** to share a component or move it to another project or
+machine.
+
+### Live reload inside a CLAP host
+
+Build the plug-in with its WebView HTML and matching C++ bindings once.
+For a generated project, start the REAPER reference host with a dedicated folder.
+
+```sh
+cell run BankedTrim --designer-live ./banked-live
+```
+
+In the Designer, choose **Connect live host** and grant write access to
+`banked-live`. Changes publish automatically from browsers that support the
+directory picker. In other browsers, use **Export live page** and replace
+`cell-designer-live.html` in that folder. The native editor checks for changes
+every 250 ms while it is open. Launch another CLAP host with
+`CELL_DESIGNER_LIVE_DIR` set to the absolute folder and
+`CELL_DESIGNER_LIVE_ID` set to the plug-in's CLAP ID. Use a local folder
+whose contents you control.
+
+Theme-only edits within the WebView script size limit apply in place. Focus,
+ongoing control gestures, and the current program and parameters stay in the
+mounted editor. Layout changes and larger appearance updates reload the view
+and take a fresh snapshot from the running processor. On those full reloads,
+the old view releases an in-progress gesture or held action.
+New native keys or actions and writable access to a read-only binding
+require a new C++ export and plug-in build. The host logs a rejection and
+keeps the current panel if a live page exceeds the compiled bindings.
+An editor that fails to initialize returns to the embedded page. Pair
+**Watch theme folder** with **Connect live host** to publish updates when
+external artwork changes.
+
+### Keyboard and screen-reader behavior
+
+Tab order follows the active wide or phone layout. Range controls expose
+their names and formatted values. Steppers identify their increase and
+decrease buttons and announce the result of an edit. The active patch name
+is a polite live status. Repeated meter updates stay out of live regions.
+
+In a hosted CLAP editor, Space activates the focused button or stays with
+an open menu or text field. With the panel or a slider focused it goes to
+the DAW for transport. On X11, the handoff uses XTEST when available and
+moves keyboard focus to the DAW. Escape ends the current editor gesture
+and returns keyboard focus to the host outside menus and text fields.
+Use that handoff before invoking a DAW-specific shortcut. Actual shortcut
+bindings remain under the DAW's control.
 
 **Load showcase** opens a layout with a 1940s field-radio knob, a 1960s
 recording-studio fader and 1950s broadcast-style needle meters. Choose a
@@ -524,7 +588,12 @@ the bundled assets and keeps external connections disabled.
 
 CLAP meters publish `input-peak`, `input-rms`, `output-peak` and
 `output-rms`. A processor implementing `GainReductionSource` also
-publishes `gain-reduction` in positive dB.
+publishes `gain-reduction` in positive dB. In the Designer, select a knob
+and turn on **Show gain reduction**. The ring follows the meter's range
+and the GR readout shows the attenuation in dB. The knob pointer, readout,
+and automation still follow its bound parameter. Designer preview simulates
+the meter. A hosted editor shows the ring and GR value when a valid
+`gain-reduction` meter is available.
 
 For a native macOS check, choose **Load showcase** in the designer before
 exporting both files. With the gain example configured, build and run the

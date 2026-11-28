@@ -5,6 +5,11 @@
 #include <limits>
 
 namespace cell::json {
+bool Value::operator==(const Value& other) const {
+    // Compare the recursive array and object alternatives after Value is complete.
+    return value_ == other.value_;
+}
+
 const Value& Value::operator[](std::string_view name) const noexcept {
     static const Value missing;
     if (const auto* values = object()) {

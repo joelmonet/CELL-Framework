@@ -1,4 +1,6 @@
 #include <cell/text.hpp>
+#include <cell/ui_palette.hpp>
+#include <cell/ui_sliced_artwork.hpp>
 #include <cell/ui.hpp>
 #include <blend2d/blend2d.h>
 #include "cell_font.hpp"
@@ -16,7 +18,7 @@
 namespace cell::ui {
 namespace {
 BLContext& ctx(void* p) { return *static_cast<BLContext*>(p); }
-BLRgba32 rgba(Color c) { return BLRgba32(c.argb); }
+BLRgba32 rgba(Color c) { return BLRgba32(PaletteScope::map(c).argb); }
 BLRect rect(Rect r) { return {r.x,r.y,r.width,r.height}; }
 }
 
@@ -86,6 +88,88 @@ void Canvas::gradient(Rect r,std::span<const GradientStop> stops,Point from,Poin
     else if(radius>0)ctx(context_).fill_round_rect(BLRoundRect(r.x,r.y,r.width,r.height,radius),gradient);
     else ctx(context_).fill_rect(rect(r),gradient);
 }
+namespace {
+BLPath cornerPath(Rect r, std::array<double, 4> radii) {
+    const double limit = std::min(r.width, r.height) / 2;
+    for (auto& radius : radii)
+        radius = std::clamp(radius, 0., limit);
+    const auto [tl, tr, br, bl] = radii;
+    const double right = r.x + r.width, bottom = r.y + r.height;
+    constexpr double tangent = .5522847498307936;
+    BLPath path;
+    path.move_to(r.x + tl, r.y);
+    path.line_to(right - tr, r.y);
+    path.cubic_to(right - tr + tr * tangent, r.y, right, r.y + tr - tr * tangent, right, r.y + tr);
+    path.line_to(right, bottom - br);
+    path.cubic_to(right, bottom - br + br * tangent, right - br + br * tangent, bottom, right - br, bottom);
+    path.line_to(r.x + bl, bottom);
+    path.cubic_to(r.x + bl - bl * tangent, bottom, r.x, bottom - bl + bl * tangent, r.x, bottom - bl);
+    path.line_to(r.x, r.y + tl);
+    path.cubic_to(r.x, r.y + tl - tl * tangent, r.x + tl - tl * tangent, r.y, r.x + tl, r.y);
+    path.close();
+    return path;
+}
+} // namespace
+
+void Canvas::blend(PaintBlend operation) {
+    constexpr std::array modes{BL_COMP_OP_SRC_OVER, BL_COMP_OP_MULTIPLY, BL_COMP_OP_SCREEN};
+    ctx(context_).set_comp_op(modes.at(unsigned(operation)));
+}
+
+void Canvas::strokeCorners(Rect r, std::array<double, 4> corners, Color color, double width) {
+    if (r.width <= 0 || r.height <= 0 || width <= 0)
+        return;
+    auto& context = ctx(context_);
+    context.set_stroke_width(width);
+    context.stroke_path(cornerPath(r, corners), rgba(color));
+}
+
+void Canvas::fillGeometry(Rect r, std::span<const GradientStop> stops, FillGeometry geometry,
+                          std::array<double, 4> corners, bool ellipse, double strokeWidth) {
+    if (r.width <= 0 || r.height <= 0 || stops.empty())
+        return;
+    auto& context = ctx(context_);
+    const auto fillShape = [&](const auto& brush) {
+        if (strokeWidth > 0) {
+            context.set_stroke_width(strokeWidth);
+            if (ellipse)
+                context.stroke_ellipse(BLEllipse(r.x + r.width / 2, r.y + r.height / 2, r.width / 2, r.height / 2), brush);
+            else
+                context.stroke_path(cornerPath(r, corners), brush);
+            return;
+        }
+        if (ellipse)
+            context.fill_ellipse(BLEllipse(r.x + r.width / 2, r.y + r.height / 2, r.width / 2, r.height / 2), brush);
+        else if (std::all_of(corners.begin(), corners.end(), [](double radius) { return radius == 0; }))
+            context.fill_rect(rect(r), brush);
+        else
+            context.fill_path(cornerPath(r, corners), brush);
+    };
+    if (geometry.kind == GradientKind::solid) {
+        fillShape(rgba(stops.front().color));
+        return;
+    }
+    const auto [x, y] = geometry.from;
+    const auto [endX, endY] = geometry.to;
+    BLGradient gradient;
+    switch (geometry.kind) {
+    case GradientKind::linear:
+        gradient.create(BLLinearGradientValues(x, y, endX, endY));
+        break;
+    case GradientKind::radial:
+        gradient.create(BLRadialGradientValues(x, y, x, y, std::max(.001, std::hypot(endX - x, endY - y))));
+        break;
+    case GradientKind::conic:
+        gradient.create(BLConicGradientValues(x, y, geometry.angleRadians));
+        break;
+    case GradientKind::solid:
+        return;
+    }
+    for (const auto& stop : stops)
+        gradient.add_stop(stop.offset, rgba(stop.color));
+    fillShape(gradient);
+}
+
 void Canvas::gradientPolygon(std::span<const Point> points,Color first,Color last,Point from,Point to){
     if(points.empty())return;BLPath path;path.move_to(points.front().x,points.front().y);
     for(std::size_t i=1;i<points.size();++i)path.line_to(points[i].x,points[i].y);path.close();
@@ -147,6 +231,12 @@ double Canvas::monoWidth(std::string_view text,double size)const{
     BLGlyphBuffer glyphs;glyphs.set_utf8_text(text.data(),text.size());font.shape(glyphs);BLTextMetrics metrics{};font.get_text_metrics(glyphs,metrics);return metrics.advance.x;
 }
 bool Canvas::svgPath(std::string_view data,Rect bounds,Color color,double stroke){
+    return svgPath(data, bounds, color, stroke, {0,0,24,24}, {});
+}
+bool Canvas::svgPath(std::string_view data, Rect bounds, Color color, double stroke, Rect viewBox,
+                     Point opticalOffset) {
+    if (viewBox.width <= 0 || viewBox.height <= 0 || bounds.width <= 0 || bounds.height <= 0)
+        return false;
     // Small, strict SVG centreline reader for the owned 24-unit rack glyphs.
     // No renderer or parser code from the original UI framework is reused.
     BLPath path;std::size_t offset=0;char command=0;double x=0,y=0;
@@ -158,7 +248,19 @@ bool Canvas::svgPath(std::string_view data,Rect bounds,Color color,double stroke
         std::array<double,7> n{};for(unsigned i=0;i<count;++i)if(!number(n[i]))return false;
         switch(command){case 'M':x=n[0];y=n[1];path.move_to(x,y);command='L';break;case 'L':x=n[0];y=n[1];path.line_to(x,y);break;case 'H':x=n[0];path.line_to(x,y);break;case 'V':y=n[0];path.line_to(x,y);break;case 'C':path.cubic_to(n[0],n[1],n[2],n[3],n[4],n[5]);x=n[4];y=n[5];break;case 'S':path.smooth_cubic_to(n[0],n[1],n[2],n[3]);x=n[2];y=n[3];break;case 'A':path.elliptic_arc_to(n[0],n[1],n[2],n[3]!=0,n[4]!=0,n[5],n[6]);x=n[5];y=n[6];break;default:return false;}
     }
-    auto& context=ctx(context_);context.save();double size=std::min(bounds.width,bounds.height);context.translate(bounds.x+(bounds.width-size)/2,bounds.y+(bounds.height-size)/2);context.scale(size/24,size/24);context.set_stroke_width(stroke);context.set_stroke_caps(BL_STROKE_CAP_ROUND);context.set_stroke_join(BL_STROKE_JOIN_ROUND);context.stroke_path(path,rgba(color));context.restore();return true;
+    auto& context = ctx(context_);
+    context.save();
+    const double ratio = std::min(bounds.width / viewBox.width, bounds.height / viewBox.height);
+    context.translate(bounds.x + (bounds.width - viewBox.width * ratio) / 2,
+                      bounds.y + (bounds.height - viewBox.height * ratio) / 2);
+    context.scale(ratio, ratio);
+    context.translate(opticalOffset.x - viewBox.x, opticalOffset.y - viewBox.y);
+    context.set_stroke_width(stroke);
+    context.set_stroke_caps(BL_STROKE_CAP_ROUND);
+    context.set_stroke_join(BL_STROKE_JOIN_ROUND);
+    context.stroke_path(path, rgba(color));
+    context.restore();
+    return true;
 }
 
 namespace {
@@ -249,6 +351,95 @@ void Canvas::image(const Surface& source,Rect destination,Rect area,bool nearest
     ctx(context_).save();ctx(context_).set_pattern_quality(nearest?BL_PATTERN_QUALITY_NEAREST:BL_PATTERN_QUALITY_BILINEAR);
     ctx(context_).blit_image(rect(destination),source.impl_->image,BLRectI(left,top,right-left,bottom-top));ctx(context_).restore();
 }
+void Canvas::tileImage(const Surface& source, Rect destination, Rect area,
+                       Point repeatSize, Point origin) {
+    if (source.width() <= 0 || source.height() <= 0 ||
+        !std::isfinite(area.x) || !std::isfinite(area.y) || !std::isfinite(area.width) ||
+        !std::isfinite(area.height) || !std::isfinite(repeatSize.x) || !std::isfinite(repeatSize.y) ||
+        destination.width <= 0 || destination.height <= 0 ||
+        repeatSize.x <= 0 || repeatSize.y <= 0)
+        return;
+    const int x = int(std::clamp(std::floor(area.x), 0., double(source.width())));
+    const int y = int(std::clamp(std::floor(area.y), 0., double(source.height())));
+    const int w = int(std::clamp(std::ceil(area.x + area.width), double(x), double(source.width()))) - x;
+    const int h = int(std::clamp(std::ceil(area.y + area.height), double(y), double(source.height()))) - y;
+    if (w == 0 || h == 0)
+        return;
+    const BLMatrix2D placement(repeatSize.x / w, 0, 0, repeatSize.y / h, origin.x, origin.y);
+    const BLPattern tile(source.impl_->image, BLRectI(x, y, w, h), BL_EXTEND_MODE_REPEAT, placement);
+    ctx(context_).fill_rect(rect(destination), tile);
+}
+
+Point artworkMinimumSize(const ArtworkSlices& slices) noexcept {
+    return {std::max(slices.minimum.x, slices.logical[1] + slices.logical[3]),
+            std::max(slices.minimum.y, slices.logical[0] + slices.logical[2])};
+}
+
+std::array<ArtworkPatch, 9> artworkPatches(Point image, Rect dest, const ArtworkSlices& slices,
+                                          double scale) {
+    std::array<ArtworkPatch, 9> result{};
+    if (!(std::isfinite(scale) && scale > 0 && image.x > 0 && image.y > 0 &&
+          dest.width > 0 && dest.height > 0))
+        return result;
+    const auto split = [](double start, double size, double a, double b) {
+        a = std::max(0., a);
+        b = std::max(0., b);
+        const double shrink = a + b > size ? size / (a + b) : 1.;
+        return std::array{start, start + a * shrink, start + size - b * shrink, start + size};
+    };
+    // Crop rectangles are integral in physical source pixels. Snap shared
+    // destination boundaries together to prevent seams at fractional DPI.
+    auto sx = split(0, image.x, slices.source[3], slices.source[1]);
+    auto sy = split(0, image.y, slices.source[0], slices.source[2]);
+    auto dx = split(dest.x, dest.width, slices.logical[3], slices.logical[1]);
+    auto dy = split(dest.y, dest.height, slices.logical[0], slices.logical[2]);
+    for (auto& value : sx) value = std::round(value);
+    for (auto& value : sy) value = std::round(value);
+    for (auto& value : dx) value = std::round(value * scale) / scale;
+    for (auto& value : dy) value = std::round(value * scale) / scale;
+    for (unsigned row = 0; row < 3; ++row) {
+        for (unsigned col = 0; col < 3; ++col) {
+            const bool middle = row == 1 && col == 1;
+            if (middle && slices.transparentCenter)
+                continue;
+            const auto mode = middle ? slices.center : slices.edges;
+            result[row * 3 + col] = {
+                {sx[col], sy[row], sx[col + 1] - sx[col], sy[row + 1] - sy[row]},
+                {dx[col], dy[row], dx[col + 1] - dx[col], dy[row + 1] - dy[row]},
+                col == 1 && mode == SliceMode::tile, row == 1 && mode == SliceMode::tile};
+        }
+    }
+    return result;
+}
+
+void drawSlicedArtwork(Canvas& canvas, const Surface& image, Rect dest,
+                       const ArtworkSlices& slices, double scale) {
+    const auto pieces = artworkPatches({double(image.width()), double(image.height())}, dest, slices, scale);
+    // The source density is represented by matching insets. Fall back to
+    // one logical unit per source pixel on an axis with no insets.
+    const auto density = [](double source, double logical) {
+        return logical > 0 && source > 0 ? source / logical : 1.;
+    };
+    const double densityX = density(slices.source[1] + slices.source[3],
+                                    slices.logical[1] + slices.logical[3]);
+    const double densityY = density(slices.source[0] + slices.source[2],
+                                    slices.logical[0] + slices.logical[2]);
+    for (const auto& patch : pieces) {
+        const auto& in = patch.source;
+        const auto& out = patch.destination;
+        if (in.width <= 0 || in.height <= 0 || out.width <= 0 || out.height <= 0)
+            continue;
+        if (patch.repeatX || patch.repeatY) {
+            const Point tile{patch.repeatX ? in.width / densityX : out.width,
+                             patch.repeatY ? in.height / densityY : out.height};
+            const Point origin{out.x + (out.width - tile.x) / 2, out.y + (out.height - tile.y) / 2};
+            canvas.tileImage(image, out, in, tile, origin);
+        } else {
+            canvas.image(image, out, in, false);
+        }
+    }
+}
+
 struct Surface::PaintSession::Impl {
     Surface& owner;
     BLContext context;

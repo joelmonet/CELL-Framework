@@ -168,6 +168,7 @@ if(CELL_SDK_UI)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_library(cell_ui STATIC "${CELL_FRAMEWORK_SOURCE_ROOT}/src/ui/canvas.cpp" "${CELL_FRAMEWORK_SOURCE_ROOT}/src/ui/instrument_controller.cpp")
     cell_add_ui_effects(cell_ui "${CELL_FRAMEWORK_SOURCE_ROOT}")
+    target_sources(cell_ui PRIVATE "${CELL_FRAMEWORK_SOURCE_ROOT}/src/ui/skin_scene.cpp")
     add_library(Cell::UI ALIAS cell_ui)
     add_library(cell::ui ALIAS cell_ui)
     set_target_properties(cell_ui PROPERTIES EXPORT_NAME UI POSITION_INDEPENDENT_CODE ON)
@@ -197,6 +198,24 @@ if(CELL_SDK_UI)
 endif()
 
 set_property(GLOBAL PROPERTY CELL_ADAPTER_SOURCE_DIR "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats")
+set_property(GLOBAL PROPERTY CELL_CLAP_HEADER_ROOT "${CELL_FRAMEWORK_SOURCE_ROOT}/third_party/clap")
+set_property(GLOBAL PROPERTY CELL_ALLOCATION_WATCH_DIR "${CELL_FRAMEWORK_SOURCE_ROOT}/tests")
+if(NOT CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin|Windows)$")
+    add_executable(cell-doctor-clap "${CELL_FRAMEWORK_SOURCE_ROOT}/tools/doctor_clap.cpp")
+    target_include_directories(cell-doctor-clap PRIVATE
+        "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats" "${CELL_FRAMEWORK_SOURCE_ROOT}/third_party/clap/include")
+    target_link_libraries(cell-doctor-clap PRIVATE Cell::Core ${CMAKE_DL_LIBS})
+    if(MINGW)
+        target_link_options(cell-doctor-clap PRIVATE -municode)
+    endif()
+    add_executable(cell-release-clap "${CELL_FRAMEWORK_SOURCE_ROOT}/tools/release_clap.cpp")
+    target_include_directories(cell-release-clap PRIVATE "${CELL_FRAMEWORK_SOURCE_ROOT}/third_party/clap/include")
+    target_link_libraries(cell-release-clap PRIVATE Cell::Core Cell::AudioFiles ${CMAKE_DL_LIBS})
+    if(MINGW)
+        target_link_options(cell-release-clap PRIVATE -municode)
+    endif()
+    install(TARGETS cell-doctor-clap cell-release-clap RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
 set_property(GLOBAL PROPERTY CELL_RESOURCE_EMBED_SCRIPT "${CELL_FRAMEWORK_SOURCE_ROOT}/tools/embed_resource.py")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/CellAddPlugin.cmake")
 if(CELL_SDK_AUV3_EXAMPLE)
@@ -240,10 +259,14 @@ if(CELL_SDK_EXAMPLES)
         add_subdirectory("${CELL_FRAMEWORK_SOURCE_ROOT}/examples/webview_editor" "${CMAKE_CURRENT_BINARY_DIR}/web-example")
     endif()
     if(CELL_SDK_UI)
+        add_executable(cell_skin_preview "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/native_theme_editor/skin_preview.cpp")
+        target_link_libraries(cell_skin_preview PRIVATE Cell::UI)
+        install(TARGETS cell_skin_preview RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
         add_executable(cell_popup_menu_layout_tests "${CELL_FRAMEWORK_SOURCE_ROOT}/tests/popup_menu_layout_tests.cpp")
         target_link_libraries(cell_popup_menu_layout_tests PRIVATE Cell::UI)
         add_test(NAME cell_popup_menu_layout COMMAND cell_popup_menu_layout_tests)
         add_subdirectory("${CELL_FRAMEWORK_SOURCE_ROOT}/examples/control_gallery" "${CMAKE_CURRENT_BINARY_DIR}/control-gallery")
+        add_subdirectory("${CELL_FRAMEWORK_SOURCE_ROOT}/examples/native_theme_editor" "${CMAKE_CURRENT_BINARY_DIR}/native-theme-editor")
         add_subdirectory("${CELL_FRAMEWORK_SOURCE_ROOT}/examples/effects_gallery" "${CMAKE_CURRENT_BINARY_DIR}/effects-gallery")
     endif()
 endif()
@@ -543,6 +566,13 @@ if(CELL_SDK_TESTS)
         add_executable(cell_ui_components_tests "${CELL_FRAMEWORK_SOURCE_ROOT}/tests/ui_components_tests.cpp")
         target_link_libraries(cell_ui_components_tests PRIVATE Cell::UI)
         add_test(NAME cell_ui_components COMMAND cell_ui_components_tests)
+        add_executable(cell_ui_skin_scene_tests "${CELL_FRAMEWORK_SOURCE_ROOT}/tests/ui_skin_scene_tests.cpp")
+        target_link_libraries(cell_ui_skin_scene_tests PRIVATE Cell::UI)
+        add_test(NAME cell_ui_skin_scene COMMAND cell_ui_skin_scene_tests)
+        add_executable(cell_ui_theme_tests "${CELL_FRAMEWORK_SOURCE_ROOT}/tests/ui_theme_tests.cpp")
+        target_link_libraries(cell_ui_theme_tests PRIVATE Cell::UI)
+        add_test(NAME cell_ui_theme_system COMMAND cell_ui_theme_tests "${CMAKE_CURRENT_BINARY_DIR}/theme-test-data")
+        set_tests_properties(cell_ui_theme_system PROPERTIES TIMEOUT 90)
     endif()
     if(TARGET cell_web_bridge_example)
         add_test(NAME cell_web_bridge_example COMMAND cell_web_bridge_example)
@@ -642,6 +672,9 @@ install(FILES "${CMAKE_CURRENT_LIST_DIR}/cmake/CellAAXInfo.plist.in"
     "${CMAKE_CURRENT_LIST_DIR}/cmake/CellAUv3Info.plist.in"
     "${CMAKE_CURRENT_LIST_DIR}/cmake/CellAUv3MacSandbox.entitlements" DESTINATION "${CELL_SDK_CMAKE_DIR}")
 install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/clap.cpp" "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/vst3.cpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/clap_trace.hpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/clap_trace_capture.hpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/clap_designer_live.hpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/webview2_plugin.hpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/cocoa_web_editor.hpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/vst2.cpp"
@@ -660,6 +693,7 @@ install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/clap.cpp" "${CELL_FRAME
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/audio_effect.hpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/ladspa.cpp"
     "${CELL_FRAMEWORK_SOURCE_ROOT}/src/formats/reaper_project.hpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/tests/allocation_watch.hpp"
     DESTINATION "${CELL_SDK_ADAPTER_DIR}")
 install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/LICENSE" "${CMAKE_CURRENT_LIST_DIR}/THIRD_PARTY_NOTICES.md"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/cell")
@@ -679,13 +713,27 @@ install(FILES "${CMAKE_CURRENT_LIST_DIR}/FONTS-AND-LOCALIZATION.md" "${CMAKE_CUR
     "${CMAKE_CURRENT_LIST_DIR}/GOG-FORMAT.md" "${CMAKE_CURRENT_LIST_DIR}/TCI-FORMAT.md"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/docs")
 
+if(CELL_SDK_UI)
+    install(FILES
+        "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/native_theme_editor/CMakeLists.txt"
+        "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/native_theme_editor/main.cpp"
+        "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/native_theme_editor/theme_editor_integration.hpp"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/examples/native_theme_editor")
+endif()
+
 file(GLOB CELL_SDK_GUIDES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/*.md")
 install(FILES ${CELL_SDK_GUIDES} DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/docs")
+install(FILES "${CMAKE_CURRENT_LIST_DIR}/schemas/cell.ui-theme-pack.v1.schema.json"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/docs/schemas")
 install(FILES "${CMAKE_CURRENT_LIST_DIR}/PORTABLE-GRAPH.md" "${CMAKE_CURRENT_LIST_DIR}/AAX.md" "${CMAKE_CURRENT_LIST_DIR}/LEGACY-EFFECTS.md" "${CMAKE_CURRENT_LIST_DIR}/ANDROID.md" "${CMAKE_CURRENT_LIST_DIR}/NETWORK-AUDIO.md" DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/docs")
 
 set(CELL_CLI_TEMPLATE_DIR "${CMAKE_INSTALL_DATADIR}/cell/project")
 get_filename_component(cell_cli_template_full "${CELL_CLI_TEMPLATE_DIR}" ABSOLUTE BASE_DIR "${CMAKE_INSTALL_PREFIX}")
 file(RELATIVE_PATH CELL_CLI_TEMPLATE_RELATIVE "${CMAKE_INSTALL_FULL_BINDIR}" "${cell_cli_template_full}")
+file(RELATIVE_PATH CELL_CLI_SDK_RELATIVE "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_PREFIX}")
+configure_file("${CELL_FRAMEWORK_SOURCE_ROOT}/tools/cell_release.py"
+    "${CMAKE_CURRENT_BINARY_DIR}/cell_release.py" COPYONLY)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cell_release.py" DESTINATION "${CMAKE_INSTALL_BINDIR}")
 configure_file("${CELL_FRAMEWORK_SOURCE_ROOT}/tools/cell.py" "${CMAKE_CURRENT_BINARY_DIR}/cell.py" @ONLY)
 if(WIN32)
     install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/cell.py" "${CELL_FRAMEWORK_SOURCE_ROOT}/tools/cell.cmd"
@@ -728,3 +776,17 @@ install(FILES "${android_default_editor}/Cell Gain Editor.html" "${android_defau
     DESTINATION "${CELL_CLI_TEMPLATE_DIR}/android/default-editor")
 install(FILES "${CMAKE_CURRENT_LIST_DIR}/PROJECT-GENERATOR.md" "${CMAKE_CURRENT_LIST_DIR}/SESSION-COMPATIBILITY.md"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/cell/docs")
+install(DIRECTORY "${CELL_FRAMEWORK_SOURCE_ROOT}/third_party/clap/"
+    DESTINATION "${CELL_SDK_ADAPTER_DIR}/clap-sdk")
+install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_instrument/processor.cpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_instrument/main.cpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_instrument/parameter-ids.tsv"
+    DESTINATION "${CELL_CLI_TEMPLATE_DIR}/instrument")
+install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_banked/check.cpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_banked/clap_check.cpp"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_banked/layout.json"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_banked/cell-plugin-editor.html"
+    "${CELL_FRAMEWORK_SOURCE_ROOT}/examples/sdk_banked/cell-ui-bindings.hpp"
+    DESTINATION "${CELL_CLI_TEMPLATE_DIR}/banked")
+install(FILES "${CELL_FRAMEWORK_SOURCE_ROOT}/tools/project/open-in-reaper.lua"
+    DESTINATION "${CELL_CLI_TEMPLATE_DIR}")

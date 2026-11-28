@@ -23,6 +23,7 @@ public:
     virtual void bounds(Bounds)=0;
     virtual void visible(bool)=0;
     virtual void focus()=0;
+    virtual bool sendHostKey(HostKey)=0;
     virtual void poll()=0;
     virtual void close()=0;
 };

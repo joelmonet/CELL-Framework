@@ -13,6 +13,7 @@ import zipfile
 FILES = {
     "README.md",
     ".github/workflows/apple-sdk.yml",
+    ".github/workflows/android-quickstart.yml",
     ".github/workflows/clap-contracts.yml",
     ".github/workflows/windows-sdk.yml",
     ".github/workflows/raspberry-pi-sdk.yml",
@@ -24,7 +25,7 @@ FILES = {
     "examples/ui_designer/index.html", "examples/ui_designer/designer.js",
     "examples/ui_designer/model.js", "examples/ui_designer/runtime.js",
     "examples/ui_designer/fonts.js", "tools/build_designer_fonts.py",
-    "examples/ui_designer/artwork.js",
+    "examples/ui_designer/artwork.js", "examples/ui_designer/theme_examples.js",
     "tests/ui_designer_model_tests.cjs", "tests/ui_designer_browser_tests.cjs",
     "examples/graph_editor/index.html", "examples/graph_editor/editor.js", "examples/graph_editor/serve.py",
     "examples/portable_graph/modulation.json", "examples/portable_graph/azimuth-modulation.json",
@@ -38,15 +39,20 @@ FILES = {
     "examples/portable_graph/surround-position.json", "examples/portable_graph/tremolo.json",
     "tests/sdk_aax_link_consumer/CMakeLists.txt", "tests/sdk_aax_link_consumer/host.cpp",
     "tests/sdk_aax_link_consumer/descriptor.cpp",
-    "tests/test_cell_doctor.py",
+    "tests/test_cell_doctor.py", "tests/test_doctor_clap.py", "tests/test_cell_release.py",
     "tests/test_project_generator.py",
-    "tools/cell.py", "tools/cell.cmd", "tools/project/CMakeLists.txt.in",
+    "tools/cell.py", "tools/doctor_clap.cpp", "tools/cell_release.py", "tools/clap_session.hpp", "tools/release_clap.cpp", "tools/cell.cmd", "tools/project/CMakeLists.txt.in",
+    "tools/project/open-in-reaper.lua",
+    "examples/sdk_instrument/processor.cpp", "examples/sdk_instrument/main.cpp",
+    "examples/sdk_instrument/parameter-ids.tsv",
+    "examples/sdk_banked/check.cpp", "examples/sdk_banked/clap_check.cpp", "examples/sdk_banked/export.cjs",
+    "examples/sdk_banked/layout.json", "examples/sdk_banked/cell-plugin-editor.html", "examples/sdk_banked/cell-ui-bindings.hpp",
     "tools/qualify_reaper.py", "tools/qualify_reaper.lua",
     "tools/qualify_ardour_lv2.py", "tools/qualify_ardour_lv2.lua",
     "tools/qualify_ardour_lv2_stimulus.lua",
     "tools/project/parameter_identity.cpp", "tools/project/parameter-ids.tsv",
     "tools/project/check_au_bundle.py",
-    "tools/project/github-ci.yml", "tools/project/render.cpp", "tools/project/README.md", "framework/PROJECT-GENERATOR.md",
+    "tools/project/github-ci.yml", "tools/project/render.cpp", "tools/project/README.md", "framework/HOST-REPLAY.md", "framework/PROJECT-GENERATOR.md",
     "examples/android_graph/CMakeLists.txt", "examples/android_graph/bridge.cpp",
     "examples/android_graph/java/org/cell/examples/GraphRenderer.java",
     "tests/android_graph/GraphRendererSmoke.java",
@@ -177,8 +183,14 @@ FILES = {
     'LICENSE', 'NOTICE', 'src/wavetable.cpp', 'src/plugin.cpp', 'src/files.cpp', 'src/json.cpp', 'src/jobs.cpp', 'src/history.cpp', 'src/state_transfer.cpp', 'src/assets.cpp', 'src/thumbnails.cpp', 'src/legacy_state.cpp', 'src/state_migration.cpp',
     'src/ui/canvas.cpp', 'src/ui/instrument_controller.cpp', 'src/ui/window_linux.cpp', 'src/ui/window_windows.cpp', 'src/ui/window_macos.mm',
     'tests/instrument_controller_tests.cpp', 'tests/ui_scaling_tests.cpp',
+    'tests/ui_theme_tests.cpp', 'tests/ui_skin_scene_tests.cpp', 'src/ui/skin_scene.cpp',
+    'examples/native_theme_editor/skin_preview.cpp', 'framework/VISUAL-SKINS.md',
+    'framework/schemas/cell.ui-theme-pack.v1.schema.json', 'framework/VISUAL-AUTHORING-PHASE-2.md',
+    'examples/native_theme_editor/CMakeLists.txt', 'examples/native_theme_editor/main.cpp',
+    'examples/native_theme_editor/theme_editor_integration.hpp',
+    'framework/THEME-FORMAT.md',
     'tests/test_vst3_external_consumer.py',
-    'src/formats/clap.cpp', 'src/formats/vst3.cpp', 'src/formats/webview2_plugin.hpp', 'src/formats/cocoa_web_editor.hpp', 'src/formats/reaper_project.hpp', 'src/formats/vst2.cpp', 'src/formats/aax.cpp', 'src/wrappers/runtime.cpp',
+    'src/formats/clap.cpp', 'src/formats/clap_trace.hpp', 'src/formats/clap_trace_capture.hpp', 'src/formats/clap_designer_live.hpp', 'src/formats/vst3.cpp', 'src/formats/webview2_plugin.hpp', 'src/formats/cocoa_web_editor.hpp', 'src/formats/reaper_project.hpp', 'src/formats/vst2.cpp', 'src/formats/aax.cpp', 'src/wrappers/runtime.cpp',
     'tools/embed_resource.py', 'tools/package_framework.py', 'tools/audit_wrapper_sources.py', 'tools/audit_interaction_sources.py',
     'tests/service_tests.cpp', 'tests/json_tests.cpp', 'tests/ui_components_tests.cpp', 'tests/product_query_tests.cpp', 'tests/wrapper_runtime_tests.cpp', 'tests/parameter_timeline_tests.cpp',
     'tests/allocation_watch.hpp', 'tests/vst2_host.cpp', 'tests/test_framework_package.py', 'tests/interaction_tests.cpp',
@@ -214,6 +226,8 @@ def source_files(root):
     root = Path(root).resolve(strict=True)
     names = set(FILES)
     names.update(path.relative_to(root).as_posix() for path in (root/'include/cell').rglob('*.hpp') if path.name != 'studio_dsp.hpp')
+    names.update(path.relative_to(root).as_posix() for path in (root/'third_party/clap/include').rglob('*.h'))
+    names.update({"third_party/clap/LICENSE", "third_party/clap/UPSTREAM"})
     for name in names:
         path = root/name
         if not path.is_file() or path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != root.parent):

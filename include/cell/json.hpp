@@ -48,7 +48,7 @@ public:
     explicit Value(const char* value) : value_(std::string(value)) {}
     explicit Value(Array value) : value_(std::move(value)) {}
     explicit Value(Object value) : value_(std::move(value)) {}
-    bool operator==(const Value&) const = default;
+    bool operator==(const Value&) const;
     bool isNull() const noexcept { return std::holds_alternative<std::nullptr_t>(value_); }
     bool isNumber() const noexcept { return std::holds_alternative<Number>(value_); }
     bool isBool() const noexcept { return std::holds_alternative<bool>(value_); }
