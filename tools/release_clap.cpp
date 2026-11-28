@@ -81,7 +81,7 @@ Audio readAudio(const File& path) {
 
 void writeAudio(const File& path, const Audio& signal) {
     const auto count = static_cast<unsigned>(signal.samples.size());
-    auto writer = audio::createWaveFile(path, {signal.rate, count, 32, true});
+    auto writer = audio::createWaveFile(path, {static_cast<double>(signal.rate), count, 32, true});
     std::vector<const float*> planes;
     for (const auto& channel : signal.samples) planes.push_back(channel.data());
     require(writer->write(planes.data(), count, signal.frames) && writer->finish().wasOk(),
